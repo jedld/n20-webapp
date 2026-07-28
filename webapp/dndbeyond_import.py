@@ -7,8 +7,20 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS = ROOT / "scripts"
+
+def _resolve_beyond_importer_scripts() -> Path:
+    """Locate engine ``scripts/`` (beyond_importer.py) for standalone or submodule layout."""
+    webapp_repo = Path(__file__).resolve().parent.parent
+    for candidate in (
+        webapp_repo / "scripts",
+        webapp_repo.parent / "scripts",  # natural_20.py engine when n20-webapp is a submodule
+    ):
+        if (candidate / "beyond_importer.py").is_file():
+            return candidate
+    return webapp_repo / "scripts"
+
+
+SCRIPTS = _resolve_beyond_importer_scripts()
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
