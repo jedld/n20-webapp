@@ -134,7 +134,20 @@ def pickpocket_enabled_direct(*, pc_to_pc=True, index_data=None):
 def _resolve_campaign_level(level=None):
     """Return an absolute campaign root (directory containing index.json)."""
     level = level or os.getenv('TEMPLATE_DIR', '../templates')
+    level = level.rstrip('/\\')
     campaigns_dir = os.getenv('N20_CAMPAIGNS_DIR')
+
+    helpers_dir = os.path.dirname(os.path.abspath(__file__))
+    webapp_pkg = os.path.dirname(os.path.dirname(helpers_dir))
+    webapp_repo = os.path.dirname(webapp_pkg)
+    engine_root = os.path.dirname(webapp_repo)
+    if os.path.isdir(os.path.join(engine_root, 'natural20')):
+        if not campaigns_dir:
+            default_campaigns = os.path.join(engine_root, 'user_levels')
+            if os.path.isdir(default_campaigns):
+                campaigns_dir = default_campaigns
+    else:
+        engine_root = None
 
     if campaigns_dir and not os.path.isabs(level) and os.sep not in level and '/' not in level:
         slug_candidate = os.path.join(campaigns_dir, level)
@@ -144,14 +157,19 @@ def _resolve_campaign_level(level=None):
     if os.path.isabs(level):
         return os.path.normpath(level)
 
-    helpers_dir = os.path.dirname(os.path.abspath(__file__))
-    webapp_dir = os.path.dirname(os.path.dirname(helpers_dir))
-    root_dir = os.path.dirname(webapp_dir)
-    search_roots = [webapp_dir, root_dir, os.getcwd()]
+    search_roots = [webapp_pkg, webapp_repo, os.getcwd()]
+    if engine_root:
+        search_roots.insert(0, engine_root)
     if campaigns_dir:
         search_roots.insert(0, os.path.abspath(campaigns_dir))
     for base in search_roots:
         candidate = os.path.normpath(os.path.join(base, level))
+        if os.path.isfile(os.path.join(candidate, 'index.json')):
+            return candidate
+    # user_levels/foo when campaigns_dir is the user_levels root
+    if campaigns_dir and level.startswith('user_levels/'):
+        tail = level.split('user_levels/', 1)[-1]
+        candidate = os.path.normpath(os.path.join(campaigns_dir, tail))
         if os.path.isfile(os.path.join(candidate, 'index.json')):
             return candidate
     return os.path.abspath(level)

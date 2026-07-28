@@ -23,6 +23,18 @@ class TestCampaignConfigResolution(unittest.TestCase):
             else:
                 os.environ['N20_CAMPAIGNS_DIR'] = prev
 
+    def test_resolve_user_levels_path_inside_engine_monorepo(self):
+        from webapp.blueprints.helpers.campaign_config import _resolve_campaign_level
+
+        engine_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', '..')
+        )
+        campaign = os.path.join(engine_root, 'user_levels', 'wild_sheep_chase')
+        if not os.path.isfile(os.path.join(campaign, 'index.json')):
+            self.skipTest('wild_sheep_chase submodule not checked out')
+        resolved = _resolve_campaign_level('user_levels/wild_sheep_chase')
+        self.assertEqual(resolved, os.path.normpath(campaign))
+
 
 if __name__ == '__main__':
     unittest.main()

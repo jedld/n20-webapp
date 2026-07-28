@@ -37,16 +37,23 @@ else
 fi
 if [ -n "$ENGINE_ROOT" ]; then
   export PYTHONPATH="$ENGINE_ROOT:$REPO_ROOT:$WEBAPP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  export N20_CAMPAIGNS_DIR="${N20_CAMPAIGNS_DIR:-$ENGINE_ROOT/user_levels}"
 else
   export PYTHONPATH="$REPO_ROOT:$WEBAPP_DIR${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
-# Resolve TEMPLATE_DIR relative to repo root, webapp/, engine templates, or N20_CAMPAIGNS_DIR slug.
+# Resolve TEMPLATE_DIR relative to engine root, campaigns dir, webapp repo, or slug.
 case "$TEMPLATE_DIR" in
   /*) ;;
   *)
+    # Strip trailing slashes for consistent matching.
+    TEMPLATE_DIR="${TEMPLATE_DIR%/}"
     if [ -n "${N20_CAMPAIGNS_DIR:-}" ] && [ -f "$N20_CAMPAIGNS_DIR/$TEMPLATE_DIR/index.json" ]; then
       TEMPLATE_DIR="$(cd "$N20_CAMPAIGNS_DIR/$TEMPLATE_DIR" && pwd)"
+    elif [ -n "$ENGINE_ROOT" ] && [ -f "$ENGINE_ROOT/$TEMPLATE_DIR/index.json" ]; then
+      TEMPLATE_DIR="$(cd "$ENGINE_ROOT/$TEMPLATE_DIR" && pwd)"
+    elif [ -n "${N20_CAMPAIGNS_DIR:-}" ] && [ -f "$N20_CAMPAIGNS_DIR/$(basename "$TEMPLATE_DIR")/index.json" ]; then
+      TEMPLATE_DIR="$(cd "$N20_CAMPAIGNS_DIR/$(basename "$TEMPLATE_DIR")" && pwd)"
     elif [ -n "$ENGINE_ROOT" ] && [ -f "$ENGINE_ROOT/templates/index.json" ] && [ "$TEMPLATE_DIR" = "../natural_20.py/templates" ]; then
       TEMPLATE_DIR="$(cd "$ENGINE_ROOT/templates" && pwd)"
     elif [ -d "$REPO_ROOT/$TEMPLATE_DIR" ]; then
