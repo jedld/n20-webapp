@@ -28,14 +28,27 @@ export FLASK_DEBUG=0
 export N20_BOOT_ID="${N20_BOOT_ID:-boot-$(date +%s)-$$}"
 
 N20_PYTHON="${N20_PYTHON:-python}"
-export PYTHONPATH="$REPO_ROOT:$WEBAPP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+PARENT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# When n20-webapp is a submodule inside the engine repo, add engine root for `import natural20`.
+if [ -d "$PARENT_DIR/natural20" ]; then
+  ENGINE_ROOT="$PARENT_DIR"
+else
+  ENGINE_ROOT=""
+fi
+if [ -n "$ENGINE_ROOT" ]; then
+  export PYTHONPATH="$ENGINE_ROOT:$REPO_ROOT:$WEBAPP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+else
+  export PYTHONPATH="$REPO_ROOT:$WEBAPP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+fi
 
-# Resolve TEMPLATE_DIR relative to repo root, webapp/, or N20_CAMPAIGNS_DIR slug.
+# Resolve TEMPLATE_DIR relative to repo root, webapp/, engine templates, or N20_CAMPAIGNS_DIR slug.
 case "$TEMPLATE_DIR" in
   /*) ;;
   *)
     if [ -n "${N20_CAMPAIGNS_DIR:-}" ] && [ -f "$N20_CAMPAIGNS_DIR/$TEMPLATE_DIR/index.json" ]; then
       TEMPLATE_DIR="$(cd "$N20_CAMPAIGNS_DIR/$TEMPLATE_DIR" && pwd)"
+    elif [ -n "$ENGINE_ROOT" ] && [ -f "$ENGINE_ROOT/templates/index.json" ] && [ "$TEMPLATE_DIR" = "../natural_20.py/templates" ]; then
+      TEMPLATE_DIR="$(cd "$ENGINE_ROOT/templates" && pwd)"
     elif [ -d "$REPO_ROOT/$TEMPLATE_DIR" ]; then
       TEMPLATE_DIR="$(cd "$REPO_ROOT/$TEMPLATE_DIR" && pwd)"
     elif [ -d "$WEBAPP_DIR/$TEMPLATE_DIR" ]; then
