@@ -1,0 +1,328 @@
+<div class="merchant-trade-panel" data-merchant-uid="{{ trade.merchant_uid }}" data-buyer-uid="{{ trade.buyer_uid }}" data-discount="{{ trade.discount_percent }}">
+  <div class="panel panel-default merchant-panel">
+    <div class="panel-heading merchant-heading">
+      <div class="merchant-heading-main">
+        <h3 class="panel-title">{{ trade.shop_title }}</h3>
+        <p class="text-muted merchant-subtitle">Trading with {{ trade.merchant_name }}</p>
+      </div>
+      {% if trade.pricing_note %}
+      <div class="merchant-pricing-note alert alert-info">
+        <strong>Merchant says:</strong> {{ trade.pricing_note }}
+        {% if trade.discount_percent %}
+        <span class="merchant-discount-badge">
+          {% if trade.discount_percent > 0 %}-{{ trade.discount_percent }}%{% else %}+{{ (-trade.discount_percent)|round(0)|int }}% markup{% endif %}
+        </span>
+        {% endif %}
+      </div>
+      {% elif trade.discount_percent %}
+      <div class="merchant-pricing-note alert alert-info">
+        Special pricing:
+        {% if trade.discount_percent > 0 %}{{ trade.discount_percent }}% discount{% else %}{{ (-trade.discount_percent)|round(0)|int }}% markup{% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="panel-body">
+      <p class="merchant-help text-muted">
+        Select items to buy on the left, then offer gold or goods on the right.
+        Trade completes when your offer meets or exceeds the total price.
+      </p>
+
+      <div class="row merchant-trade-row">
+        <div class="col-md-6 merchant-pane merchant-pane-wares">
+          <div class="merchant-pane-header">
+            <h4>Wares</h4>
+            <small class="text-muted">Click a row to add to your cart</small>
+          </div>
+          <div class="merchant-filter-bar">
+            <button type="button" class="btn btn-xs btn-default merchant-filter active" data-filter="all">All</button>
+            <button type="button" class="btn btn-xs btn-default merchant-filter" data-filter="weapons">Weapons</button>
+            <button type="button" class="btn btn-xs btn-default merchant-filter" data-filter="armor">Armor</button>
+            <button type="button" class="btn btn-xs btn-default merchant-filter" data-filter="supplies">Supplies</button>
+            <button type="button" class="btn btn-xs btn-default merchant-filter" data-filter="ammunition">Ammo</button>
+          </div>
+          <ul class="list-group merchant-ware-list">
+            {% for item in trade.wares %}
+            <li class="list-group-item merchant-ware-item" data-category="{{ item.category }}" data-type="{{ item.type }}" data-unit-price="{{ item.unit_price }}" data-max="{{ item.qty }}">
+              <div class="merchant-item-main">
+                <img class="merchant-item-icon" src="{{ url_for('static', filename='assets/items/' ~ item.image ~ '.png') }}" alt="" onerror="this.style.display='none'">
+                <div class="merchant-item-text">
+                  <div class="merchant-item-name">{{ item.label }}</div>
+                  <div class="merchant-item-meta">
+                    <span class="merchant-price">{{ '%.2f'|format(item.unit_price) }} gp</span>
+                    <span class="text-muted"> · stock {{ item.qty }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="merchant-qty-stepper" data-max="{{ item.qty }}">
+                <button type="button" class="merchant-qty-btn merchant-qty-dec" tabindex="-1" aria-label="Decrease">&minus;</button>
+                <input type="number" class="merchant-cart-qty" min="0" max="{{ item.qty }}" value="0" data-type="{{ item.type }}">
+                <button type="button" class="merchant-qty-btn merchant-qty-inc" tabindex="-1" aria-label="Increase">+</button>
+              </div>
+            </li>
+            {% else %}
+            <li class="list-group-item text-muted text-center"><em>No wares available</em></li>
+            {% endfor %}
+          </ul>
+        </div>
+
+        <div class="col-md-6 merchant-pane merchant-pane-payment">
+          <div class="merchant-pane-header">
+            <h4>Your Offer</h4>
+            <small class="text-muted">{{ trade.buyer_name }}'s goods ({{ (trade.buyback_rate * 100)|round(0)|int }}% buyback)</small>
+          </div>
+          <ul class="list-group merchant-payment-list">
+            {% for item in trade.payment_items %}
+            <li class="list-group-item merchant-payment-item" data-type="{{ item.type }}" data-unit-value="{{ item.unit_value }}" data-max="{{ item.qty }}">
+              <div class="merchant-item-main">
+                <img class="merchant-item-icon" src="{{ url_for('static', filename='assets/items/' ~ item.image ~ '.png') }}" alt="" onerror="this.style.display='none'">
+                <div class="merchant-item-text">
+                  <div class="merchant-item-name">{{ item.label }}</div>
+                  <div class="merchant-item-meta">
+                    <span class="merchant-value">{{ '%.2f'|format(item.unit_value) }} gp each</span>
+                    <span class="text-muted"> · have {{ item.qty }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="merchant-qty-stepper" data-max="{{ item.qty }}">
+                <button type="button" class="merchant-qty-btn merchant-qty-dec" tabindex="-1" aria-label="Decrease">&minus;</button>
+                <input type="number" class="merchant-pay-qty" min="0" max="{{ item.qty }}" value="0" data-type="{{ item.type }}">
+                <button type="button" class="merchant-qty-btn merchant-qty-inc" tabindex="-1" aria-label="Increase">+</button>
+              </div>
+            </li>
+            {% else %}
+            <li class="list-group-item text-muted text-center"><em>Nothing to offer</em></li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-footer merchant-footer">
+      <div class="merchant-totals">
+        <span class="merchant-total-line">Cart: <strong class="merchant-purchase-total">0.00</strong> gp</span>
+        <span class="merchant-total-line">Offer: <strong class="merchant-payment-total">0.00</strong> gp</span>
+        <span class="merchant-total-line merchant-balance-line text-muted">Balance: <strong class="merchant-balance">0.00</strong> gp</span>
+      </div>
+      <div class="merchant-actions">
+        <button type="button" class="btn btn-default merchant-clear-btn">Clear</button>
+        <button type="button" class="btn btn-primary merchant-trade-btn" disabled>Complete Trade</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .merchant-panel { margin-bottom: 0; }
+  .merchant-heading { display: flex; flex-direction: column; gap: 8px; }
+  .merchant-heading .panel-title { margin: 0; }
+  .merchant-subtitle { margin: 0; font-size: 12px; }
+  .merchant-pricing-note { margin: 0; padding: 6px 10px; font-size: 12px; }
+  .merchant-discount-badge {
+    display: inline-block; margin-left: 8px; padding: 1px 6px;
+    border-radius: 10px; background: #dff0d8; color: #3c763d; font-weight: 600;
+  }
+  .merchant-help { margin: 0 0 10px; font-size: 12px; }
+  .merchant-pane-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .merchant-pane-header h4 { margin: 0; font-size: 14px; }
+  .merchant-filter-bar { margin-bottom: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .merchant-filter.active { background: #337ab7; color: #fff; border-color: #2e6da4; }
+  .merchant-ware-list, .merchant-payment-list {
+    min-height: 120px; max-height: 360px; overflow-y: auto; margin-bottom: 0;
+  }
+  .merchant-ware-item, .merchant-payment-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 8px; cursor: pointer;
+  }
+  .merchant-ware-item:hover, .merchant-payment-item:hover { background: #f8f8f8; }
+  .merchant-item-main { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; }
+  .merchant-item-icon { width: 28px; height: 28px; object-fit: contain; flex: 0 0 auto; }
+  .merchant-item-text { min-width: 0; }
+  .merchant-item-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .merchant-item-meta { font-size: 11px; }
+  .merchant-price, .merchant-value { color: #8a6d3b; font-weight: 600; }
+  .merchant-qty-stepper {
+    display: inline-flex; align-items: stretch; flex: 0 0 auto;
+    border: 1px solid #ccc; border-radius: 3px; overflow: hidden; height: 24px; background: #fff;
+  }
+  .merchant-qty-stepper input[type="number"] {
+    width: 36px; border: 0; border-left: 1px solid #ddd; border-right: 1px solid #ddd;
+    text-align: center; padding: 0 2px; -moz-appearance: textfield; font-size: 12px; height: 22px;
+  }
+  .merchant-qty-stepper input[type="number"]::-webkit-outer-spin-button,
+  .merchant-qty-stepper input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .merchant-qty-btn {
+    background: #f5f5f5; border: 0; padding: 0 6px; cursor: pointer; color: #333; font-size: 12px;
+  }
+  .merchant-qty-btn:hover { background: #e6e6e6; }
+  .merchant-footer {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .merchant-totals { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; }
+  .merchant-balance-line.balance-short { color: #a94442; }
+  .merchant-balance-line.balance-ok { color: #3c763d; }
+  .merchant-actions { display: flex; gap: 8px; }
+</style>
+
+<script>
+  (function () {
+    const root = document.querySelector('.merchant-trade-panel');
+    if (!root || root.dataset.merchantBound === '1') return;
+    root.dataset.merchantBound = '1';
+
+    const merchantUid = root.dataset.merchantUid;
+    const buyerUid = root.dataset.buyerUid;
+    const discountPercent = parseFloat(root.dataset.discount || '0') || 0;
+
+    const purchaseTotalEl = root.querySelector('.merchant-purchase-total');
+    const paymentTotalEl = root.querySelector('.merchant-payment-total');
+    const balanceEl = root.querySelector('.merchant-balance');
+    const balanceLine = root.querySelector('.merchant-balance-line');
+    const tradeBtn = root.querySelector('.merchant-trade-btn');
+    const clearBtn = root.querySelector('.merchant-clear-btn');
+
+    function setQty(input, value) {
+      const max = parseInt(input.max, 10) || 0;
+      let v = parseInt(value, 10);
+      if (isNaN(v) || v < 0) v = 0;
+      if (v > max) v = max;
+      input.value = v;
+      updateTotals();
+    }
+
+    function collectPayload(selector, qtyClass) {
+      const items = [];
+      const qty = [];
+      root.querySelectorAll(selector).forEach((row) => {
+        const input = row.querySelector(qtyClass);
+        if (!input) return;
+        const amount = parseInt(input.value, 10) || 0;
+        if (amount > 0) {
+          items.push(input.dataset.type);
+          qty.push(String(amount));
+        }
+      });
+      return { items, qty };
+    }
+
+    function updateTotals() {
+      let purchase = 0;
+      root.querySelectorAll('.merchant-ware-item').forEach((row) => {
+        const input = row.querySelector('.merchant-cart-qty');
+        if (!input) return;
+        const amount = parseInt(input.value, 10) || 0;
+        const unit = parseFloat(row.dataset.unitPrice) || 0;
+        purchase += amount * unit;
+      });
+      let payment = 0;
+      root.querySelectorAll('.merchant-payment-item').forEach((row) => {
+        const input = row.querySelector('.merchant-pay-qty');
+        if (!input) return;
+        const amount = parseInt(input.value, 10) || 0;
+        const unit = parseFloat(row.dataset.unitValue) || 0;
+        payment += amount * unit;
+      });
+      purchase = Math.round(purchase * 100) / 100;
+      payment = Math.round(payment * 100) / 100;
+      const balance = Math.round((payment - purchase) * 100) / 100;
+      purchaseTotalEl.textContent = purchase.toFixed(2);
+      paymentTotalEl.textContent = payment.toFixed(2);
+      balanceEl.textContent = balance.toFixed(2);
+      balanceLine.classList.remove('balance-short', 'balance-ok');
+      if (purchase <= 0) {
+        tradeBtn.disabled = true;
+      } else if (payment + 1e-6 >= purchase) {
+        balanceLine.classList.add('balance-ok');
+        tradeBtn.disabled = false;
+      } else {
+        balanceLine.classList.add('balance-short');
+        tradeBtn.disabled = true;
+      }
+    }
+
+    root.addEventListener('click', (e) => {
+      const filterBtn = e.target.closest('.merchant-filter');
+      if (filterBtn) {
+        e.preventDefault();
+        root.querySelectorAll('.merchant-filter').forEach((btn) => btn.classList.remove('active'));
+        filterBtn.classList.add('active');
+        const filter = filterBtn.dataset.filter || 'all';
+        root.querySelectorAll('.merchant-ware-item').forEach((row) => {
+          const cat = row.dataset.category || 'other';
+          row.style.display = (filter === 'all' || filter === cat) ? '' : 'none';
+        });
+        return;
+      }
+
+      const dec = e.target.closest('.merchant-qty-dec');
+      const inc = e.target.closest('.merchant-qty-inc');
+      if (dec || inc) {
+        e.preventDefault();
+        e.stopPropagation();
+        const stepper = e.target.closest('.merchant-qty-stepper');
+        const input = stepper && stepper.querySelector('input[type="number"]');
+        if (!input) return;
+        const cur = parseInt(input.value, 10) || 0;
+        setQty(input, dec ? cur - 1 : cur + 1);
+        return;
+      }
+
+      const wareRow = e.target.closest('.merchant-ware-item');
+      const payRow = e.target.closest('.merchant-payment-item');
+      if ((wareRow || payRow) && !e.target.closest('input, button')) {
+        const row = wareRow || payRow;
+        const input = row.querySelector('input[type="number"]');
+        if (!input) return;
+        const cur = parseInt(input.value, 10) || 0;
+        setQty(input, cur > 0 ? 0 : 1);
+      }
+    });
+
+    root.addEventListener('input', (e) => {
+      if (e.target.matches('input[type="number"]')) setQty(e.target, e.target.value);
+    });
+
+    clearBtn.addEventListener('click', () => {
+      root.querySelectorAll('input[type="number"]').forEach((input) => setQty(input, 0));
+    });
+
+    tradeBtn.addEventListener('click', () => {
+      if (tradeBtn.disabled) return;
+      const purchase = collectPayload('.merchant-ware-item', '.merchant-cart-qty');
+      const payment = collectPayload('.merchant-payment-item', '.merchant-pay-qty');
+      tradeBtn.disabled = true;
+      const postFn = (window.ajaxPost || window.Utils && window.Utils.ajaxPost);
+      const done = (resp) => {
+        if (resp && resp.success) {
+          if (typeof refreshTurn === 'function') refreshTurn();
+          $('#modal-1').modal('hide');
+        } else {
+          const msg = (resp && (resp.error || resp.message)) || 'Trade failed';
+          alert(msg);
+          tradeBtn.disabled = false;
+        }
+      };
+      const payload = {
+        merchant_uid: merchantUid,
+        buyer_uid: buyerUid,
+        discount_percent: discountPercent,
+        purchase,
+        payment,
+      };
+      if (postFn) {
+        postFn('/merchant/trade', payload, done, true);
+      } else {
+        fetch('/merchant/trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }).then((r) => r.json()).then(done).catch(() => {
+          alert('Trade failed');
+          tradeBtn.disabled = false;
+        });
+      }
+    });
+
+    updateTotals();
+  })();
+</script>

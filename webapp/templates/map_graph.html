@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or 'Map Connections' }}</title>
+  <link href="/libs/bootstrap/3.3.7/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #1a1d21;
+      color: #e8e8e8;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .map-graph-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: #252a30;
+      border-bottom: 1px solid #3a4149;
+      flex-wrap: wrap;
+    }
+    .map-graph-toolbar h1 {
+      font-size: 18px;
+      margin: 0;
+      font-weight: 600;
+    }
+    .map-graph-toolbar .hint {
+      color: #9aa3ad;
+      font-size: 13px;
+    }
+    .map-graph-stage-wrap {
+      position: relative;
+      height: calc(100vh - 52px);
+      overflow: hidden;
+    }
+    #map-graph-stage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      cursor: grab;
+    }
+    #map-graph-stage.dragging {
+      cursor: grabbing;
+    }
+    #map-graph-canvas {
+      position: relative;
+      min-width: 100%;
+      min-height: 100%;
+    }
+    #map-graph-edges {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 20;
+      pointer-events: none;
+      overflow: visible;
+    }
+    #map-graph-edges .edge-path-underlay,
+    #map-graph-edges .edge-path {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    #map-graph-edges .edge-path-underlay {
+      stroke: rgba(8, 10, 14, 0.92);
+      stroke-width: 7px;
+    }
+    #map-graph-edges .edge-path {
+      stroke: #7ec8ff;
+      stroke-width: 2.75px;
+    }
+    .map-graph-node {
+      position: absolute;
+      z-index: 1;
+      width: 200px;
+      background: #2b3138;
+      border: 2px solid #4a5560;
+      border-radius: 8px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+      cursor: pointer;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+      user-select: none;
+    }
+    .map-graph-node:hover {
+      border-color: #8a6d3b;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+      transform: translateY(-2px);
+    }
+    .map-graph-node.current {
+      border-color: #5cb85c;
+    }
+    .map-graph-node .thumb-wrap {
+      position: relative;
+      width: 100%;
+      height: 110px;
+      background: #111;
+      border-radius: 6px 6px 0 0;
+      overflow: hidden;
+    }
+    .map-graph-node img.thumb {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .map-graph-node canvas.grid-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .map-graph-node .label {
+      padding: 8px 10px 4px;
+      font-weight: 700;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .map-graph-node .meta {
+      padding: 0 10px 8px;
+      font-size: 11px;
+      color: #9aa3ad;
+    }
+    .map-graph-legend {
+      display: flex;
+      gap: 14px;
+      font-size: 12px;
+      color: #c5ccd3;
+    }
+    .map-graph-legend span::before {
+      content: '';
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+    .map-graph-legend .exit::before { background: #e67e22; }
+    .map-graph-legend .entry::before { background: #5cb85c; }
+    .map-graph-empty {
+      padding: 40px;
+      text-align: center;
+      color: #9aa3ad;
+    }
+    .edge-label {
+      font-size: 11px;
+      fill: #e8eef5;
+      paint-order: stroke;
+      stroke: rgba(8, 10, 14, 0.95);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+  </style>
+</head>
+<body>
+  <div class="map-graph-toolbar">
+    <h1>Map Connections</h1>
+    <span class="hint">Teleporter links between campaign maps. Click a map to open it in the VTT for editing.</span>
+    <div class="map-graph-legend">
+      <span class="exit">Exit teleporter</span>
+      <span class="entry">Destination tile</span>
+    </div>
+    <button type="button" class="btn btn-default btn-sm" id="map-graph-refresh">Refresh</button>
+    <button type="button" class="btn btn-default btn-sm" id="map-graph-fit">Fit View</button>
+  </div>
+  <div class="map-graph-stage-wrap">
+    <div id="map-graph-stage">
+      <div id="map-graph-canvas">
+        <svg id="map-graph-edges" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+    </div>
+  </div>
+  <script id="map-graph-bootstrap" type="application/json">{{ graph | tojson }}</script>
+  <script src="/libs/jquery/jquery-3.2.1.min.js"></script>
+  <script src="{{ asset_url('map_graph.js') }}"></script>
+</body>
+</html>

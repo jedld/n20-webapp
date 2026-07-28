@@ -1,0 +1,12 @@
+{# Shared icon + label for loot/transfer/pickpocket item rows.
+   Expects: item with name, label, image (and optional icon override). #}
+{% macro transfer_item_icon(item, class_name='transfer-item-icon') %}
+<img class="{{ class_name }}"
+     src="{{ item.icon | default(url_for('static', filename='assets/items/' ~ item.image ~ '.png')) }}"
+     alt="{{ item.label }}"
+     onerror="this.style.display='none'">
+{% endmacro %}
+
+{% macro transfer_item_label(item, class_name='transfer-item-label') %}
+<span class="{{ class_name }}" title="{{ item.name }}">{{ item.label }}</span>
+{% endmacro %}

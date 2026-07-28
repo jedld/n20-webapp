@@ -1,0 +1,5191 @@
+from flask import jsonify, request, session
+import hashlib
+import os
+import re
+import time
+import uuid
+from pathlib import Path
+
+from natural20.player_character import PlayerCharacter
+from natural20.npc import Npc
+from natural20.utils.conversation import (
+    conversation_reachability,
+    entity_label,
+    format_entity_gear_for_conversation,
+    mention_handle_for,
+    normalize_speech_mode,
+    parse_player_conversation_input,
+    resolve_named_targets,
+    resolve_mention_targets,
+    speech_distance_for,
+    unique_entities,
+)
+from natural20.utils.gibberish import gibberish
+from natural20.utils.language_comprehension import understands_language
+from natural20.utils.outward_appearance import conversation_self_appearance
+from natural20.utils.animal_communication import (
+    _entity_speaks_beast_language,
+    animal_communication_activation_note,
+)
+from natural20.utils.conversation_offers import item_offer_resolution_note
+from natural20.utils.conversation_witness import witness_entity_uids
+from natural20.utils.npc_hit_reaction import out_of_combat_hit_reaction_note
+from natural20.utils.pickpocket_notification import (
+    pickpocket_attempt_note,
+    pickpocket_victim_caught_note,
+)
+from natural20.utils.steal_notification import steal_detection_note
+
+
+# Recognises a player's request to attempt an Insight (Wisdom) check.
+# Examples that match (case-insensitive):
+#   "insight check"                       "[insight check]"
+#   "I want to roll insight on @Garrick"  "/insight"
+#   "Insight check on the merchant about his prices"
+#   "make an insight check"
+_SUMMON_NPC_PHRASES = re.compile(
+    r'\b(?:'
+    r'come\s+(?:here|over(?:\s+here)?)'
+    r'|get\s+over\s+here'
+    r'|head\s+over(?:\s+here)?'
+    r'|over\s+here'
+    r'|come\s+to\s+me'
+    r')\b',
+    re.IGNORECASE,
+)
+
+_INVITE_APPROACH_PHRASES = re.compile(
+    r'\b(?:'
+    r'come\s+(?:here|over(?:\s+here)?)'
+    r'|get\s+over\s+here'
+    r'|over\s+here'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Lines that should get an in-character reply when the NPC was directly addressed.
+_DIRECT_REPLY_MESSAGE = re.compile(
+    r'^\s*(?:'
+    r'hi|hello|hey|greetings|howdy|hail|yo|sup'
+    r'|good\s+(?:morning|afternoon|evening|day)'
+    r'|what|where|who|why|how|when|which'
+    r'|is|are|am|was|were|do|does|did|can|could|would|will|have|has'
+    r')\b',
+    re.IGNORECASE,
+)
+
+PLAYER_INSIGHT_PATTERNS = [
+    re.compile(r'^\s*/?\s*insight(?:\s+check)?\b', re.IGNORECASE),
+    re.compile(r'^\s*\[\s*insight(?:\s+check)?[^\]]*\]', re.IGNORECASE),
+    re.compile(r'\b(?:make|do|roll|attempt|try|perform)\s+(?:an?\s+)?insight\s+check\b', re.IGNORECASE),
+    re.compile(r'\binsight\s+check\s+(?:on|against|of|for)\b', re.IGNORECASE),
+    re.compile(r'\broll(?:ing)?\s+insight\b', re.IGNORECASE),
+]
+
+# Pulls a "target" and an optional "purpose" clause out of an insight request.
+# We try a few common phrasings; whichever matches first wins.
+_INSIGHT_TARGET_PURPOSE_PATTERNS = [
+    re.compile(
+        r'insight(?:\s+check)?\s+on\s+(?P<target>@?[\w\'\- ]+?)'
+        r'(?:\s+(?:about|regarding|for|to(?:\s+(?:see|determine|tell|find\s+out))?)\s+(?P<purpose>.+))?$',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'insight(?:\s+check)?\s+against\s+(?P<target>@?[\w\'\- ]+?)'
+        r'(?:\s+(?:about|regarding|for)\s+(?P<purpose>.+))?$',
+        re.IGNORECASE,
+    ),
+]
+
+
+def is_player_insight_request(message):
+    """Return True when the player's message is asking to roll Insight."""
+    if not message:
+        return False
+    text = str(message).strip()
+    if not text:
+        return False
+    for pattern in PLAYER_INSIGHT_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def parse_player_insight_request(message):
+    """Extract a (target_spec, purpose) tuple from the player's message.
+
+    Either field may be ``None`` if the request is too vague.
+    """
+    text = (message or '').strip()
+    target_spec = None
+    purpose = None
+    for pattern in _INSIGHT_TARGET_PURPOSE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            target_spec = (match.group('target') or '').strip(' .,!?') or None
+            purpose = (match.group('purpose') or '').strip(' .,!?') or None
+            break
+
+    # Fall back: anything after the first "about"/"regarding"/"because"
+    if purpose is None:
+        about_match = re.search(
+            r'\b(?:about|regarding|because|to\s+see|to\s+determine|to\s+tell|to\s+find\s+out)\s+(?P<rest>.+)$',
+            text,
+            re.IGNORECASE,
+        )
+        if about_match:
+            purpose = about_match.group('rest').strip(' .,!?') or None
+    return target_spec, purpose
+
+
+PLAYER_PERCEPTION_PATTERNS = [
+    re.compile(r'^\s*/?\s*perception(?:\s+check)?\b', re.IGNORECASE),
+    re.compile(r'^\s*\[\s*perception(?:\s+check)?[^\]]*\]', re.IGNORECASE),
+    re.compile(r'\b(?:make|do|roll|attempt|try|perform)\s+(?:an?\s+)?perception\s+check\b', re.IGNORECASE),
+    re.compile(r'\bperception\s+check\s+(?:on|against|of|for)\b', re.IGNORECASE),
+    re.compile(r'\broll(?:ing)?\s+perception\b', re.IGNORECASE),
+]
+
+_PERCEPTION_TARGET_FOCUS_PATTERNS = [
+    re.compile(
+        r'perception(?:\s+check)?\s+on\s+(?P<target>@?[\w\'\- ]+?)'
+        r'(?:\s+(?:about|regarding|for|to\s+(?:notice|spot|see|find))\s+(?P<focus>.+))?$',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'perception(?:\s+check)?\s+against\s+(?P<target>@?[\w\'\- ]+?)'
+        r'(?:\s+(?:about|regarding|for)\s+(?P<focus>.+))?$',
+        re.IGNORECASE,
+    ),
+]
+
+_DM_CHAT_COMMAND_PREFIX = re.compile(r'^\s*@dm\s+', re.IGNORECASE)
+
+
+def normalize_player_dm_command(message):
+    """Strip a leading @dm prefix from local-chat DM commands."""
+    text = str(message or '').strip()
+    if not text:
+        return ''
+    return _DM_CHAT_COMMAND_PREFIX.sub('', text, count=1).strip()
+
+
+def is_player_perception_request(message):
+    """Return True when the player's message is asking to roll Perception."""
+    if not message:
+        return False
+    text = normalize_player_dm_command(message)
+    if not text:
+        return False
+    if _DM_CHAT_COMMAND_PREFIX.search(str(message or '')) and re.search(
+        r'\bperception\b',
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    for pattern in PLAYER_PERCEPTION_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def parse_player_perception_request(message):
+    """Extract a (target_spec, focus) tuple from the player's message."""
+    text = normalize_player_dm_command(message)
+    target_spec = None
+    focus = None
+    for pattern in _PERCEPTION_TARGET_FOCUS_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            target_spec = (match.group('target') or '').strip(' .,!?') or None
+            focus = (match.group('focus') or '').strip(' .,!?') or None
+            break
+
+    if focus is None:
+        about_match = re.search(
+            r'\b(?:about|regarding|to\s+(?:notice|spot|see|find))\s+(?P<rest>.+)$',
+            text,
+            re.IGNORECASE,
+        )
+        if about_match:
+            focus = about_match.group('rest').strip(' .,!?') or None
+    return target_spec, focus
+
+
+_PLAYER_GIFT_EXCLUSIONS = re.compile(
+    r'\b(?:'
+    r'give\s+(?:me|us)\b'
+    r'|(?:can|could|would|will)\s+(?:you|u)\s+give\s+me\b'
+    r')\b',
+    re.IGNORECASE,
+)
+
+PLAYER_GIFT_PATTERNS = [
+    re.compile(r'\bI\s+(?:give|hand|offer|pass|pay|tip|donate)\b', re.IGNORECASE),
+    re.compile(r'\b(?:here(?:\'s| is)|take this)\b', re.IGNORECASE),
+    re.compile(r'(?:^|\*)\s*(?:hands?|giving|passes?)\s+(?:over|to)\b', re.IGNORECASE),
+    re.compile(r'\*\s*(?:hands?|gives?|passes?)\b', re.IGNORECASE),
+]
+
+_CURRENCY_GIFT_PATTERN = re.compile(
+    r'\b(?:(?P<qty>\d+)\s*)?(?P<unit>silver|gold|copper|electrum|platinum|sp|gp|cp|ep|pp)\b',
+    re.IGNORECASE,
+)
+
+_CURRENCY_ITEM_SLUGS = {
+    'silver': 'silver_piece',
+    'sp': 'silver_piece',
+    'gold': 'gold_piece',
+    'gp': 'gold_piece',
+    'copper': 'copper_piece',
+    'cp': 'copper_piece',
+    'electrum': 'electronum',
+    'ep': 'electronum',
+    'platinum': 'platinum_piece',
+    'pp': 'platinum_piece',
+}
+
+
+def _player_gift_offer_text(message, actions=None):
+    parts = [str(message or '').strip()]
+    for action in actions or []:
+        text = str(action or '').strip()
+        if text:
+            parts.append(text)
+    return ' '.join(part for part in parts if part).strip()
+
+
+def is_player_gift_offer(message, actions=None):
+    """Return True when the player is offering to hand something to a listener."""
+    text = _player_gift_offer_text(message, actions)
+    if not text:
+        return False
+    if is_player_insight_request(message) or is_player_perception_request(message):
+        return False
+    if _PLAYER_GIFT_EXCLUSIONS.search(text):
+        return False
+    for pattern in PLAYER_GIFT_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def parse_player_gift_offer(message, actions=None):
+    """Extract optional currency/item hints from a player gift offer."""
+    text = _player_gift_offer_text(message, actions)
+    item_hint = None
+    match = _CURRENCY_GIFT_PATTERN.search(text)
+    if match:
+        item_hint = _CURRENCY_ITEM_SLUGS.get(str(match.group('unit') or '').strip().lower())
+    return {'item_hint': item_hint}
+
+
+def insight_check_message_key(target_uid, statement):
+    """Stable key for deduplicating insight checks on a specific NPC line."""
+    target = str(target_uid or '').strip()
+    text = str(statement or '').strip()
+    payload = f"{target}\0{text}".encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def perception_check_message_key(target_uid, focus=None):
+    """Stable key for deduplicating perception checks on a scene/NPC focus."""
+    target = str(target_uid or '').strip()
+    text = str(focus or '__general__').strip()
+    payload = f"perception\0{target}\0{text}".encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def skill_check_reply_key(reply_id):
+    """Stable key for deduplicating dialog skill-check rolls on one NPC request."""
+    token = str(reply_id or '').strip()
+    if not token:
+        return None
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]
+
+
+DIALOG_SKILL_CHECK_SKILLS = frozenset({
+    'acrobatics', 'animal_handling', 'arcana', 'athletics', 'deception', 'history',
+    'insight', 'intimidation', 'investigation', 'medicine', 'nature', 'perception',
+    'performance', 'persuasion', 'religion', 'sleight_of_hand', 'stealth', 'survival',
+})
+
+_LLM_FAILURE_PREFIXES = (
+    'error communicating with',
+    "i'm having trouble responding right now.",
+    'unexpected error:',
+    'llama.cpp provider not initialized',
+)
+
+
+def is_npc_llm_failure_response(text) -> bool:
+    if text is None:
+        return True
+    lowered = str(text).strip().lower()
+    if not lowered:
+        return True
+    return any(lowered.startswith(prefix) for prefix in _LLM_FAILURE_PREFIXES)
+
+
+class ConversationService:
+    def __init__(
+        self,
+        current_game_getter,
+        game_session,
+        socketio,
+        entity_rag_handler_getter,
+        llm_conversation_handler_getter,
+        roles_for_username_getter,
+        entity_owners_getter,
+        entities_controlled_by_getter,
+        logins_getter,
+        logger,
+    ):
+        self._current_game_getter = current_game_getter
+        self.game_session = game_session
+        self.socketio = socketio
+        self._entity_rag_handler_getter = entity_rag_handler_getter
+        self._llm_conversation_handler_getter = llm_conversation_handler_getter
+        self._roles_for_username_getter = roles_for_username_getter
+        self._entity_owners_getter = entity_owners_getter
+        self._entities_controlled_by_getter = entities_controlled_by_getter
+        self._logins_getter = logins_getter
+        self.logger = logger
+        self._conversation_presence_cache: dict = {}
+        self._CONVERSANCE_PRESENCE_CACHE_TTL = 15.0  # Reduce expensive acoustic recomputation on debounced refreshes
+        self._reply_continuations: dict = {}
+
+    @property
+    def current_game(self):
+        return self._current_game_getter()
+
+    @property
+    def llm_conversation_handler(self):
+        return self._llm_conversation_handler_getter()
+
+    @property
+    def entity_rag_handler(self):
+        return self._entity_rag_handler_getter()
+
+    @property
+    def roles_for_username(self):
+        return self._roles_for_username_getter()
+
+    @property
+    def entity_owners(self):
+        return self._entity_owners_getter()
+
+    @property
+    def entities_controlled_by(self):
+        return self._entities_controlled_by_getter()
+
+    @property
+    def logins(self):
+        return self._logins_getter() or []
+
+    # --- TTS helpers (graceful no-op when TTS is not attached) -----------------
+
+    TTS_EMOTION_PATTERNS: dict[str, list[str]] = {
+        # Avoid bare "!" — fearful whispers often use punctuation and would become "angry".
+        "shouting": ["SHOUT", "SHRIEK", "scream", "roar", "bellows"],
+        "angry": ["angry", "furious", "shouting", "yelling", "grr", "enraged"],
+        "laughing": ["[laughs]", "laughs", "laugh", "chuckle", "giggle", "[chuckles]"],
+        "whisper": ["[whisper]", "whisper", "quietly", "softly", "hushed", "[hushed]"],
+        "sad": ["[sighs]", "sighs", "sigh", "sad", "mournful", "[mourns]"],
+        "fearful": ["afraid", "terrified", "fearful", "scared", "trembling"],
+    }
+
+    def attach_tts_manager(self, tts_manager) -> None:
+        """Attach a TTSManager so NPC replies can generate speech audio."""
+        self._tts_manager = tts_manager
+        if tts_manager is not None and hasattr(self, 'logger'):
+            self.logger.info(
+                "[TTS] Attached TTS manager (provider=%s, delivery=%s)",
+                getattr(tts_manager, '_provider_name', 'unknown'),
+                self._tts_delivery_mode(),
+            )
+
+    def _tts_delivery_mode(self, username=None) -> str:
+        """How NPC speech audio is delivered: sync, async (default), stream, or manual."""
+        from webapp.tts.preferences import get_delivery_mode
+
+        if username:
+            return get_delivery_mode(username)
+        from webapp.tts.preferences import default_delivery_mode
+        return default_delivery_mode()
+
+    def _tts_should_generate(self, rendered_payload) -> bool:
+        if rendered_payload.get('visual_only'):
+            return False
+        if rendered_payload.get('tts_skipped'):
+            return False
+        text = str(rendered_payload.get('message') or '').strip()
+        if not text:
+            return False
+        if not getattr(self, '_tts_manager', None) or not self._tts_manager.is_enabled():
+            return False
+        return True
+
+    def _mark_tts_delivery_status(self, rendered_payload, delivery_mode: str) -> None:
+        if not self._tts_should_generate(rendered_payload):
+            return
+        if delivery_mode == 'async':
+            rendered_payload['tts_status'] = 'pending'
+        elif delivery_mode == 'stream':
+            if self._stream_pcm_to_socket_enabled():
+                rendered_payload['tts_status'] = 'streaming'
+            else:
+                rendered_payload['tts_status'] = 'pending'
+        elif delivery_mode == 'manual':
+            rendered_payload['tts_status'] = 'manual'
+
+    def _stream_pcm_to_socket_enabled(self) -> bool:
+        """Whether to push live PCM chunks over Socket.IO during stream delivery."""
+        import os
+
+        flag = os.environ.get('VLLM_OMNI_TTS_SOCKET_PCM', '').strip().lower()
+        if flag in ('1', 'true', 'yes', 'on'):
+            return True
+        if flag in ('0', 'false', 'no', 'off'):
+            return False
+        mgr = getattr(self, '_tts_manager', None)
+        provider = getattr(mgr, '_provider_name', '') if mgr else ''
+        # vLLM sidecar PCM is fragile in browsers; default to WAV + tts_ready only.
+        return provider not in ('qwen3_vllm', 'mock_qwen3_vllm')
+
+    def _schedule_stream_tts_delivery(self, jobs, base_payload, source_entity) -> None:
+        if not jobs:
+            return
+        socketio = getattr(self, 'socketio', None)
+        if socketio is None:
+            return
+        try:
+            socketio.start_background_task(
+                self._deliver_stream_tts_jobs,
+                jobs,
+                base_payload,
+                source_entity,
+            )
+        except Exception as exc:
+            self.logger.warning("[TTS] Failed to schedule stream delivery: %s", exc)
+
+    def _deliver_stream_tts_jobs(self, jobs, base_payload, source_entity) -> None:
+        from webapp.tts.reply_cache import store_ready_reply
+        from webapp.tts.streaming import pcm_b64
+
+        synthesis_cache: dict[str, str] = {}
+        work_items: list[dict] = []
+
+        for job in jobs:
+            username = job.get('username')
+            reply_id = job.get('reply_id')
+            rendered_payload = dict(job.get('rendered_payload') or {})
+            try:
+                prepared = self._attach_per_listener_tts(
+                    rendered_payload,
+                    base_payload,
+                    source_entity,
+                    username,
+                    synthesis_cache=synthesis_cache,
+                    generate_audio=False,
+                )
+                if not self._tts_should_generate(prepared):
+                    continue
+                text = str(prepared.get('tts_text') or prepared.get('message') or '').strip()
+                if not text:
+                    continue
+                emotion = prepared.get('tts_emotion')
+                instruct = prepared.get('tts_instruct')
+                volume = base_payload.get('volume')
+                npc_uid = getattr(source_entity, 'entity_uid', None)
+                cache_key = self._tts_synthesis_cache_key(
+                    npc_uid, text, emotion, instruct, volume,
+                )
+                work_items.append({
+                    'username': username,
+                    'reply_id': reply_id,
+                    'prepared': prepared,
+                    'text': text,
+                    'emotion': emotion,
+                    'instruct': instruct,
+                    'volume': volume,
+                    'cache_key': cache_key,
+                })
+            except Exception as exc:
+                self.logger.warning(
+                    "[TTS] Stream prepare failed for %s (reply_id=%s): %s",
+                    username,
+                    reply_id,
+                    exc,
+                )
+
+        if not work_items:
+            return
+
+        # Prefer player clients over DM for live PCM; DM often has no socket listener.
+        work_items.sort(
+            key=lambda item: (
+                str(item.get('username') or '').lower() == 'dm',
+                str(item.get('username') or '').lower(),
+            )
+        )
+
+        primary = work_items[0]
+        text = primary['text']
+        cache_key = primary['cache_key']
+        audio_url = synthesis_cache.get(cache_key)
+        if not audio_url and getattr(self, '_tts_manager', None):
+            cached_path = self._tts_manager.lookup_cached_line(cache_key)
+            if cached_path:
+                audio_url = f"/tts/{os.path.basename(cached_path)}"
+                synthesis_cache[cache_key] = audio_url
+                self.logger.info(
+                    "[TTS] Stream line cache hit reply_id=%s npc=%s path=%s",
+                    primary.get('reply_id'),
+                    getattr(source_entity, 'entity_uid', None),
+                    cached_path,
+                )
+
+        provider_name = getattr(self._tts_manager, '_provider_name', '')
+        sample_rate = 24000 if provider_name in ('qwen3_vllm', 'mock_qwen3_vllm') else 22050
+        seq = 0
+        stream_output_path = None
+        stream_started = False
+
+        if not audio_url:
+            reply_id = primary.get('reply_id')
+            if reply_id and getattr(self, '_tts_manager', None):
+                stream_output_path = str(
+                    Path(self._tts_manager.cache_dir)
+                    / f"stream_{reply_id}_{uuid.uuid4().hex[:8]}.wav"
+                )
+            self.logger.info(
+                "[TTS] Stream synthesis start reply_id=%s primary_user=%s npc=%s chars=%s listeners=%s",
+                reply_id,
+                primary.get('username'),
+                getattr(source_entity, 'entity_uid', None),
+                len(text),
+                [item.get('username') for item in work_items],
+            )
+            prepared = primary['prepared']
+            event_base = {
+                'type': 'tts_stream_start',
+                'reply_id': reply_id,
+                'entity_id': prepared.get('entity_id'),
+                'speaker_name': prepared.get('speaker_name'),
+                'tts_emotion': primary.get('emotion'),
+                'tts_gain': prepared.get('tts_gain'),
+            }
+            emit_pcm = self._stream_pcm_to_socket_enabled()
+            if emit_pcm:
+                self._emit_tts_stream_event(primary['username'], 'tts_stream_start', {
+                    **event_base,
+                    'sample_rate': sample_rate,
+                })
+                stream_started = True
+            try:
+                for rate, pcm in self._stream_tts_audio(
+                    source_entity,
+                    text,
+                    emotion=primary.get('emotion'),
+                    instruct=primary.get('instruct'),
+                    volume=primary.get('volume'),
+                    output_path=stream_output_path,
+                ):
+                    sample_rate = rate
+                    if emit_pcm:
+                        chunk_payload = {
+                            'type': 'tts_stream_chunk',
+                            'reply_id': reply_id,
+                            'seq': seq,
+                            'sample_rate': sample_rate,
+                            'pcm_b64': pcm_b64(pcm),
+                        }
+                        self._emit_tts_stream_event(primary['username'], 'tts_stream_chunk', chunk_payload)
+                    seq += 1
+                    try:
+                        self.socketio.sleep(0)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                self.logger.warning(
+                    "[TTS] Stream synthesis failed (reply_id=%s): %s",
+                    reply_id,
+                    exc,
+                )
+                if stream_started and reply_id:
+                    fail_payload = {
+                        'type': 'tts_stream_end',
+                        'reply_id': reply_id,
+                        'failed': True,
+                        'tts_emotion': primary.get('emotion'),
+                        'tts_gain': prepared.get('tts_gain'),
+                        'entity_id': prepared.get('entity_id'),
+                        'speaker_name': prepared.get('speaker_name'),
+                        'sample_rate': sample_rate,
+                        'chunks': seq,
+                    }
+                    self._emit_tts_stream_event(primary['username'], 'tts_stream_end', fail_payload)
+                return
+
+            audio_path = None
+            if stream_output_path and Path(stream_output_path).is_file():
+                audio_path = stream_output_path
+            if not audio_path:
+                audio_path = getattr(self._tts_manager, '_last_stream_output_path', None)
+            if not audio_path:
+                engine = self._tts_manager.get_engine()
+                audio_path = getattr(engine, '_last_stream_output_path', None)
+            if not audio_path:
+                provider_name = getattr(self._tts_manager, '_provider_name', '')
+                if provider_name not in ('qwen3_vllm', 'mock_qwen3_vllm'):
+                    audio_path = self._ensure_tts_audio(
+                        source_entity,
+                        text,
+                        emotion=primary.get('emotion'),
+                        instruct=primary.get('instruct'),
+                        volume=primary.get('volume'),
+                        synthesis_key=cache_key,
+                    )
+            if audio_path:
+                audio_url = f"/tts/{os.path.basename(audio_path)}"
+                synthesis_cache[cache_key] = audio_url
+
+            if stream_started and reply_id:
+                end_payload = {
+                    'type': 'tts_stream_end',
+                    'reply_id': reply_id,
+                    'audio_url': audio_url,
+                    'tts_emotion': primary.get('emotion'),
+                    'tts_gain': prepared.get('tts_gain'),
+                    'entity_id': prepared.get('entity_id'),
+                    'speaker_name': prepared.get('speaker_name'),
+                    'sample_rate': sample_rate,
+                    'chunks': seq,
+                }
+                self._emit_tts_stream_event(primary['username'], 'tts_stream_end', end_payload)
+            elif not emit_pcm and reply_id:
+                self.logger.debug(
+                    "[TTS] Stream synthesis buffered without socket PCM reply_id=%s chunks=%s",
+                    reply_id,
+                    seq,
+                )
+
+            self.logger.info(
+                "[TTS] Stream synthesis complete reply_id=%s primary_user=%s chunks=%s audio=%s",
+                reply_id,
+                primary.get('username'),
+                seq,
+                bool(audio_url),
+            )
+        else:
+            self.logger.info(
+                "[TTS] Stream cache hit reply_id=%s listeners=%s",
+                primary.get('reply_id'),
+                [item.get('username') for item in work_items],
+            )
+
+        for item in work_items:
+            reply_id = item.get('reply_id')
+            prepared = item.get('prepared') or {}
+            ready_payload = {
+                'type': 'tts_ready',
+                'reply_id': reply_id,
+                'audio_url': audio_url,
+                'tts_emotion': item.get('emotion'),
+                'tts_gain': prepared.get('tts_gain'),
+                'entity_id': prepared.get('entity_id'),
+                'speaker_name': prepared.get('speaker_name'),
+                'sample_rate': sample_rate,
+                'chunks': seq,
+            }
+            if reply_id:
+                store_ready_reply(reply_id, ready_payload)
+            if audio_url:
+                self._emit_tts_ready(item['username'], ready_payload)
+
+    def _stream_tts_audio(
+        self,
+        entity,
+        text: str,
+        emotion: str = None,
+        instruct: str = None,
+        volume: str = None,
+        output_path: str = None,
+    ):
+        if not getattr(self, '_tts_manager', None) or not self._tts_manager.is_enabled():
+            return
+        npc_uid = getattr(entity, 'entity_uid', None)
+        if not npc_uid or not text:
+            return
+        try:
+            from webapp.tts.npc_voice import ensure_npc_voice_locked
+
+            profile = ensure_npc_voice_locked(self._tts_manager, entity)
+            if profile is None:
+                return ""
+
+            resolved_volume = (volume or '').strip().lower() or None
+            resolved_emotion = (emotion or '').strip() or self._detect_emotion_from_text(text)
+            if resolved_volume == 'whisper' and resolved_emotion in ('shouting', 'angry', 'yelling'):
+                resolved_emotion = 'whisper'
+
+            stream_kwargs = {
+                'text': text,
+                'npc_uid': npc_uid,
+                'emotion': resolved_emotion,
+                'volume': resolved_volume,
+            }
+            if output_path:
+                stream_kwargs['output_path'] = output_path
+            if instruct:
+                stream_kwargs['instruct'] = instruct
+            try:
+                yield from self._tts_manager.generate_stream(**stream_kwargs)
+            except TypeError:
+                stream_kwargs.pop('instruct', None)
+                try:
+                    yield from self._tts_manager.generate_stream(**stream_kwargs)
+                except TypeError:
+                    stream_kwargs.pop('volume', None)
+                    yield from self._tts_manager.generate_stream(**stream_kwargs)
+        except Exception as tts_err:
+            self.logger.warning(
+                "[TTS] Stream generation failed for %s: %s",
+                getattr(entity, 'label', lambda: npc_uid)(),
+                tts_err,
+            )
+            return
+
+    def _schedule_async_tts_delivery(self, jobs, base_payload, source_entity) -> None:
+        if not jobs:
+            return
+        socketio = getattr(self, 'socketio', None)
+        if socketio is None:
+            return
+        try:
+            socketio.start_background_task(
+                self._deliver_async_tts_jobs,
+                jobs,
+                base_payload,
+                source_entity,
+            )
+        except Exception as exc:
+            self.logger.warning("[TTS] Failed to schedule async delivery: %s", exc)
+
+    def _deliver_async_tts_jobs(self, jobs, base_payload, source_entity) -> None:
+        from webapp.tts.reply_cache import store_ready_reply
+
+        synthesis_cache = {}
+        prepared_jobs = []
+        for job in jobs:
+            username = job.get('username')
+            reply_id = job.get('reply_id')
+            rendered_payload = dict(job.get('rendered_payload') or {})
+            try:
+                final_payload = self._attach_per_listener_tts(
+                    rendered_payload,
+                    base_payload,
+                    source_entity,
+                    username,
+                    synthesis_cache=synthesis_cache,
+                    generate_audio=True,
+                )
+                prepared_jobs.append((job, final_payload))
+            except Exception as exc:
+                self.logger.warning(
+                    "[TTS] Async prepare failed for %s (reply_id=%s): %s",
+                    username,
+                    reply_id,
+                    exc,
+                )
+
+        for job, final_payload in prepared_jobs:
+            username = job.get('username')
+            reply_id = job.get('reply_id')
+            try:
+                audio_url = final_payload.get('audio_url')
+                if not audio_url:
+                    self.logger.warning(
+                        "[TTS] No audio generated for %s (reply_id=%s)",
+                        username,
+                        reply_id,
+                    )
+                    store_ready_reply(reply_id, {
+                        'ready': True,
+                        'failed': True,
+                        'reply_id': reply_id,
+                        'audio_url': None,
+                        'entity_id': final_payload.get('entity_id'),
+                        'speaker_name': final_payload.get('speaker_name'),
+                    })
+                    continue
+                event_payload = {
+                    'type': 'tts_ready',
+                    'reply_id': reply_id,
+                    'audio_url': audio_url,
+                    'tts_emotion': final_payload.get('tts_emotion'),
+                    'tts_gain': final_payload.get('tts_gain'),
+                    'entity_id': final_payload.get('entity_id'),
+                    'speaker_name': final_payload.get('speaker_name'),
+                }
+                self._emit_tts_ready(username, event_payload)
+                try:
+                    self.socketio.sleep(0)
+                except Exception:
+                    pass
+            except Exception as exc:
+                self.logger.warning(
+                    "[TTS] Async delivery failed for %s (reply_id=%s): %s",
+                    username,
+                    reply_id,
+                    exc,
+                )
+
+    def _detect_emotion_from_text(self, text: str) -> str:
+        """Detect emotion from NPC response text for TTS style control."""
+        if not text:
+            return "calm"
+        text_lower = text.lower()
+        for emotion, keywords in self.TTS_EMOTION_PATTERNS.items():
+            for keyword in keywords:
+                if keyword.lower() in text_lower:
+                    return emotion
+        return "calm"
+
+    def _npc_voice_prompt(self, entity) -> str:
+        """Resolve a voice prompt from NPC YAML / overrides, with a safe fallback."""
+        from webapp.tts.npc_voice import build_npc_voice_prompt
+
+        try:
+            label = entity.label() if hasattr(entity, 'label') else getattr(entity, 'name', 'NPC')
+        except Exception:
+            label = 'NPC'
+        return build_npc_voice_prompt(entity, fallback_label=str(label or 'NPC'))
+
+    def _npc_reference_audio(self, entity):
+        """Optional reference audio path from NPC voice config."""
+        props = getattr(entity, 'properties', None) or {}
+        voice = props.get('voice') if isinstance(props, dict) else None
+        if not isinstance(voice, dict):
+            return None
+        ref = voice.get('reference_audio')
+        return str(ref) if ref else None
+
+    def _npc_voice_accent(self, entity):
+        """Optional CosyVoice accent label from NPC voice config."""
+        props = getattr(entity, 'properties', None) or {}
+        voice = props.get('voice') if isinstance(props, dict) else None
+        if not isinstance(voice, dict):
+            return None
+        accent = voice.get('accent')
+        if accent is None:
+            return None
+        return str(accent).strip() or None
+
+    def _npc_voice_language(self, entity):
+        """Optional language hint from NPC voice config (defaults to en when accent set)."""
+        props = getattr(entity, 'properties', None) or {}
+        voice = props.get('voice') if isinstance(props, dict) else None
+        if not isinstance(voice, dict):
+            return None
+        language = voice.get('language')
+        if language:
+            return str(language).strip() or None
+        accent = voice.get('accent')
+        if accent and str(accent).strip().lower() not in ('zh', 'chinese', 'mandarin', 'cantonese', 'yue'):
+            return 'en'
+        return None
+
+    def _ensure_tts_audio(
+        self,
+        entity,
+        text: str,
+        emotion: str = None,
+        instruct: str = None,
+        volume: str = None,
+        synthesis_key: str = None,
+    ) -> str:
+        """Generate TTS audio for an NPC line; return path or empty string."""
+        if not getattr(self, '_tts_manager', None) or not self._tts_manager.is_enabled():
+            return ""
+        npc_uid = getattr(entity, 'entity_uid', None)
+        if not npc_uid or not text:
+            return ""
+        try:
+            from webapp.tts.npc_voice import ensure_npc_voice_locked
+
+            profile = ensure_npc_voice_locked(self._tts_manager, entity)
+            if profile is None:
+                return ""
+
+            resolved_volume = (volume or '').strip().lower() or None
+            resolved_emotion = (emotion or '').strip() or self._detect_emotion_from_text(text)
+            # Whisper volume must stay soft even if text heuristics say angry/shouting.
+            if resolved_volume == 'whisper' and resolved_emotion in ('shouting', 'angry', 'yelling'):
+                resolved_emotion = 'whisper'
+            if resolved_volume == 'whisper' and not resolved_emotion:
+                resolved_emotion = 'whisper'
+
+            generate_kwargs = {
+                'text': text,
+                'npc_uid': npc_uid,
+                'emotion': resolved_emotion,
+                'volume': resolved_volume,
+                'synthesis_key': synthesis_key,
+            }
+            if instruct:
+                generate_kwargs['instruct'] = instruct
+            try:
+                return self._tts_manager.generate(**generate_kwargs) or ""
+            except TypeError:
+                generate_kwargs.pop('instruct', None)
+                try:
+                    return self._tts_manager.generate(**generate_kwargs) or ""
+                except TypeError:
+                    generate_kwargs.pop('volume', None)
+                    return self._tts_manager.generate(**generate_kwargs) or ""
+        except Exception as tts_err:
+            self.logger.warning(
+                "[TTS] Generation failed for %s: %s",
+                getattr(entity, 'label', lambda: npc_uid)(),
+                tts_err,
+            )
+            return ""
+
+    def _normalize_username(self, username):
+        return str(username).strip().lower() if username else ''
+
+    def _sids_for_username(self, username):
+        if not username:
+            return []
+        sid_map = getattr(self.current_game, 'username_to_sid', {}) or {}
+        normalized = self._normalize_username(username)
+        for key in (username, normalized):
+            sids = sid_map.get(key)
+            if sids:
+                return list(sids)
+        for key, sids in sid_map.items():
+            if self._normalize_username(key) == normalized and sids:
+                return list(sids)
+        return []
+
+    def _emit_tts_ready(self, username, event_payload) -> None:
+        """Emit tts_ready and cache for HTTP polling fallback."""
+        from webapp.tts.reply_cache import store_ready_reply
+
+        payload = dict(event_payload or {})
+        reply_id = payload.get('reply_id')
+        if reply_id:
+            store_ready_reply(reply_id, payload)
+        socketio = getattr(self, 'socketio', None)
+        if socketio is None:
+            return
+        for sid in self._sids_for_username(username):
+            try:
+                socketio.emit('tts_ready', payload, to=sid)
+            except Exception as exc:
+                self.logger.warning(
+                    "[TTS] Failed to emit tts_ready for %s (reply_id=%s): %s",
+                    username,
+                    reply_id,
+                    exc,
+                )
+
+    def _emit_tts_stream_event(self, username, event_name, event_payload) -> None:
+        socketio = getattr(self, 'socketio', None)
+        if socketio is None:
+            return
+        payload = dict(event_payload or {})
+        for sid in self._sids_for_username(username):
+            try:
+                socketio.emit(event_name, payload, to=sid)
+            except Exception as exc:
+                self.logger.warning(
+                    "[TTS] Failed to emit %s for %s: %s",
+                    event_name,
+                    username,
+                    exc,
+                )
+
+    def entity_audience_usernames(self, entities, include_dm=True):
+        recipients = set()
+        for entity in entities or []:
+            if entity is None:
+                continue
+            recipients.update(
+                self._normalize_username(username)
+                for username in (self.entity_owners(entity) or [])
+                if username
+            )
+            entity_uid = getattr(entity, 'entity_uid', None)
+            if entity_uid:
+                for login in self.logins:
+                    username = login.get('name')
+                    if not username:
+                        continue
+                    listener = self.conversation_listener_for_username(username)
+                    if listener is not None and getattr(listener, 'entity_uid', None) == entity_uid:
+                        recipients.add(self._normalize_username(username))
+
+        if include_dm:
+            for login in self.logins:
+                roles = login.get('role') or []
+                if 'dm' in roles and login.get('name'):
+                    recipients.add(login['name'].lower())
+
+        return recipients
+
+    def conversation_audience_usernames(self, source_entity, processed_conversations=None, targets=None, include_dm=True):
+        audience_entities = [source_entity]
+        heard_uids = set()
+        for receiver, _message, directed_to in (processed_conversations or []):
+            audience_entities.append(receiver)
+            heard_uids.add(getattr(receiver, 'entity_uid', None))
+            for target in directed_to or []:
+                audience_entities.append(target)
+                heard_uids.add(getattr(target, 'entity_uid', None))
+        for target in targets or []:
+            target_uid = getattr(target, 'entity_uid', None)
+            if target_uid and target_uid in heard_uids:
+                audience_entities.append(target)
+        return self.entity_audience_usernames(audience_entities, include_dm=include_dm)
+
+    def conversation_visible_whisper_usernames(self, source_entity, audible_usernames=None, targets=None):
+        audible_usernames = {str(username).lower() for username in (audible_usernames or []) if username}
+        target_uids = {
+            getattr(target, 'entity_uid', target)
+            for target in (targets or [])
+            if getattr(target, 'entity_uid', target)
+        }
+
+        try:
+            battle_map = self.current_game.get_map_for_entity(source_entity)
+        except Exception:
+            battle_map = None
+
+        if battle_map is None:
+            return set()
+
+        visible_usernames = set()
+        candidate_usernames = {
+            str(login.get('name')).lower()
+            for login in self.logins
+            if login.get('name')
+        }
+        candidate_usernames.update({str(username).lower() for username in self.current_game.username_to_sid.keys() if username})
+
+        for username in candidate_usernames:
+            if username in audible_usernames:
+                continue
+
+            roles = self.roles_for_username(username)
+            if roles and 'dm' in roles:
+                continue
+
+            listener = self.conversation_listener_for_username(username)
+            if listener is None or listener == source_entity:
+                continue
+
+            listener_uid = getattr(listener, 'entity_uid', None)
+            if listener_uid and listener_uid in target_uids:
+                continue
+
+            try:
+                listener_map = self.current_game.get_map_for_entity(listener)
+            except Exception:
+                listener_map = None
+
+            if listener_map is not None and listener_map != battle_map:
+                continue
+
+            try:
+                if battle_map.can_see(listener, source_entity):
+                    visible_usernames.add(username)
+            except Exception:
+                continue
+
+        return visible_usernames
+
+    def conversation_payload(self, entity, message, targets=None, volume=None, distance_ft=None, mentioned_targets=None, language=None, visual_only_usernames=None, narrative=None, actions=None, segments=None, continuation_id=None, continuation_beats_remaining=0):
+        import uuid
+
+        targets = unique_entities(targets or [])
+        mentioned_targets = unique_entities(mentioned_targets or [])
+        serialized_segments = []
+        for segment in segments or []:
+            if not isinstance(segment, dict):
+                continue
+            kind = str(segment.get('type') or '').strip().lower()
+            text = str(segment.get('text') or '').strip()
+            if not text:
+                continue
+            if kind in ('aside', 'narrative', 'stage_direction'):
+                serialized_segments.append({'type': 'aside', 'text': text})
+            else:
+                serialized_segments.append({'type': 'speech', 'text': text})
+        payload = {
+            'reply_id': uuid.uuid4().hex,
+            'entity_id': entity.entity_uid,
+            'speaker_name': entity_label(entity),
+            'message': message,
+            'narrative': [str(entry).strip() for entry in (narrative or []) if str(entry).strip()],
+            'segments': serialized_segments,
+            'actions': [str(entry).strip() for entry in (actions or []) if str(entry).strip()],
+            'language': (language or 'common').lower(),
+            'targets': [target.entity_uid for target in targets],
+            'target_names': [entity_label(target) for target in targets],
+            'mentioned_targets': [target.entity_uid for target in mentioned_targets],
+            'mentioned_handles': [mention_handle_for(target) for target in mentioned_targets],
+            'volume': normalize_speech_mode(mode=volume, distance_ft=distance_ft),
+            'distance_ft': speech_distance_for(mode=volume, distance_ft=distance_ft),
+            'visual_only_usernames': [str(username).lower() for username in (visual_only_usernames or []) if username],
+        }
+        if hasattr(entity, 'is_npc') and entity.is_npc():
+            payload['target_id'] = entity.entity_uid
+            payload['message_key'] = insight_check_message_key(entity.entity_uid, message)
+        if continuation_id:
+            payload['continuation_id'] = continuation_id
+            payload['continuation_beats_remaining'] = int(continuation_beats_remaining or 0)
+        return payload
+
+    def build_skill_check_request_payload(self, requester, request_check):
+        if not request_check or request_check.get('target') is None:
+            return None
+
+        resolved_check = dict(request_check)
+        self.entity_rag_handler.ensure_request_check_dc(
+            requester,
+            resolved_check,
+            speaker=resolved_check.get('target'),
+        )
+        target = resolved_check['target']
+        skill = str(resolved_check.get('skill') or '').strip().lower()
+        if not skill:
+            return None
+
+        mod_fn = getattr(target, f'{skill}_mod', None)
+        try:
+            mod_val = int(mod_fn()) if callable(mod_fn) else 0
+        except Exception:
+            mod_val = 0
+
+        roll_str = f'1d20+{mod_val}' if mod_val >= 0 else f'1d20{mod_val}'
+        skill_label = skill.replace('_', ' ').title()
+        requester_label = entity_label(requester)
+        return {
+            'skill': skill,
+            'skill_label': skill_label,
+            'actor_uid': getattr(target, 'entity_uid', None),
+            'actor_name': entity_label(target),
+            'requester_uid': getattr(requester, 'entity_uid', None),
+            'requester_name': requester_label,
+            'dc': resolved_check.get('dc'),
+            'roll': roll_str,
+            'description': f'{skill_label} check (requested by {requester_label})',
+            'reply_id': None,
+        }
+
+    def attach_skill_check_request(self, payload, requester, reply_plan):
+        skill_payload = self.build_skill_check_request_payload(
+            requester,
+            (reply_plan or {}).get('request_check'),
+        )
+        if skill_payload:
+            skill_payload['reply_id'] = payload.get('reply_id')
+            payload['skill_check_request'] = skill_payload
+        return payload
+
+    def emit_nonverbal_npc_reply(
+        self,
+        receiver,
+        reply_plan,
+        *,
+        speaker=None,
+        http_replies=None,
+        normalized_requesting_username=None,
+    ):
+        if getattr(self.current_game, 'realtime_ui_suppressed', lambda: False)():
+            return None
+        if not reply_plan or not reply_plan.get('skip'):
+            return None
+
+        narrative = reply_plan.get('narrative') or []
+        segments = reply_plan.get('segments') or []
+        request_check = reply_plan.get('request_check')
+        if not narrative and not request_check:
+            return None
+
+        targets = list(reply_plan.get('targets') or [])
+        if speaker is not None:
+            targets = unique_entities(targets + [speaker])
+
+        reply_distance_ft = speech_distance_for(mode=reply_plan.get('volume'))
+        try:
+            response_conversations = receiver.send_conversation(
+                reply_plan.get('message') or '',
+                distance_ft=reply_distance_ft,
+                targets=targets,
+                language=reply_plan.get('language', 'common'),
+                volume=reply_plan.get('volume'),
+                narrative=narrative,
+                segments=segments,
+            )
+        except TypeError:
+            response_conversations = receiver.send_conversation(
+                reply_plan.get('message') or '',
+                distance_ft=reply_distance_ft,
+                targets=targets,
+                language=reply_plan.get('language', 'common'),
+            )
+
+        recipient_usernames = self.conversation_audience_usernames(
+            receiver,
+            response_conversations,
+            targets=targets,
+        )
+        visual_whisper_usernames = set()
+        if reply_plan.get('volume') == 'whisper':
+            visual_whisper_usernames = self.conversation_visible_whisper_usernames(
+                receiver,
+                audible_usernames=recipient_usernames,
+                targets=targets,
+            )
+
+        conversation_payload = self.conversation_payload(
+            receiver,
+            reply_plan.get('message') or '',
+            targets=targets,
+            volume=reply_plan.get('volume'),
+            distance_ft=reply_distance_ft,
+            language=reply_plan.get('language', 'common'),
+            visual_only_usernames=visual_whisper_usernames,
+            narrative=narrative,
+            segments=segments,
+        )
+        self.attach_skill_check_request(conversation_payload, receiver, reply_plan)
+        conversation_payload['tts_pending'] = False
+
+        emitted_by_username = self.emit_conversation_to_usernames(
+            recipient_usernames | visual_whisper_usernames,
+            conversation_payload,
+            source_entity=receiver,
+        )
+        if http_replies is not None:
+            self._append_http_reply_for_requester(
+                http_replies,
+                normalized_requesting_username,
+                emitted_by_username,
+                conversation_payload,
+                receiver,
+            )
+        self.logger.info(
+            "[Talk] emitted nonverbal reply from %s to_usernames=%s narrative_count=%s request_check=%s",
+            receiver.label(),
+            sorted(recipient_usernames | visual_whisper_usernames),
+            len(narrative),
+            bool(request_check),
+        )
+        return conversation_payload
+
+    def conversation_listener_for_username(self, username):
+        try:
+            listener = self.current_game.get_pov_entity_for_user(username)
+        except Exception:
+            listener = None
+        if listener is not None:
+            return listener
+
+        try:
+            controlled_entities = self.entities_controlled_by(username)
+        except Exception:
+            controlled_entities = []
+        return controlled_entities[0] if controlled_entities else None
+
+    def listener_understands_language(self, listener, language):
+        return understands_language(listener, language, session=self.game_session)
+
+    def _beast_speech_tts_style(self, language, understands: bool):
+        normalized = str(language or 'common').strip().lower()
+        if understands or normalized not in {'sheep', 'beast', 'animals', 'animal'}:
+            return None, None
+        return (
+            'fearful',
+            'frantic sheep bleating, worried animal sounds, no intelligible human speech',
+        )
+
+    def _listener_cannot_hear(self, listener) -> bool:
+        if listener is None:
+            return False
+        try:
+            statuses = list(getattr(listener, 'statuses', []) or [])
+        except Exception:
+            statuses = []
+        return any(status in {'deafened', 'unconscious'} for status in statuses)
+
+    def _listener_speech_reachability(self, listener, source_entity, volume=None):
+        if listener is None or source_entity is None:
+            return None
+        if getattr(listener, 'entity_uid', None) == getattr(source_entity, 'entity_uid', None):
+            return {
+                'reachable_now': True,
+                'distance_ft': 0,
+                'adjusted_distance_ft': 0,
+                'effective_distance_ft': speech_distance_for(mode=volume),
+                'status': 'self',
+            }
+
+        try:
+            battle_map = self.current_game.get_map_for_entity(source_entity)
+        except Exception:
+            battle_map = None
+        if battle_map is None:
+            return {
+                'reachable_now': True,
+                'distance_ft': 0,
+                'adjusted_distance_ft': 0,
+                'effective_distance_ft': speech_distance_for(mode=volume),
+                'status': 'reachable',
+            }
+
+        try:
+            listener_map = self.current_game.get_map_for_entity(listener)
+        except Exception:
+            listener_map = None
+        if listener_map is not None and listener_map != battle_map:
+            return {
+                'reachable_now': False,
+                'distance_ft': None,
+                'adjusted_distance_ft': None,
+                'effective_distance_ft': 0,
+                'status': 'too_far',
+            }
+
+        listener_uid = getattr(listener, 'entity_uid', None)
+        try:
+            entries = conversation_reachability(source_entity, battle_map, mode=volume)
+        except Exception:
+            return None
+        for entry in entries:
+            entity = entry.get('entity')
+            if entity is not None and getattr(entity, 'entity_uid', None) == listener_uid:
+                return entry
+        return {
+            'reachable_now': False,
+            'distance_ft': None,
+            'adjusted_distance_ft': None,
+            'effective_distance_ft': 0,
+            'status': 'too_far',
+        }
+
+    def _tts_gain_for_reachability(self, reachability_entry, volume=None) -> float:
+        if not reachability_entry or not reachability_entry.get('reachable_now'):
+            return 0.0
+        if reachability_entry.get('status') == 'self':
+            return 1.0
+
+        adjusted = reachability_entry.get('adjusted_distance_ft')
+        if adjusted is None:
+            adjusted = reachability_entry.get('distance_ft') or 0
+        effective = reachability_entry.get('effective_distance_ft')
+        if effective is None or effective <= 0:
+            effective = speech_distance_for(mode=volume) or 30
+
+        ratio = min(1.0, max(0.0, float(adjusted) / float(effective)))
+        gain = 1.0 - (0.75 * ratio)
+        volume_mode = normalize_speech_mode(mode=volume)
+        if volume_mode == 'whisper':
+            gain = min(gain, 0.9)
+        elif volume_mode == 'shout':
+            gain = min(1.0, gain + 0.05)
+        return round(max(0.15, min(1.0, gain)), 3)
+
+    def _tts_synthesis_cache_key(self, npc_uid, text, emotion, instruct, volume):
+        from webapp.tts.synthesis_cache import synthesis_cache_key
+
+        return synthesis_cache_key(npc_uid, text, emotion, instruct, volume)
+
+    def _attach_per_listener_tts(
+        self,
+        rendered_payload,
+        base_payload,
+        source_entity,
+        username,
+        synthesis_cache=None,
+        generate_audio=True,
+    ):
+        rendered_payload['tts_generated'] = False
+
+        if rendered_payload.get('visual_only'):
+            return rendered_payload
+
+        from natural20.utils.conversation import sanitize_spoken_text_for_tts, strip_spoken_address_prefix
+
+        text = strip_spoken_address_prefix(str(rendered_payload.get('message') or '').strip())
+        if not text:
+            return rendered_payload
+        rendered_payload['message'] = text
+        tts_text = sanitize_spoken_text_for_tts(text)
+        rendered_payload['tts_text'] = tts_text
+
+        roles = self.roles_for_username(username) or []
+        is_dm = 'dm' in roles
+        listener = self.conversation_listener_for_username(username)
+
+        if not is_dm and self._listener_cannot_hear(listener):
+            rendered_payload['tts_skipped'] = 'deaf_or_unconscious'
+            return rendered_payload
+
+        volume = base_payload.get('volume')
+        if not is_dm:
+            reachability = self._listener_speech_reachability(listener, source_entity, volume=volume)
+            tts_gain = self._tts_gain_for_reachability(reachability, volume=volume)
+            if tts_gain <= 0.0:
+                rendered_payload['tts_skipped'] = (reachability or {}).get('status') or 'too_far'
+                return rendered_payload
+            rendered_payload['tts_gain'] = tts_gain
+        else:
+            rendered_payload['tts_gain'] = 1.0
+
+        language = base_payload.get('language', 'common')
+        understands = self.listener_understands_language(listener, language)
+        emotion = base_payload.get('tts_emotion')
+        instruct = base_payload.get('tts_instruct')
+        beast_emotion, beast_instruct = self._beast_speech_tts_style(language, understands)
+        if beast_instruct:
+            instruct = instruct or beast_instruct
+            emotion = emotion or beast_emotion
+
+        resolved_emotion = emotion or self._detect_emotion_from_text(text)
+        rendered_payload['tts_emotion'] = resolved_emotion
+        if instruct:
+            rendered_payload['tts_instruct'] = instruct
+
+        if not generate_audio:
+            return rendered_payload
+
+        npc_uid = getattr(source_entity, 'entity_uid', None)
+        cache_key = self._tts_synthesis_cache_key(
+            npc_uid, tts_text, resolved_emotion, instruct, volume,
+        )
+        audio_url = synthesis_cache.get(cache_key) if synthesis_cache is not None else None
+
+        if not audio_url and getattr(self, '_tts_manager', None):
+            lookup = getattr(self._tts_manager, 'lookup_cached_line', None)
+            cached_path = lookup(cache_key) if callable(lookup) else None
+            if cached_path:
+                audio_url = f"/tts/{os.path.basename(cached_path)}"
+                if synthesis_cache is not None:
+                    synthesis_cache[cache_key] = audio_url
+
+        if not audio_url:
+            audio_path = self._ensure_tts_audio(
+                source_entity,
+                tts_text,
+                emotion=resolved_emotion,
+                instruct=instruct,
+                volume=volume,
+                synthesis_key=cache_key,
+            )
+            if audio_path:
+                audio_url = f"/tts/{os.path.basename(audio_path)}"
+                if synthesis_cache is not None:
+                    synthesis_cache[cache_key] = audio_url
+
+        if audio_url:
+            rendered_payload['audio_url'] = audio_url
+            rendered_payload['tts_generated'] = True
+        return rendered_payload
+
+    def _append_http_reply_for_requester(
+        self,
+        http_replies,
+        normalized_requesting_username,
+        emitted_by_username,
+        conversation_payload,
+        source_entity,
+    ):
+        """Include an HTTP fallback reply for the /talk requester (client dedupes reply_id)."""
+        if not normalized_requesting_username:
+            return
+
+        rendered_for_requester = emitted_by_username.get(normalized_requesting_username)
+        if rendered_for_requester is None:
+            rendered_for_requester = self.render_conversation_payload_for_username(
+                normalized_requesting_username,
+                source_entity,
+                conversation_payload,
+            )
+            if conversation_payload.get('tts_pending'):
+                delivery_mode = self._tts_delivery_mode(normalized_requesting_username)
+                rendered_for_requester = self._attach_per_listener_tts(
+                    rendered_for_requester,
+                    conversation_payload,
+                    source_entity,
+                    normalized_requesting_username,
+                    generate_audio=(delivery_mode == 'sync'),
+                )
+                self._mark_tts_delivery_status(rendered_for_requester, delivery_mode)
+
+        has_content = bool(str(rendered_for_requester.get('message') or '').strip())
+        narrative = rendered_for_requester.get('narrative') or []
+        actions = rendered_for_requester.get('actions') or []
+        if not has_content and isinstance(narrative, list):
+            has_content = any(str(entry).strip() for entry in narrative)
+        if not has_content and isinstance(actions, list):
+            has_content = any(str(entry).strip() for entry in actions)
+        if not has_content and rendered_for_requester.get('skill_check_request'):
+            has_content = True
+
+        if has_content:
+            http_replies.append(rendered_for_requester)
+
+    def render_conversation_payload_for_username(self, username, source_entity, payload):
+        payload_for_user = dict(payload)
+        language = payload_for_user.get('language') or 'common'
+        normalized_username = str(username).lower() if username else username
+
+        if not username:
+            return payload_for_user
+
+        roles = self.roles_for_username(username)
+        if roles and 'dm' in roles:
+            return payload_for_user
+
+        owner_usernames = {
+            self._normalize_username(username)
+            for username in (self.entity_owners(source_entity) or [])
+            if username
+        }
+        if normalized_username in owner_usernames:
+            return payload_for_user
+
+        listener = self.conversation_listener_for_username(username)
+        visual_only = normalized_username in set(payload_for_user.get('visual_only_usernames') or [])
+
+        if listener is not None and source_entity is not None and listener != source_entity:
+            reachability = self._listener_speech_reachability(
+                listener,
+                source_entity,
+                volume=payload_for_user.get('volume'),
+            )
+            if not reachability or not reachability.get('reachable_now'):
+                if visual_only:
+                    payload_for_user['message'] = 'You can see them whispering, but cannot hear the words.'
+                    payload_for_user['visual_only'] = True
+                    return payload_for_user
+                payload_for_user['message'] = ''
+                payload_for_user['inaudible'] = True
+                payload_for_user['inaudible_reason'] = (reachability or {}).get('status') or 'too_far'
+                return payload_for_user
+
+        if self.listener_understands_language(listener, language):
+            return payload_for_user
+
+        payload_for_user['message'] = gibberish(payload_for_user.get('message', ''), language=language)
+        return payload_for_user
+
+    def resolve_conversation_targets(self, source_entity, primary_targets=None, message=None):
+        explicit_targets = []
+        for entity_uid in primary_targets or []:
+            target = self.current_game.get_entity_by_uid(entity_uid)
+            if target is None:
+                try:
+                    target = self.game_session.entity_by_uid(entity_uid)
+                except Exception:
+                    target = None
+            if target is not None:
+                explicit_targets.append(target)
+
+        try:
+            battle_map = self.current_game.get_map_for_entity(source_entity)
+        except Exception:
+            battle_map = None
+        candidate_entities = []
+        if battle_map is not None:
+            try:
+                candidate_entities = [entity for entity in battle_map.entities if entity != source_entity]
+            except Exception:
+                candidate_entities = []
+
+        mentioned_targets = resolve_mention_targets(message or '', candidate_entities)
+        inferred_targets = []
+        if not explicit_targets and not mentioned_targets:
+            inferred_targets = resolve_named_targets(message or '', candidate_entities)
+
+        return unique_entities(explicit_targets + mentioned_targets + inferred_targets), unique_entities(mentioned_targets)
+
+    def select_conversation_responders(self, processed_conversations, source_entity, targeted_entities=None, latest_message=None, language='common', volume='normal'):
+        targeted_entities = unique_entities(targeted_entities or [])
+        eligible_receivers = unique_entities([
+            receiver for receiver, _rendered_message, _directed_to in (processed_conversations or [])
+            if receiver.entity_uid != source_entity.entity_uid and receiver.is_npc() and receiver.dialog
+        ])
+
+        for target in targeted_entities:
+            if (
+                target.entity_uid != source_entity.entity_uid
+                and getattr(target, 'is_npc', lambda: False)()
+                and getattr(target, 'dialog', False)
+                and target not in eligible_receivers
+            ):
+                eligible_receivers.append(target)
+
+        if not eligible_receivers:
+            return []
+
+        if targeted_entities:
+            targeted_uids = {target.entity_uid for target in targeted_entities}
+            targeted_receivers = [receiver for receiver in eligible_receivers if receiver.entity_uid in targeted_uids]
+            if targeted_receivers:
+                return targeted_receivers
+
+        llm_conversation_handler = self.llm_conversation_handler
+        if len(eligible_receivers) > 1 and llm_conversation_handler is not None and hasattr(llm_conversation_handler, 'route_conversation_responders'):
+            routed_receivers = llm_conversation_handler.route_conversation_responders(
+                source_entity,
+                eligible_receivers,
+                latest_message=latest_message or '',
+                targeted_entities=targeted_entities,
+                language=language,
+                volume=volume,
+            )
+            if routed_receivers:
+                return routed_receivers
+            if routed_receivers is not None:
+                return eligible_receivers[:1]
+
+        return eligible_receivers[:1]
+
+    def emit_conversation_to_usernames(self, usernames, payload, source_entity=None):
+        if getattr(self.current_game, 'realtime_ui_suppressed', lambda: False)():
+            return {}
+        tts_pending = bool(payload.get('tts_pending'))
+        npc_source = (
+            source_entity is not None
+            and not isinstance(source_entity, PlayerCharacter)
+        )
+        async_jobs = []
+        stream_jobs = []
+        emitted_by_username = {}
+        synthesis_cache = {}
+        for recipient_username in usernames:
+            delivery_mode = (
+                self._tts_delivery_mode(recipient_username)
+                if tts_pending and npc_source
+                else None
+            )
+            generate_audio_inline = delivery_mode == 'sync'
+            rendered_payload = self.render_conversation_payload_for_username(recipient_username, source_entity, payload) if source_entity is not None else dict(payload)
+            if tts_pending and npc_source:
+                rendered_payload = self._attach_per_listener_tts(
+                    rendered_payload,
+                    payload,
+                    source_entity,
+                    recipient_username,
+                    synthesis_cache=synthesis_cache,
+                    generate_audio=generate_audio_inline,
+                )
+                self._mark_tts_delivery_status(rendered_payload, delivery_mode)
+                if delivery_mode == 'async' and rendered_payload.get('tts_status') == 'pending':
+                    async_jobs.append({
+                        'username': recipient_username,
+                        'reply_id': rendered_payload.get('reply_id') or payload.get('reply_id'),
+                        'rendered_payload': dict(rendered_payload),
+                    })
+                elif delivery_mode == 'stream' and rendered_payload.get('tts_status') in ('streaming', 'pending'):
+                    stream_jobs.append({
+                        'username': recipient_username,
+                        'reply_id': rendered_payload.get('reply_id') or payload.get('reply_id'),
+                        'rendered_payload': dict(rendered_payload),
+                    })
+            normalized_username = self._normalize_username(recipient_username)
+            emitted_by_username[normalized_username] = rendered_payload
+            for sid in self._sids_for_username(recipient_username):
+                self.socketio.emit('message', {'type': 'conversation', 'message': rendered_payload}, to=sid)
+            try:
+                # Yield so long /talk handlers can flush Socket.IO events before returning.
+                self.socketio.sleep(0)
+            except Exception:
+                pass
+        if async_jobs:
+            self._schedule_async_tts_delivery(async_jobs, payload, source_entity)
+        if stream_jobs:
+            self._schedule_stream_tts_delivery(stream_jobs, payload, source_entity)
+        return emitted_by_username
+
+    def conversation_status_summary(self, entity):
+        statuses = []
+        try:
+            statuses = list(getattr(entity, 'statuses', []) or [])
+        except Exception:
+            statuses = []
+        return [str(status).strip().replace('_', ' ') for status in statuses if status]
+
+    def conversation_effect_summary(self, entity):
+        effect_names = []
+        current_effects = getattr(entity, 'current_effects', None)
+        if not callable(current_effects):
+            return effect_names
+
+        try:
+            effects = current_effects() or []
+        except Exception:
+            effects = []
+
+        for effect in effects:
+            if isinstance(effect, dict):
+                effect_name = effect.get('effect') or effect.get('name')
+            else:
+                effect_name = effect
+            if effect_name:
+                effect_names.append(str(effect_name).strip().replace('_', ' '))
+        return effect_names
+
+    def conversation_goal_summary(self, entity):
+        try:
+            get_goal = getattr(self.current_game, 'get_short_term_goal', None)
+            if not callable(get_goal):
+                return None
+            goal_state = get_goal(entity)
+        except Exception:
+            goal_state = None
+
+        if not isinstance(goal_state, dict):
+            return None
+        if goal_state.get('status') != 'active':
+            return None
+        goal_text = str(goal_state.get('goal') or '').strip()
+        return goal_text or None
+
+    def conversation_attitude_toward_speaker(self, receiver, speaker):
+        if receiver is None or speaker is None:
+            return 'unknown'
+
+        try:
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
+
+        if battle is not None:
+            try:
+                if battle.opposing(receiver, speaker):
+                    return 'hostile'
+            except Exception:
+                pass
+            try:
+                if battle.allies(receiver, speaker):
+                    return 'allied'
+            except Exception:
+                pass
+
+        receiver_group = getattr(receiver, 'group', None)
+        speaker_group = getattr(speaker, 'group', None)
+        if receiver_group and speaker_group:
+            if receiver_group == speaker_group:
+                return 'allied'
+            try:
+                if self.game_session.opposing(receiver_group, speaker_group):
+                    return 'hostile'
+            except Exception:
+                pass
+            return 'wary'
+
+        try:
+            receiver_owners = set(self.entity_owners(receiver))
+            speaker_owners = set(self.entity_owners(speaker))
+            if receiver_owners and speaker_owners and receiver_owners.intersection(speaker_owners):
+                return 'allied'
+        except Exception:
+            pass
+
+        return 'guarded'
+
+    def conversation_pressure_summary(self, receiver):
+        pressures = []
+
+        hp = getattr(receiver, 'hp', None)
+        max_hp = getattr(receiver, 'max_hp', None)
+        try:
+            if max_hp and hp is not None and max_hp > 0 and hp <= max(1, max_hp // 3):
+                pressures.append('badly hurt')
+        except Exception:
+            pass
+
+        statuses = self.conversation_status_summary(receiver)
+        if statuses:
+            pressures.append(f"statuses: {', '.join(statuses[:4])}")
+
+        effects = self.conversation_effect_summary(receiver)
+        if effects:
+            pressures.append(f"active effects: {', '.join(effects[:3])}")
+
+        goal_text = self.conversation_goal_summary(receiver)
+        if goal_text:
+            pressures.append(f"active goal: {goal_text}")
+
+        try:
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
+        if battle is not None:
+            try:
+                if battle.entity_state_for(receiver) is not None:
+                    pressures.append('currently in combat')
+            except Exception:
+                pressures.append('currently in combat')
+
+        return '; '.join(pressures) if pressures else 'no special pressure beyond the current conversation'
+
+    @staticmethod
+    def message_expects_direct_reply(message) -> bool:
+        text = (message or '').strip()
+        if not text:
+            return False
+        if '?' in text:
+            return True
+        return bool(_DIRECT_REPLY_MESSAGE.match(text))
+
+    @staticmethod
+    def message_summons_npc(message) -> bool:
+        text = re.sub(r'@\S+', ' ', message or '')
+        if re.search(
+            r'\b(?:tell|ask|have|get|send|instruct|let)\s+(?:@?\w[\w-]*|him|her|them)\s+to\b',
+            text,
+            re.IGNORECASE,
+        ):
+            return False
+        if re.search(r'\b(?:go|walk|head)\s+(?:over\s+)?to\s+\w', text, re.IGNORECASE):
+            return False
+        return bool(_SUMMON_NPC_PHRASES.search(text))
+
+    @staticmethod
+    def message_invites_listener_approach(message) -> bool:
+        return bool(_INVITE_APPROACH_PHRASES.search(message or ''))
+
+    @staticmethod
+    def message_requests_npc_relay(message) -> bool:
+        text = (message or '').strip()
+        if not text:
+            return False
+        return bool(
+            re.search(
+                r'\b(?:tell|ask|let|have|get|send|instruct|fetch)\s+(?:@?\w[\w-]*|him|her|them)\b',
+                text,
+                re.IGNORECASE,
+            )
+        )
+
+    def select_npc_chain_responders(self, processed_conversations, speaker_npc, reply_plan, *, player_speaker=None):
+        if speaker_npc is None or not processed_conversations:
+            return []
+
+        heard_entities = {
+            listener.entity_uid: listener
+            for listener, _message, _directed_to in processed_conversations
+            if listener is not None and listener != speaker_npc
+        }
+        if not heard_entities:
+            return []
+
+        try:
+            battle_map = self.current_game.get_map_for_entity(speaker_npc)
+        except Exception:
+            battle_map = None
+        candidates = []
+        if battle_map is not None:
+            try:
+                candidates = [entity for entity in battle_map.entities if entity != speaker_npc]
+            except Exception:
+                candidates = []
+
+        message = (reply_plan or {}).get('message') or ''
+        named_targets = unique_entities(
+            resolve_named_targets(message, candidates)
+            + resolve_mention_targets(message, candidates)
+        )
+        chain_responders = []
+        for target in named_targets:
+            if not getattr(target, 'is_npc', lambda: False)():
+                continue
+            if not getattr(target, 'dialog', False):
+                continue
+            if target.entity_uid not in heard_entities:
+                continue
+            chain_responders.append(target)
+
+        if chain_responders:
+            return chain_responders[:1]
+
+        for target in unique_entities((reply_plan or {}).get('targets') or []):
+            if target == player_speaker or target == speaker_npc:
+                continue
+            if not getattr(target, 'is_npc', lambda: False)():
+                continue
+            if not getattr(target, 'dialog', False):
+                continue
+            if target.entity_uid not in heard_entities:
+                continue
+            return [target]
+        return []
+
+    def expand_reply_targets_from_message(self, speaker_npc, reply_plan):
+        if speaker_npc is None or not isinstance(reply_plan, dict):
+            return reply_plan
+
+        message = reply_plan.get('message') or ''
+        try:
+            battle_map = self.current_game.get_map_for_entity(speaker_npc)
+        except Exception:
+            battle_map = None
+        candidates = []
+        if battle_map is not None:
+            try:
+                candidates = [entity for entity in battle_map.entities if entity != speaker_npc]
+            except Exception:
+                candidates = []
+
+        extras = unique_entities(
+            resolve_named_targets(message, candidates)
+            + resolve_mention_targets(message, candidates)
+        )
+        if not extras:
+            return reply_plan
+
+        expanded = dict(reply_plan)
+        expanded['targets'] = unique_entities((reply_plan.get('targets') or []) + extras)
+        return expanded
+
+    def _receiver_was_addressed(self, receiver, delivered_targets, mentioned_targets):
+        addressed = unique_entities((delivered_targets or []) + (mentioned_targets or []))
+        return receiver in addressed
+
+    def _speaker_within_approach_distance(self, receiver, speaker, distance_ft: float = 5) -> bool:
+        if receiver is None or speaker is None:
+            return False
+        try:
+            battle_map = self.current_game.get_map_for_entity(receiver)
+        except Exception:
+            battle_map = None
+        if battle_map is None:
+            return False
+        try:
+            distance = battle_map.distance(receiver, speaker) * battle_map.feet_per_grid
+            return distance <= distance_ft
+        except Exception:
+            return False
+
+    def maybe_auto_approach_summoned_npc(
+        self,
+        receiver,
+        speaker,
+        message,
+        *,
+        delivered_targets=None,
+        mentioned_targets=None,
+        approach_distance_ft: int = 5,
+    ) -> bool:
+        if speaker is None or receiver is None:
+            return False
+        if not self.message_summons_npc(message):
+            return False
+        if not self._receiver_was_addressed(receiver, delivered_targets, mentioned_targets):
+            return False
+        if self._speaker_within_approach_distance(receiver, speaker, distance_ft=approach_distance_ft):
+            return False
+        try:
+            if self.current_game.get_current_battle() is not None:
+                return False
+        except Exception:
+            pass
+
+        return self.ensure_npc_moves_to_speaker(
+            receiver,
+            speaker,
+            distance_ft=approach_distance_ft,
+        )
+
+    def ensure_npc_moves_to_speaker(self, receiver, speaker, *, distance_ft: int = 5) -> bool:
+        if speaker is None or receiver is None:
+            return False
+        if self._speaker_within_approach_distance(receiver, speaker, distance_ft=distance_ft):
+            return False
+        try:
+            if self.current_game.get_current_battle() is not None:
+                return False
+        except Exception:
+            pass
+
+        target_info = {
+            'kind': 'entity',
+            'target': speaker,
+        }
+        approach_plan = {
+            'approach': {
+                'target_info': target_info,
+                'distance_ft': distance_ft,
+            },
+        }
+        result = self.entity_rag_handler.apply_response_plan_directives(
+            approach_plan,
+            receiver,
+            speaker=speaker,
+            only={'approach'},
+        )
+        if self.entity_rag_handler.movement_helper.movement_reached(
+            receiver,
+            target_info,
+            distance_ft=distance_ft,
+        ):
+            return 'approach' in (result.get('executed_actions') or [])
+
+        scheduled = self.current_game.schedule_npc_move_to(
+            receiver,
+            target_info,
+            distance_ft=distance_ft,
+            speaker=speaker,
+        )
+        return (
+            'approach' in (result.get('executed_actions') or [])
+            or 'move_to' in (result.get('executed_actions') or [])
+            or scheduled is not None
+        )
+
+    def build_npc_identity_prompt(self, receiver, conversation_system_prompt) -> str:
+        """NPC backstory, gear, and appearance without live conversation response rules."""
+        attributes = receiver.ability_scores
+        attributes_str = "\n".join([f"{key}: {value}" for key, value in attributes.items()])
+        gear_summary = format_entity_gear_for_conversation(receiver, self.game_session)
+        appearance_summary = conversation_self_appearance(receiver, session=self.game_session)
+        return conversation_system_prompt.format(
+            backstory=receiver.backstory(),
+            name=receiver.label(),
+            attributes=attributes_str,
+            alignment=receiver.alignment().replace("_", " "),
+            languages=", ".join(receiver.languages()),
+            gear=gear_summary,
+            appearance=appearance_summary,
+        )
+
+    def build_npc_system_prompt(
+        self,
+        receiver,
+        conversation_system_prompt,
+        *,
+        speaker=None,
+        summoned: bool = False,
+        relay_instruction: bool = False,
+        npc_initiated: bool = False,
+    ) -> str:
+        """Format the standard NPC identity + conversation rules system prompt."""
+        system_prompt = self.build_npc_identity_prompt(receiver, conversation_system_prompt)
+        try:
+            from webapp.blueprints.helpers.time_of_day import world_time_prompt_block
+            system_prompt += world_time_prompt_block(self.current_game)
+        except Exception:
+            pass
+        system_prompt += self.conversation_response_prompt(
+            receiver,
+            speaker,
+            summoned=summoned,
+            relay_instruction=relay_instruction,
+            npc_initiated=npc_initiated,
+        )
+        return system_prompt
+
+    def _run_single_npc_reply_turn(
+        self,
+        receiver,
+        speaker,
+        conversation_system_prompt,
+        *,
+        summoned: bool = False,
+        relay_instruction: bool = False,
+        llm_conversation_handler=None,
+        http_replies=None,
+        normalized_requesting_username=None,
+        nudge_on_no_response: bool = False,
+        original_player_message: str = '',
+        inject_system_messages=None,
+        npc_initiated: bool = False,
+        open_dialog: bool = False,
+        local_chat_only: bool = False,
+    ):
+        if llm_conversation_handler is None:
+            llm_conversation_handler = self.llm_conversation_handler
+
+        receiver_started = time.monotonic()
+        system_prompt = self.build_npc_system_prompt(
+            receiver,
+            conversation_system_prompt,
+            speaker=speaker,
+            summoned=summoned,
+            relay_instruction=relay_instruction,
+            npc_initiated=npc_initiated,
+        )
+        llm_conversation_handler.create_conversation(receiver.entity_uid, system_prompt)
+        try:
+            llm_conversation_handler.conversations[receiver.entity_uid]['system_prompt'] = system_prompt
+        except Exception:
+            pass
+        llm_conversation_handler.update_conversation_history(receiver.entity_uid, receiver.conversation_buffer)
+        for note in inject_system_messages or []:
+            text = str(note or '').strip()
+            if text:
+                llm_conversation_handler.add_message(receiver.entity_uid, 'system', text)
+
+        self.logger.info("[Talk] generating response for %s (%s)", receiver.label(), receiver.entity_uid)
+        response = llm_conversation_handler.generate_response(receiver.entity_uid)
+        if is_npc_llm_failure_response(response):
+            self.logger.warning(
+                "[Talk] suppressed NPC LLM failure for %s preview=%r",
+                receiver.label(),
+                (response or '')[:160],
+            )
+            try:
+                conv = llm_conversation_handler.conversations.get(receiver.entity_uid) or {}
+                messages = conv.get('messages') or []
+                if messages and messages[-1].get('role') == 'assistant':
+                    if is_npc_llm_failure_response(messages[-1].get('content')):
+                        messages.pop()
+            except Exception:
+                pass
+            return None
+        self.logger.info(
+            "[Talk] raw LLM response for %s preview=%r",
+            receiver.label(),
+            (response or '')[:160],
+        )
+        plan_started = time.monotonic()
+        reply_plan = self.entity_rag_handler.build_conversation_response_plan(
+            response,
+            receiver,
+            speaker,
+            llm_conversation_handler,
+        )
+        self.logger.info(
+            "[Talk] reply plan for %s skip=%s volume=%s targets=%s plan_ms=%.1f",
+            receiver.label(),
+            reply_plan.get('skip'),
+            reply_plan.get('volume'),
+            [getattr(t, 'entity_uid', t) for t in (reply_plan.get('targets') or [])],
+            (time.monotonic() - plan_started) * 1000.0,
+        )
+        if (
+            nudge_on_no_response
+            and reply_plan['skip']
+            and self.message_expects_direct_reply(original_player_message)
+            and self.entity_rag_handler.parse_response_controls(response).get('no_response')
+        ):
+            llm_conversation_handler.add_message(
+                receiver.entity_uid,
+                'system',
+                (
+                    f"{entity_label(speaker)} addressed you directly with a greeting or question. "
+                    'Reply briefly in character. Use [TO: speaker] when needed. Do not output [NO_RESPONSE].'
+                ),
+            )
+            response = llm_conversation_handler.generate_response(receiver.entity_uid)
+            self.logger.info(
+                "[Talk] nudged LLM response for %s preview=%r",
+                receiver.label(),
+                (response or '')[:160],
+            )
+            reply_plan = self.entity_rag_handler.build_conversation_response_plan(
+                response,
+                receiver,
+                speaker,
+                llm_conversation_handler,
+            )
+
+        if reply_plan['skip']:
+            self.logger.info(
+                "[Talk] skipping outbound speech for %s llm_response=%r receiver_ms=%.1f",
+                receiver.label(),
+                (response or '')[:160],
+                (time.monotonic() - receiver_started) * 1000.0,
+            )
+            self.emit_nonverbal_npc_reply(
+                receiver,
+                reply_plan,
+                speaker=speaker,
+                http_replies=http_replies,
+                normalized_requesting_username=normalized_requesting_username,
+            )
+            self.entity_rag_handler.apply_response_plan_directives(
+                reply_plan, receiver, speaker=speaker,
+            )
+            return None
+
+        self.entity_rag_handler.apply_response_plan_directives(
+            reply_plan,
+            receiver,
+            speaker=speaker,
+            only={'approach'},
+        )
+
+        reply_plan = self.expand_reply_targets_from_message(receiver, reply_plan)
+        if local_chat_only and speaker is not None:
+            reply_plan['targets'] = [speaker]
+        reply_distance_ft = speech_distance_for(mode=reply_plan['volume'])
+        try:
+            response_conversations = receiver.send_conversation(
+                reply_plan['message'],
+                distance_ft=reply_distance_ft,
+                targets=reply_plan['targets'],
+                language=reply_plan['language'],
+                volume=reply_plan['volume'],
+                narrative=reply_plan.get('narrative') or [],
+                segments=reply_plan.get('segments') or [],
+            )
+        except TypeError:
+            response_conversations = receiver.send_conversation(
+                reply_plan['message'],
+                distance_ft=reply_distance_ft,
+                targets=reply_plan['targets'],
+                language=reply_plan['language'],
+            )
+        recipient_usernames = self.conversation_audience_usernames(
+            receiver,
+            response_conversations,
+            targets=reply_plan['targets'],
+        )
+        visual_whisper_usernames = set()
+        if reply_plan['volume'] == 'whisper':
+            visual_whisper_usernames = self.conversation_visible_whisper_usernames(
+                receiver,
+                audible_usernames=recipient_usernames,
+                targets=reply_plan['targets'],
+            )
+
+        conversation_payload = self.conversation_payload(
+            receiver,
+            reply_plan['message'],
+            targets=reply_plan['targets'],
+            volume=reply_plan['volume'],
+            distance_ft=reply_distance_ft,
+            language=reply_plan['language'],
+            visual_only_usernames=visual_whisper_usernames,
+            narrative=reply_plan.get('narrative') or [],
+            segments=reply_plan.get('segments') or [],
+        )
+        continuation_id = self._register_reply_continuation(
+            receiver,
+            speaker,
+            reply_plan,
+            local_chat_only=local_chat_only,
+        )
+        if continuation_id:
+            conversation_payload['continuation_id'] = continuation_id
+            conversation_payload['continuation_beats_remaining'] = reply_plan.get(
+                'continuation_beats_remaining', 0
+            )
+        if local_chat_only:
+            conversation_payload['local_chat_only'] = True
+        self.attach_skill_check_request(conversation_payload, receiver, reply_plan)
+        if not isinstance(receiver, PlayerCharacter):
+            conversation_payload['tts_pending'] = True
+            conversation_payload['tts_emotion'] = reply_plan.get('tts_emotion')
+            conversation_payload['tts_instruct'] = reply_plan.get('tts_instruct')
+        else:
+            conversation_payload['tts_pending'] = False
+
+        emitted_by_username = self.emit_conversation_to_usernames(
+            recipient_usernames | visual_whisper_usernames,
+            conversation_payload,
+            source_entity=receiver,
+        )
+        self._append_http_reply_for_requester(
+            http_replies,
+            normalized_requesting_username,
+            emitted_by_username,
+            conversation_payload,
+            receiver,
+        )
+        self.logger.info(
+            "[Talk] emitted reply from %s to_usernames=%s volume=%s targets=%s message_preview=%r receiver_ms=%.1f",
+            receiver.label(),
+            sorted(recipient_usernames | visual_whisper_usernames),
+            reply_plan['volume'],
+            [getattr(t, 'entity_uid', t) for t in (reply_plan.get('targets') or [])],
+            (reply_plan['message'] or '')[:160],
+            (time.monotonic() - receiver_started) * 1000.0,
+        )
+        self._persist_conversation_line(
+            receiver,
+            reply_plan['message'],
+            targets=reply_plan['targets'],
+            volume=reply_plan['volume'],
+            language=reply_plan['language'],
+            narrative=reply_plan.get('narrative') or [],
+            segments=reply_plan.get('segments') or [],
+        )
+        try:
+            self.entity_rag_handler.apply_conversation_keywords(
+                reply_plan['message'],
+                receiver,
+                speaker=speaker,
+                llm_conversation_handler=llm_conversation_handler,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[Talk] conversation keyword side effects failed for %s: %s",
+                receiver.label(),
+                exc,
+            )
+        self.entity_rag_handler.apply_response_plan_directives(
+            reply_plan,
+            receiver,
+            speaker=speaker,
+            skip={'approach'},
+        )
+        try:
+            forced_manager = getattr(self.current_game, 'forced_conversation_manager', None)
+            if forced_manager is not None:
+                forced_manager.maybe_resolve_after_npc_reply(receiver, response, speaker=speaker)
+                forced_manager.after_npc_reply(receiver)
+        except Exception as exc:
+            self.logger.warning(
+                "[Talk] forced conversation resolution failed for %s: %s",
+                receiver.label(),
+                exc,
+            )
+        if open_dialog:
+            dialog_targets = list(reply_plan.get('targets') or [])
+            if speaker is not None and speaker not in dialog_targets:
+                dialog_targets.insert(0, speaker)
+            self._open_entity_dialog_for_targets(receiver, dialog_targets)
+        return {
+            'response': response,
+            'reply_plan': reply_plan,
+            'response_conversations': response_conversations,
+        }
+
+    @staticmethod
+    def _npc_pronoun_guidance(receiver) -> str:
+        props = getattr(receiver, 'properties', None) or {}
+        voice = props.get('voice') if isinstance(props.get('voice'), dict) else {}
+        gender = str(props.get('gender') or voice.get('gender') or '').strip().lower()
+        if gender == 'female':
+            return (
+                "- In [ASIDE: ...] tags, refer to yourself in third person with she/her pronouns "
+                "(never he/him).\n"
+            )
+        if gender == 'male':
+            return (
+                "- In [ASIDE: ...] tags, refer to yourself in third person with he/him pronouns "
+                "(never she/her).\n"
+            )
+        return ''
+
+    def conversation_response_prompt(self, receiver, speaker, *, summoned: bool = False, relay_instruction: bool = False, npc_initiated: bool = False):
+        target_entities = self.entity_rag_handler.get_conversation_targets(receiver, speaker=speaker)
+
+        def _languages_for(target, *, understood=False):
+            getter_name = 'languages_understood' if understood else 'languages'
+            getter = getattr(target, getter_name, None)
+            if not callable(getter):
+                getter = getattr(target, 'languages', None)
+            try:
+                langs = getter() or [] if callable(getter) else []
+            except Exception:
+                langs = []
+            return [str(lang).strip() for lang in langs if str(lang).strip()]
+
+        target_handles = []
+        for target in target_entities:
+            langs = _languages_for(target)
+            lang_note = f" speaks: {', '.join(langs)}" if langs else " speaks: unknown"
+            target_handles.append(f"@{mention_handle_for(target)} ({entity_label(target)};{lang_note})")
+
+        handles_text = ', '.join(target_handles) if target_handles else 'speaker'
+
+        receiver_languages = _languages_for(receiver)
+        receiver_understood = _languages_for(receiver, understood=True)
+        receiver_languages_text = ', '.join(receiver_languages) if receiver_languages else 'common'
+        receiver_understood_text = ', '.join(receiver_understood) if receiver_understood else receiver_languages_text
+
+        speaker_languages = _languages_for(speaker) if speaker is not None else []
+        if speaker is not None:
+            speaker_label = entity_label(speaker)
+            if speaker_languages:
+                speaker_language_text = (
+                    f"The speaker {speaker_label} understands: {', '.join(speaker_languages)}."
+                )
+            else:
+                speaker_language_text = (
+                    f"The speaker {speaker_label}'s known languages are unknown to you."
+                )
+        else:
+            speaker_language_text = "No specific speaker is addressing you."
+
+        shared_with_speaker = sorted(
+            {lang.lower() for lang in receiver_understood}
+            & {lang.lower() for lang in speaker_languages}
+        )
+        if shared_with_speaker:
+            shared_text = ', '.join(shared_with_speaker)
+        else:
+            shared_text = 'none in common'
+
+        stance_text = self.conversation_attitude_toward_speaker(receiver, speaker)
+        pressure_text = self.conversation_pressure_summary(receiver)
+        gear_text = format_entity_gear_for_conversation(receiver, self.game_session)
+        witnessed_text = self.entity_rag_handler.witnessed_events_summary(receiver)
+        memory_text = self.entity_rag_handler.npc_memory_context_summary(receiver)
+        nearby_entities = self.entity_rag_handler.get_conversation_targets(receiver, speaker=speaker) or []
+        animal_comm_text = self.entity_rag_handler.animal_communication_guidance_for_conversation(
+            receiver,
+            speaker=speaker,
+            nearby_entities=nearby_entities,
+        )
+        animal_comm_block = f"{animal_comm_text}\n" if animal_comm_text else ''
+        landmarks_text = self.entity_rag_handler.map_landmarks_prompt_for_entity(receiver)
+        landmarks_block = f"\n{landmarks_text}\n" if landmarks_text else ''
+        container_serving_text = self.entity_rag_handler.container_serving_guidance_for_conversation(receiver)
+        container_serving_block = f"{container_serving_text}\n" if container_serving_text else ''
+        summon_block = ''
+        if summoned:
+            summon_block = (
+                "- The speaker summoned you to come closer. The server may already have moved you toward them; "
+                "if you are still out of earshot, use [APPROACH: target=speaker, distance=5] before replying.\n"
+            )
+        relay_block = ''
+        if relay_instruction:
+            relay_block = (
+                "- The speaker asked you to deliver a message to someone else. Move to them if needed "
+                "([APPROACH: target=@handle, distance=5]), then speak to that person with "
+                "[TO: @their_handle] — not [TO: speaker]. Hail them by name in the spoken line.\n"
+            )
+        initiative_block = ''
+        if npc_initiated:
+            initiative_block = (
+                "- You are initiating this exchange. The latest system message describes something "
+                "that just happened; the other party has not spoken to you through conversation yet.\n"
+                "- If you choose to speak, address them with [TO: speaker] or their @handle. "
+                "Your line will appear in the local chat panel directed at them, not in a separate "
+                "dialog window. Use [NO_RESPONSE] if you stay completely silent.\n"
+            )
+        pronoun_block = self._npc_pronoun_guidance(receiver)
+        return (
+            "\n\nConversation response rules:\n"
+            f"{initiative_block}"
+            "- You may choose not to speak. If you do not want to respond, output exactly [NO_RESPONSE].\n"
+            "- If you do speak, stay in character and return only optional control tags plus the spoken line.\n"
+            "- Keep each reply to one conversational beat: a short spoken line (or two), optional [ASIDE: ...], then stop and wait for the player to answer. Do not deliver escalating multi-paragraph monologues in a single reply.\n"
+            "- The conversation is ongoing: the speaker is still present and talking to you unless their latest message explicitly says they are leaving, walking away, or ending the exchange. Do not assume they departed, are departing, or turned away.\n"
+            "- Do not narrate the speaker's physical actions in [ASIDE: ...] unless those actions appear in their latest message or the conversation history. Never describe their departure while they are still actively engaged with you.\n"
+            "- Do not dismiss the speaker or tell them to move along while they are mid-conversation asking questions.\n"
+            f"{pronoun_block}"
+            "- Keep spoken dialogue as speech only. Do not mix narration into the spoken line.\n"
+            "- The speaker may also perform non-verbal physical actions (for example touching your hand) that are delivered separately from speech. React to those actions in [ASIDE: ...] and/or in your spoken reply; do not ignore visible actions.\n"
+            "- If you want to include third-person storytelling, stage direction, or internal/emotive scene description, put it in one or more tags like [ASIDE: ...] after the spoken line. Markdown-style *italics* are also treated as non-spoken stage direction.\n"
+            "- Any [ASIDE: ...] content must be third person only. Do not use first-person narration in asides.\n"
+            "- Do not reveal private mental judgments a listener could not directly observe (for example, trustworthiness verdicts). Ask for a social check with [REQUEST_CHECK: skill=persuasion, target=speaker] or [REQUEST_CHECK: skill=intimidation, target=speaker] instead.\n"
+            "- You may explicitly refuse to answer, stonewall, deflect, demand proof, threaten the speaker, or tell them to leave if that fits your background, alignment, attitude, current danger, injuries, fear, active effects, duties, or goals. If you refuse out loud, say so in character; use [NO_RESPONSE] only when you stay completely silent.\n"
+            "- If the latest line was directed at you and is a greeting, question, or new topic, answer in character. Do not use [NO_RESPONSE] for hello, introductions, or questions aimed at you.\n"
+            "- Use [NO_RESPONSE] only for overheard side conversations, when someone else was clearly addressed, when another speaker already fully answered, or for passive acknowledgements (for example: ok, thanks, got it) that need no reply.\n"
+            "- Do not repeat the same warning or biography if you already said it and nothing materially changed. Prefer a brief new reaction or [NO_RESPONSE] instead.\n"
+            "- You may direct your speech with [TO: speaker], [TO: @handle], [TO: @handle1, @handle2], or [TO: all].\n"
+            "- You may choose loudness with [VOLUME: whisper], [VOLUME: normal], or [VOLUME: shout]. If omitted, the server will choose the quietest volume that reaches your chosen listeners.\n"
+            "- You may set spoken delivery for text-to-speech with [EMOTION: fearful] (short mood token) and/or [TTS: trembling, barely holding back tears] (free-form acting notes). Prefer these when the line has strong feeling; they are stripped from the spoken text.\n"
+            "- Useful [EMOTION: ...] tokens: calm, whisper, fearful, angry, shouting, sad, cheerful, nervous, disgusted, surprised. Use [TTS: ...] for richer delivery (pace, breathiness, urgency) that a single emotion word cannot capture.\n"
+            "- You may speak a different language with [in <language>]. Pick a language your intended listeners actually understand. If a listener does not share your current language, switch to a common tongue you both know (typically [in common]) so they can reply, unless you are deliberately keeping them out of the conversation.\n"
+            "- You may move toward someone or something with [APPROACH: target=@handle, distance=5]. "
+            "Use distance=5 when joining a person (not 10 or 15). The server continues with [MOVE] until you arrive.\n"
+            "- You may keep moving toward a target with [MOVE: target=@handle, distance=5], [MOVE: target=<landmark_id>, distance=5], [MOVE: target=Front Door, distance=10], or [MOVE: x=5, y=10]. Movement continues on each 6-second tick until you arrive or emit [STOP_MOVE].\n"
+            "- You may trail someone with [FOLLOW: target=@handle, distance=5]. You move whenever they move and may reassess each tick; emit [STOP_FOLLOW] to stop.\n"
+            "- You may use an object with [INTERACT: target=<name or @handle>, action=<interaction>].\n"
+            "- You may offer an item with [OFFER_ITEM: item=<item_slug>, target=speaker|@handle]. This creates an Accept Item Yes/No prompt for the target. You may offer from your inventory or from an open container within reach (for example the bar).\n"
+            "- You may pick up a ground item within reach with [PICKUP: item=<item_slug>] or [PICKUP: item=<item_slug>, qty=2].\n"
+            "- You may inspect container stock with [LIST_CONTAINER: target=@handle] or [LIST_CONTAINER] for all nearby containers.\n"
+            "- You may read staff-only object markings with [ANNOTATIONS: target=@handle] or [ANNOTATIONS] for nearby objects. These annotations are invisible to player characters.\n"
+            "- You may take items from an open container within reach with [RETRIEVE: item=<item_slug>, target=@container, qty=1]. If the container is not adjacent, use [APPROACH: target=@container, distance=5] in the same reply before [RETRIEVE].\n"
+            "- You may deposit items into an open container with [STORE: item=<item_slug>, target=@container, qty=2].\n"
+            "- You may open a full item trade with [TRADE: target=speaker|@handle]. Human-controlled targets see the transfer dialog; others are adjudicated by the DM.\n"
+            "- You may ask someone to hand you an item with [REQUEST_ITEM: item=<item_slug>, target=speaker|@handle]. Human-controlled targets see the transfer dialog.\n"
+            "- When the speaker offers to give you an item, hands something over, or otherwise signals a gift, use [ACCEPT_GIFT: target=speaker|@handle] (optional item=<item_slug> hint) to open their give-item transfer dialog. React in character first if you like.\n"
+            "- If you choose violence or to attack player characters, include [GO_HOSTILE] in your response (with or without a spoken line). The server will switch you to a hostile faction and may start combat. Only use this when your character would genuinely fight.\n"
+            f"{container_serving_block}"
+            f"{self.entity_rag_handler.offer_item_guidance_for_conversation(receiver, speaker)}\n"
+            f"{animal_comm_block}"
+            f"{landmarks_block}"
+            f"{summon_block}"
+            f"{relay_block}"
+            f"{witnessed_text}"
+            f"{memory_text}"
+            "- You may store a lasting memory with [REMEMBER: title=..., summary=..., body=...] or [REMEMBER: short note].\n"
+            "- You may retrieve memory details with [RECALL: id=<memory_id>] or [RECALL: query=keyword].\n"
+            "- You may privately assess whether someone seems truthful with [INSIGHT: target=speaker] or [INSIGHT: target=@handle]. The server will roll insight, use DM-only context, and regenerate your reply with the result.\n"
+            "- You may ask someone to make a social check with [REQUEST_CHECK: skill=persuasion, target=speaker] or [REQUEST_CHECK: skill=intimidation, target=@handle] (optional dc=##). If you omit dc, the server assigns one from your backstory or the situation.\n"
+            "- You may create a persistent short-term autonomous task with [SET_GOAL: short description].\n"
+            "- During autonomous follow-up you may end that task with [GOAL_COMPLETE] or [GOAL_GIVE_UP].\n"
+            "- Only describe wielding, drawing, brandishing, or threatening with weapons and items listed under your gear below. Do not invent equipment.\n"
+            f"- Current stance toward the speaker: {stance_text}.\n"
+            f"- Current pressures and circumstances: {pressure_text}.\n"
+            f"- Languages you ({entity_label(receiver)}) speak: {receiver_languages_text}.\n"
+            f"- Languages you ({entity_label(receiver)}) understand: {receiver_understood_text}.\n"
+            f"- {speaker_language_text}\n"
+            f"- Languages you share with the speaker: {shared_text}.\n"
+            f"- Nearby handles you can address right now: {handles_text}.\n"
+            f"\nYour gear and inventory (authoritative; do not contradict):\n{gear_text}\n"
+        )
+
+    def conversation_recipient_usernames(self, entity, include_requester=True):
+        recipients = set(self.entity_owners(entity))
+
+        if include_requester:
+            requester = session.get('username')
+            if requester:
+                recipients.add(requester)
+
+        for login in self.logins:
+            roles = login.get('role') or []
+            if 'dm' in roles and login.get('name'):
+                recipients.add(login['name'].lower())
+
+        return recipients
+
+    def effective_talk_volume(self, message, requested_volume=None, requested_distance_ft=None):
+        speech_source = parse_player_conversation_input(message).get('spoken') or message
+        normalized_volume = normalize_speech_mode(mode=requested_volume, distance_ft=requested_distance_ft)
+        if normalized_volume == 'normal' and '!' in (speech_source or ''):
+            normalized_volume = 'shout'
+        return normalized_volume
+
+    def _dialog_history_between(self, entity, entity_pov):
+        """Return JRPG dialog history between an NPC and the active POV character."""
+        if entity is None or entity_pov is None:
+            return []
+
+        merged = list(entity.conversation_history(entity_pov))
+        seen = {
+            (
+                entry.get('type'),
+                entry.get('source'),
+                entry.get('message'),
+                tuple(entry.get('narrative') or []),
+            )
+            for entry in merged
+        }
+        for entry in entity_pov.conversation_history(entity):
+            key = (
+                entry.get('type'),
+                entry.get('source'),
+                entry.get('message'),
+                tuple(entry.get('narrative') or []),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(entry)
+        return merged
+
+    def dialog_history_response(self, entity_id, entity_pov_id=None):
+        if not entity_id:
+            return {'error': 'Entity ID is required'}, 400
+
+        entity = self.current_game.get_entity_by_uid(entity_id)
+        if not entity:
+            return {'error': 'Entity not found'}, 404
+
+        if entity_pov_id:
+            entity_pov = self.current_game.get_entity_by_uid(entity_pov_id)
+            history = self._dialog_history_between(entity, entity_pov)
+            for entry in history:
+                if entry.get('type') != 'entity':
+                    continue
+                recorded = self.get_recorded_insight_check(
+                    entity_pov,
+                    entity.entity_uid,
+                    entry.get('message') or '',
+                )
+                if not recorded:
+                    continue
+                entry['message_key'] = recorded.get('message_key') or insight_check_message_key(
+                    entity.entity_uid,
+                    entry.get('message') or '',
+                )
+                entry['target_id'] = entity.entity_uid
+                entry['insight_check'] = {
+                    key: recorded.get(key)
+                    for key in ('target', 'target_uid', 'roll_total', 'assessment', 'reason', 'message_key')
+                    if recorded.get(key) is not None
+                }
+                entry['insight_checked'] = True
+            return {
+                'success': True,
+                'history': history,
+                'entity_id': entity_id,
+                'entity_name': entity.label(),
+                'entity_pov': entity_pov.entity_uid,
+            }, 200
+
+        return {
+            'success': True,
+            'history': [],
+            'entity_id': entity_id,
+            'entity_name': entity.label(),
+            'entity_pov': False,
+        }, 200
+
+    # ── Journal chat commands ──────────────────────────────────────────
+    def _emit_dm_private_message(self, speaker, message_text, extra=None):
+        """Send a private DM-voiced message to the speaker (and DMs)."""
+        payload = {
+            'entity_id': None,
+            'speaker_name': 'Dungeon Master',
+            'message': message_text,
+            'narrative': [],
+            'language': 'common',
+            'targets': [getattr(speaker, 'entity_uid', None)],
+            'target_names': [entity_label(speaker)] if speaker is not None else [],
+            'mentioned_targets': [],
+            'mentioned_handles': [],
+            'volume': 'normal',
+            'distance_ft': 0,
+            'visual_only_usernames': [],
+            'system': True,
+        }
+        if isinstance(extra, dict):
+            payload.update(extra)
+        try:
+            usernames = self.entity_audience_usernames([speaker], include_dm=True)
+            self.emit_conversation_to_usernames(usernames, payload, source_entity=None)
+        except Exception:
+            pass
+        return payload
+
+    def _handle_journal_chat_command(self, speaker, raw_message):
+        """Parse and execute a /journal slash command from local chat.
+
+        Returns ``(dict, 200)`` so callers can short-circuit ``talk``.
+        """
+        # Strip leading "/journal" then read sub-command + remainder.
+        body = raw_message[len('/journal'):].strip()
+        if not body:
+            sub = 'help'
+            arg = ''
+        else:
+            parts = body.split(None, 1)
+            sub = parts[0].lower()
+            arg = parts[1].strip() if len(parts) > 1 else ''
+
+        if not hasattr(speaker, 'add_journal_entry'):
+            self._emit_dm_private_message(
+                speaker,
+                "Only player characters can keep a journal.",
+            )
+            return {'success': True, 'journal': 'unsupported'}, 200
+
+        if sub in ('add', 'note', 'log'):
+            if not arg:
+                self._emit_dm_private_message(
+                    speaker,
+                    "Usage: /journal add <your note>",
+                )
+                return {'success': True, 'journal': 'usage'}, 200
+            entry = speaker.add_journal_entry(arg, kind='chat', source='chat')
+            if entry:
+                db = getattr(self.current_game, 'campaign_log_db', None)
+                if db is not None:
+                    try:
+                        db.append_journal_entry(speaker.entity_uid, entry)
+                    except Exception as exc:
+                        self.logger.debug(f"Campaign journal log skipped: {exc}")
+            self._emit_dm_private_message(
+                speaker,
+                f"Journal entry recorded ({len(speaker.journal)} total).",
+                extra={'journal_action': 'added', 'journal_entry': entry},
+            )
+            return {'success': True, 'journal': 'added', 'entry': entry}, 200
+
+        if sub in ('search', 'find'):
+            if not arg:
+                self._emit_dm_private_message(
+                    speaker,
+                    "Usage: /journal search <query>",
+                )
+                return {'success': True, 'journal': 'usage'}, 200
+            results = speaker.search_journal(query=arg)
+            if not results:
+                self._emit_dm_private_message(
+                    speaker,
+                    f"No journal entries match \"{arg}\".",
+                )
+                return {'success': True, 'journal': 'empty'}, 200
+            recent = results[-5:]
+            preview_lines = [
+                f"• {self._format_journal_preview(e)}" for e in reversed(recent)
+            ]
+            preview = '\n'.join(preview_lines)
+            extra_count = max(0, len(results) - len(recent))
+            suffix = f"\n(+{extra_count} more)" if extra_count else ''
+            self._emit_dm_private_message(
+                speaker,
+                f"Found {len(results)} journal entries matching \"{arg}\":\n{preview}{suffix}",
+                extra={'journal_action': 'search', 'journal_results': results},
+            )
+            return {'success': True, 'journal': 'search', 'results': results}, 200
+
+        if sub in ('list', 'recent', 'show'):
+            try:
+                limit = int(arg) if arg else 5
+            except ValueError:
+                limit = 5
+            limit = max(1, min(limit, 25))
+            results = speaker.search_journal(limit=limit)
+            if not results:
+                self._emit_dm_private_message(
+                    speaker,
+                    "Your journal is empty.",
+                )
+                return {'success': True, 'journal': 'empty'}, 200
+            preview = '\n'.join(
+                f"• {self._format_journal_preview(e)}" for e in reversed(results)
+            )
+            self._emit_dm_private_message(
+                speaker,
+                f"Last {len(results)} journal entries:\n{preview}",
+                extra={'journal_action': 'list', 'journal_results': results},
+            )
+            return {'success': True, 'journal': 'list', 'results': results}, 200
+
+        # Help / unknown
+        self._emit_dm_private_message(
+            speaker,
+            "Journal commands: /journal add <text>, /journal search <query>, /journal list [N]",
+        )
+        return {'success': True, 'journal': 'help'}, 200
+
+    @staticmethod
+    def _format_journal_preview(entry):
+        text = (entry.get('text') or '').strip().replace('\n', ' ')
+        if len(text) > 140:
+            text = text[:137] + '...'
+        ts = (entry.get('ts') or '')[:19].replace('T', ' ')
+        kind = entry.get('kind') or 'note'
+        return f"[{kind} {ts}] {text}"
+
+    # ── Journal chat commands ──────────────────────────────────────────
+    def _emit_dm_private_message(self, speaker, message_text, extra=None):
+        """Send a private DM-voiced message to the speaker (and DMs)."""
+        payload = {
+            'entity_id': None,
+            'speaker_name': 'Dungeon Master',
+            'message': message_text,
+            'narrative': [],
+            'language': 'common',
+            'targets': [getattr(speaker, 'entity_uid', None)],
+            'target_names': [entity_label(speaker)] if speaker is not None else [],
+            'mentioned_targets': [],
+            'mentioned_handles': [],
+            'volume': 'normal',
+            'distance_ft': 0,
+            'visual_only_usernames': [],
+            'system': True,
+        }
+        if isinstance(extra, dict):
+            payload.update(extra)
+        try:
+            usernames = self.entity_audience_usernames([speaker], include_dm=True)
+            self.emit_conversation_to_usernames(usernames, payload, source_entity=None)
+        except Exception:
+            pass
+        return payload
+
+    def _handle_journal_chat_command(self, speaker, raw_message):
+        """Parse and execute a /journal slash command from local chat.
+
+        Returns ``(dict, 200)`` so callers can short-circuit ``talk``.
+        """
+        # Strip leading "/journal" then read sub-command + remainder.
+        body = raw_message[len('/journal'):].strip()
+        if not body:
+            sub = 'help'
+            arg = ''
+        else:
+            parts = body.split(None, 1)
+            sub = parts[0].lower()
+            arg = parts[1].strip() if len(parts) > 1 else ''
+
+        if not hasattr(speaker, 'add_journal_entry'):
+            self._emit_dm_private_message(
+                speaker,
+                "Only player characters can keep a journal.",
+            )
+            return {'success': True, 'journal': 'unsupported'}, 200
+
+        if sub in ('add', 'note', 'log'):
+            if not arg:
+                self._emit_dm_private_message(
+                    speaker,
+                    "Usage: /journal add <your note>",
+                )
+                return {'success': True, 'journal': 'usage'}, 200
+            entry = speaker.add_journal_entry(arg, kind='chat', source='chat')
+            if entry:
+                db = getattr(self.current_game, 'campaign_log_db', None)
+                if db is not None:
+                    try:
+                        db.append_journal_entry(speaker.entity_uid, entry)
+                    except Exception as exc:
+                        self.logger.debug(f"Campaign journal log skipped: {exc}")
+            self._emit_dm_private_message(
+                speaker,
+                f"Journal entry recorded ({len(speaker.journal)} total).",
+                extra={'journal_action': 'added', 'journal_entry': entry},
+            )
+            return {'success': True, 'journal': 'added', 'entry': entry}, 200
+
+        if sub in ('search', 'find'):
+            if not arg:
+                self._emit_dm_private_message(
+                    speaker,
+                    "Usage: /journal search <query>",
+                )
+                return {'success': True, 'journal': 'usage'}, 200
+            results = speaker.search_journal(query=arg)
+            if not results:
+                self._emit_dm_private_message(
+                    speaker,
+                    f"No journal entries match \"{arg}\".",
+                )
+                return {'success': True, 'journal': 'empty'}, 200
+            recent = results[-5:]
+            preview_lines = [
+                f"• {self._format_journal_preview(e)}" for e in reversed(recent)
+            ]
+            preview = '\n'.join(preview_lines)
+            extra_count = max(0, len(results) - len(recent))
+            suffix = f"\n(+{extra_count} more)" if extra_count else ''
+            self._emit_dm_private_message(
+                speaker,
+                f"Found {len(results)} journal entries matching \"{arg}\":\n{preview}{suffix}",
+                extra={'journal_action': 'search', 'journal_results': results},
+            )
+            return {'success': True, 'journal': 'search', 'results': results}, 200
+
+        if sub in ('list', 'recent', 'show'):
+            try:
+                limit = int(arg) if arg else 5
+            except ValueError:
+                limit = 5
+            limit = max(1, min(limit, 25))
+            results = speaker.search_journal(limit=limit)
+            if not results:
+                self._emit_dm_private_message(
+                    speaker,
+                    "Your journal is empty.",
+                )
+                return {'success': True, 'journal': 'empty'}, 200
+            preview = '\n'.join(
+                f"• {self._format_journal_preview(e)}" for e in reversed(results)
+            )
+            self._emit_dm_private_message(
+                speaker,
+                f"Last {len(results)} journal entries:\n{preview}",
+                extra={'journal_action': 'list', 'journal_results': results},
+            )
+            return {'success': True, 'journal': 'list', 'results': results}, 200
+
+        # Help / unknown
+        self._emit_dm_private_message(
+            speaker,
+            "Journal commands: /journal add <text>, /journal search <query>, /journal list [N]",
+        )
+        return {'success': True, 'journal': 'help'}, 200
+
+    @staticmethod
+    def _format_journal_preview(entry):
+        text = (entry.get('text') or '').strip().replace('\n', ' ')
+        if len(text) > 140:
+            text = text[:137] + '...'
+        ts = (entry.get('ts') or '')[:19].replace('T', ' ')
+        kind = entry.get('kind') or 'note'
+        return f"[{kind} {ts}] {text}"
+
+    def _emit_player_insight_payload(self, speaker, message_text, target=None,
+                                     roll_total=None, dc=None, assessment=None,
+                                     reason=None, vague=False, clarification=None,
+                                     purpose=None, message_key=None):
+        """Send a private insight-check result/clarification to the player + DM only."""
+        # entity_id must be non-empty — the conversation event handler drops
+        # payloads with a falsy entity_id. Prefer the read target; fall back to
+        # the observing player so clarifications (missing target) still render.
+        entity_id = (
+            getattr(target, 'entity_uid', None)
+            or getattr(speaker, 'entity_uid', None)
+        )
+        payload = {
+            'entity_id': entity_id,
+            'speaker_name': 'Dungeon Master',
+            'message': message_text,
+            'narrative': [],
+            'language': 'common',
+            'targets': [getattr(speaker, 'entity_uid', None)],
+            'target_names': [entity_label(speaker)] if speaker is not None else [],
+            'mentioned_targets': [],
+            'mentioned_handles': [],
+            'volume': 'normal',
+            'distance_ft': 0,
+            'visual_only_usernames': [],
+            'system': True,
+            'insight_check': {
+                'observer': entity_label(speaker) if speaker is not None else None,
+                'target': entity_label(target) if target is not None else None,
+                'roll_total': roll_total,
+                'dc': dc,
+                'assessment': assessment,
+                'reason': reason,
+                'vague': bool(vague),
+                'clarification': clarification,
+                'purpose': purpose,
+                'message_key': message_key,
+            },
+        }
+        usernames = self.entity_audience_usernames([speaker], include_dm=True)
+        self.emit_conversation_to_usernames(usernames, payload, source_entity=None)
+        return payload
+
+    def _resolve_insight_target(self, speaker, target_spec, explicit_targets, mentioned_targets):
+        """Pick the NPC the player wants to read."""
+        # 1) explicit/mentioned NPC targets (NPCs only, ignore the speaker)
+        for candidate in list(mentioned_targets or []) + list(explicit_targets or []):
+            if candidate is None or candidate == speaker:
+                continue
+            if hasattr(candidate, 'is_npc') and candidate.is_npc():
+                return candidate
+
+        # 2) explicit textual target via "insight check on <name>"
+        if target_spec:
+            rag_handler = self.entity_rag_handler
+            if rag_handler is not None and hasattr(rag_handler, 'resolve_named_target'):
+                try:
+                    candidate = rag_handler.resolve_named_target(speaker, target_spec, speaker=speaker)
+                except Exception:
+                    candidate = None
+                if candidate is not None and candidate != speaker and getattr(candidate, 'is_npc', lambda: False)():
+                    return candidate
+
+        # 3) fall back to the most recent NPC that spoke to the player
+        memory = list(getattr(speaker, 'memory_buffer', []) or [])
+        for entry in reversed(memory):
+            source = entry.get('source') if isinstance(entry, dict) else None
+            if source is None or source == speaker:
+                continue
+            if getattr(source, 'is_npc', lambda: False)():
+                return source
+
+        return None
+
+    def _latest_npc_statement(self, speaker, target):
+        """Return the most recent statement made by ``target`` to ``speaker``."""
+        memory = list(getattr(speaker, 'memory_buffer', []) or [])
+        for entry in reversed(memory):
+            if not isinstance(entry, dict):
+                continue
+            source = entry.get('source')
+            if source is target:
+                text = entry.get('message') or ''
+                if str(text).strip():
+                    return str(text).strip()
+        return ''
+
+    @staticmethod
+    def _insight_checks_store(speaker):
+        if not hasattr(speaker, 'properties') or speaker.properties is None:
+            return {}
+        store = speaker.properties.setdefault('insight_checks', {})
+        if not isinstance(store, dict):
+            store = {}
+            speaker.properties['insight_checks'] = store
+        return store
+
+    def get_recorded_insight_check(self, speaker, target_uid, statement):
+        key = insight_check_message_key(target_uid, statement)
+        recorded = self._insight_checks_store(speaker).get(key)
+        return dict(recorded) if isinstance(recorded, dict) else None
+
+    def record_insight_check(self, speaker, target_uid, statement, result):
+        key = insight_check_message_key(target_uid, statement)
+        payload = dict(result or {})
+        payload['message_key'] = key
+        payload['statement'] = str(statement or '').strip()
+        self._insight_checks_store(speaker)[key] = payload
+        return payload
+
+    def _execute_player_insight_check(self, speaker, target, statement_for_check,
+                                      *, purpose=None, message_key=None):
+        description = (
+            f"Insight check on {entity_label(target)}"
+            + (f" about: {purpose}" if purpose else '')
+        )
+
+        try:
+            roll = speaker.insight_check(description=description)
+        except Exception as exc:
+            self.logger.error(f"Insight check failed for {entity_label(speaker)}: {exc}")
+            self._emit_player_insight_payload(
+                speaker,
+                "Your insight check could not be completed.",
+                target=target,
+                vague=True,
+                clarification='roll_failed',
+                purpose=purpose,
+            )
+            return {'success': False, 'error': 'insight_roll_failed'}, 500
+
+        roll_total = None
+        try:
+            roll_total = roll.result()
+        except Exception:
+            roll_total = None
+
+        rag_handler = self.entity_rag_handler
+        llm_conversation_handler = self.llm_conversation_handler
+        assessment = 'uncertain'
+        reason = 'There is not enough reliable evidence to be sure.'
+        if rag_handler is not None and llm_conversation_handler is not None \
+                and hasattr(rag_handler, '_evaluate_insight_assessment'):
+            try:
+                verdict = rag_handler._evaluate_insight_assessment(
+                    observer=speaker,
+                    target=target,
+                    statement=statement_for_check,
+                    roll=roll,
+                    llm_conversation_handler=llm_conversation_handler,
+                )
+            except Exception as exc:
+                self.logger.error(f"Insight adjudication failed: {exc}")
+                verdict = None
+            if isinstance(verdict, dict):
+                assessment = verdict.get('assessment', assessment)
+                reason = verdict.get('reason', reason)
+
+        try:
+            roll_repr = str(roll) if roll is not None else ''
+        except Exception:
+            roll_repr = ''
+        if roll_repr and roll_total is not None:
+            roll_text = f"Insight check ({roll_repr}) = {roll_total}"
+        elif roll_total is not None:
+            roll_text = f"Insight check: {roll_total}"
+        else:
+            roll_text = "Insight check"
+        message_text = f"{roll_text} on {entity_label(target)}."
+
+        insight_result = {
+            'target': entity_label(target),
+            'target_uid': getattr(target, 'entity_uid', None),
+            'roll_total': roll_total,
+            'assessment': assessment,
+            'reason': reason,
+            'message_key': message_key or insight_check_message_key(
+                getattr(target, 'entity_uid', None),
+                statement_for_check,
+            ),
+        }
+        self.record_insight_check(
+            speaker,
+            getattr(target, 'entity_uid', None),
+            statement_for_check,
+            insight_result,
+        )
+
+        insight_payload = dict(insight_result)
+        insight_payload['purpose'] = purpose
+        self._emit_player_insight_payload(
+            speaker,
+            message_text,
+            target=target,
+            roll_total=roll_total,
+            assessment=assessment,
+            reason=reason,
+            purpose=purpose,
+            message_key=insight_result.get('message_key'),
+        )
+
+        if rag_handler is not None and hasattr(rag_handler, '_log_social_check'):
+            try:
+                roll_breakdown = ''
+                try:
+                    roll_str = str(roll) if roll is not None else ''
+                except Exception:
+                    roll_str = ''
+                if roll_str and roll_total is not None:
+                    roll_breakdown = f"{roll_str} = {roll_total}"
+                elif roll_total is not None:
+                    roll_breakdown = f"total {roll_total}"
+                rag_handler._log_social_check(
+                    f"{entity_label(speaker)} attempts an Insight check on "
+                    f"{entity_label(target)} ({roll_breakdown}): {assessment}.",
+                    entities=[speaker, target],
+                )
+            except Exception:
+                pass
+
+        return {'success': True, 'insight': insight_result}, 200
+
+    def handle_player_insight_button_request(self, speaker, payload):
+        """Roll Insight against a specific NPC line from the JRPG dialog UI."""
+        if not callable(getattr(speaker, 'insight_check', None)):
+            return {'success': False, 'error': 'insight_requires_player_character'}, 400
+
+        target_id = (payload or {}).get('target_id')
+        statement = str((payload or {}).get('statement') or '').strip()
+        if not target_id or not statement:
+            return {'success': False, 'error': 'missing_target_or_statement'}, 400
+
+        target = self.current_game.get_entity_by_uid(target_id)
+        if target is None or not getattr(target, 'is_npc', lambda: False)():
+            return {'success': False, 'error': 'invalid_target'}, 400
+
+        existing = self.get_recorded_insight_check(speaker, target_id, statement)
+        if existing:
+            return {
+                'success': True,
+                'insight': existing,
+                'already_checked': True,
+            }, 200
+
+        message_key = insight_check_message_key(target_id, statement)
+        return self._execute_player_insight_check(
+            speaker,
+            target,
+            statement,
+            message_key=message_key,
+        )
+
+    def _skill_check_roll_store(self, speaker):
+        store = speaker.properties.setdefault('skill_check_rolls', {})
+        if not isinstance(store, dict):
+            store = {}
+            speaker.properties['skill_check_rolls'] = store
+        return store
+
+    def get_recorded_skill_check_roll(self, speaker, reply_id):
+        key = skill_check_reply_key(reply_id)
+        if not key:
+            return None
+        recorded = self._skill_check_roll_store(speaker).get(key)
+        return dict(recorded) if isinstance(recorded, dict) else None
+
+    def record_skill_check_roll(self, speaker, reply_id, result):
+        key = skill_check_reply_key(reply_id)
+        if not key:
+            return
+        payload = dict(result or {})
+        payload['reply_id'] = reply_id
+        self._skill_check_roll_store(speaker)[key] = payload
+
+    def handle_player_skill_check_button_request(
+        self,
+        speaker,
+        payload,
+        *,
+        conversation_system_prompt,
+        requesting_username=None,
+    ):
+        """Roll a requested skill check from JRPG dialog and let the NPC react."""
+        requester_uid = (payload or {}).get('requester_uid')
+        skill = str((payload or {}).get('skill') or '').strip().lower()
+        reply_id = (payload or {}).get('reply_id')
+        dc = (payload or {}).get('dc')
+
+        if not requester_uid or not skill:
+            return {'success': False, 'error': 'missing_requester_or_skill'}, 400
+        if skill not in DIALOG_SKILL_CHECK_SKILLS:
+            return {'success': False, 'error': 'unsupported_skill'}, 400
+
+        requester = self.current_game.get_entity_by_uid(requester_uid)
+        if requester is None or not getattr(requester, 'is_npc', lambda: False)():
+            return {'success': False, 'error': 'invalid_requester'}, 400
+
+        if reply_id:
+            existing = self.get_recorded_skill_check_roll(speaker, reply_id)
+            if existing:
+                return {'success': True, 'skill_check': existing, 'already_checked': True}, 200
+
+        roll_fn = getattr(speaker, f'{skill}_check', None)
+        if not callable(roll_fn):
+            return {'success': False, 'error': 'skill_not_available'}, 400
+
+        skill_label = skill.replace('_', ' ').title()
+        description = f'{skill_label} check (requested by {entity_label(requester)})'
+        try:
+            roll = roll_fn(description=description)
+        except Exception as exc:
+            self.logger.error(
+                "Skill check failed for %s (%s): %s",
+                entity_label(speaker),
+                skill,
+                exc,
+            )
+            return {'success': False, 'error': 'skill_roll_failed'}, 500
+
+        roll_total = None
+        try:
+            roll_total = roll.result()
+        except Exception:
+            roll_total = None
+
+        try:
+            dc_value = int(dc) if dc is not None else None
+        except (TypeError, ValueError):
+            dc_value = None
+        if dc_value is None:
+            resolved_check = {'skill': skill, 'target': speaker}
+            self.entity_rag_handler.ensure_request_check_dc(
+                requester,
+                resolved_check,
+                speaker=speaker,
+            )
+            dc_value = resolved_check.get('dc')
+
+        success = None
+        if dc_value is not None and roll_total is not None:
+            success = roll_total >= dc_value
+
+        skill_result = {
+            'skill': skill,
+            'skill_label': skill_label,
+            'roll_total': roll_total,
+            'requester_uid': requester_uid,
+            'requester_name': entity_label(requester),
+            'actor_uid': getattr(speaker, 'entity_uid', None),
+            'actor_name': entity_label(speaker),
+            'dc': dc_value,
+            'success': success,
+            'reply_id': reply_id,
+        }
+        if reply_id:
+            self.record_skill_check_roll(speaker, reply_id, skill_result)
+
+        rag_handler = self.entity_rag_handler
+        if rag_handler is not None and hasattr(rag_handler, '_log_social_check'):
+            try:
+                roll_breakdown = ''
+                try:
+                    roll_str = str(roll) if roll is not None else ''
+                except Exception:
+                    roll_str = ''
+                if roll_str and roll_total is not None:
+                    roll_breakdown = f"{roll_str} = {roll_total}"
+                elif roll_total is not None:
+                    roll_breakdown = f"total {roll_total}"
+                outcome = ''
+                if dc_value is not None and success is not None:
+                    outcome = 'success' if success else 'failure'
+                rag_handler._log_social_check(
+                    f"{entity_label(speaker)} rolled {skill_label} ({roll_breakdown})"
+                    + (f" vs DC {dc_value} ({outcome})" if outcome else '.'),
+                    entities=[speaker, requester],
+                )
+            except Exception:
+                pass
+
+        llm_conversation_handler = self.llm_conversation_handler
+        inject_system_messages = []
+        if llm_conversation_handler is not None:
+            outcome_text = ''
+            if dc_value is not None and success is not None:
+                outcome_text = ' (success)' if success else ' (failure)'
+            inject_system_messages.append(
+                (
+                    f"{entity_label(speaker)} completed a {skill_label} check"
+                    f"{f' with a total of {roll_total}' if roll_total is not None else ''}"
+                    f"{f' against DC {dc_value}{outcome_text}' if dc_value is not None else ''}. "
+                    "React in character to this outcome."
+                )
+            )
+
+        http_replies = []
+        normalized_requesting_username = self._normalize_username(requesting_username)
+        npc_turn = self._run_single_npc_reply_turn(
+            requester,
+            speaker,
+            conversation_system_prompt,
+            llm_conversation_handler=llm_conversation_handler,
+            http_replies=http_replies,
+            normalized_requesting_username=normalized_requesting_username,
+            inject_system_messages=inject_system_messages,
+        )
+
+        response_payload = {
+            'success': True,
+            'skill_check': skill_result,
+        }
+        if npc_turn is None:
+            response_payload['npc_reply_failed'] = True
+        if http_replies:
+            response_payload['replies'] = http_replies
+        return response_payload, 200
+
+    def maybe_open_player_gift_transfer(self, speaker, targets, message, actions=None):
+        """Open the give-item dialog when a player offers to hand something to an NPC."""
+        if speaker is None or not isinstance(speaker, PlayerCharacter):
+            return False
+        if not is_player_gift_offer(message, actions):
+            return False
+
+        npc_targets = [target for target in unique_entities(targets or []) if isinstance(target, Npc)]
+        if not npc_targets:
+            return False
+
+        gift_meta = parse_player_gift_offer(message, actions)
+        item_hint = gift_meta.get('item_hint')
+        rag_handler = self.entity_rag_handler
+        if rag_handler is None:
+            return False
+
+        opened = False
+        for npc in npc_targets[:1]:
+            try:
+                if rag_handler._accept_gift_from_speaker(npc, speaker, item_hint=item_hint):
+                    opened = True
+            except Exception:
+                self.logger.exception(
+                    "[Talk] failed to open gift transfer speaker=%s npc=%s",
+                    getattr(speaker, 'entity_uid', speaker),
+                    getattr(npc, 'entity_uid', npc),
+                )
+        if opened:
+            self.logger.info(
+                "[Talk] opened player gift transfer speaker=%s npc=%s item_hint=%s",
+                getattr(speaker, 'entity_uid', speaker),
+                getattr(npc_targets[0], 'entity_uid', npc_targets[0]),
+                item_hint,
+            )
+        return opened
+
+    def handle_npc_gift_transfer_complete(
+        self,
+        data,
+        conversation_system_prompt,
+        requesting_username=None,
+    ):
+        """Notify an NPC LLM after a player completes (or cancels) a gift transfer dialog."""
+        from webapp.npc_item_exchange import pop_npc_gift_transfer_session, summarize_player_gift_transfer
+
+        session_id = str((data or {}).get('transfer_session_id') or '').strip()
+        if not session_id:
+            return {'error': 'transfer_session_id is required'}, 400
+
+        transfer_session = pop_npc_gift_transfer_session(session_id)
+        if transfer_session is None:
+            return {'error': 'Unknown or expired transfer session'}, 404
+
+        npc = self.current_game.get_entity_by_uid(transfer_session.get('npc_uid'))
+        player = self.current_game.get_entity_by_uid(transfer_session.get('player_uid'))
+        if npc is None or player is None:
+            return {'error': 'Transfer participants not found'}, 404
+
+        normalized_requesting_username = self._normalize_username(requesting_username)
+        player_owners = {
+            str(name).strip().lower()
+            for name in (self.entity_owners(player) or [])
+            if str(name).strip()
+        }
+        if normalized_requesting_username not in player_owners:
+            return {'error': 'Not authorized for this transfer'}, 403
+
+        cancelled = bool((data or {}).get('cancelled'))
+        items_payload = (data or {}).get('items')
+        player_label = entity_label(player)
+        if cancelled:
+            system_note = (
+                f"{player_label} closed the item transfer window without giving anything. "
+                "React briefly in character if appropriate."
+            )
+        else:
+            summary = summarize_player_gift_transfer(items_payload)
+            if summary:
+                system_note = (
+                    f"{player_label} gave you: {summary}. "
+                    "Acknowledge receipt in character."
+                )
+            else:
+                system_note = (
+                    f"{player_label} confirmed the transfer window without selecting items. "
+                    "React briefly in character if appropriate."
+                )
+
+        http_replies = []
+        npc_turn = self._run_single_npc_reply_turn(
+            npc,
+            player,
+            conversation_system_prompt,
+            llm_conversation_handler=self.llm_conversation_handler,
+            http_replies=http_replies,
+            normalized_requesting_username=normalized_requesting_username,
+            inject_system_messages=[system_note],
+        )
+
+        response_payload = {'success': True, 'cancelled': cancelled}
+        if npc_turn is None:
+            response_payload['npc_reply_failed'] = True
+        if http_replies:
+            response_payload['replies'] = http_replies
+        return response_payload, 200
+
+    def _npc_system_prompt_template(self):
+        from webapp.llm_handler import read_npc_system_prompt
+        from webapp.blueprints.helpers.runtime_state import get_level
+
+        return read_npc_system_prompt(get_level())
+
+    def inject_npc_llm_system_note(self, npc_uid: str, note: str) -> None:
+        """Queue a system note for the NPC's next LLM conversation turn."""
+        text = str(note or '').strip()
+        conv_id = str(npc_uid or '').strip()
+        if not text or not conv_id:
+            return
+        handler = self.llm_conversation_handler
+        if handler is None:
+            return
+        try:
+            handler.add_message(conv_id, 'system', text)
+        except Exception:
+            self.logger.warning(
+                'Failed to inject NPC conversation system note for %s',
+                conv_id,
+                exc_info=True,
+            )
+
+    def handle_npc_item_offer_resolution(
+        self,
+        npc,
+        target,
+        item_slug: str,
+        *,
+        accepted: bool,
+        effect_message=None,
+        conversation_system_prompt=None,
+        requesting_username=None,
+        proactive_reply: bool = True,
+    ):
+        """Notify an NPC LLM after a player accepts or declines an offered item."""
+        if npc is None or target is None or not item_slug:
+            return {'success': False, 'error': 'missing_entities'}, 400
+
+        game_properties = getattr(self.game_session, 'game_properties', None) or {}
+        note = item_offer_resolution_note(
+            npc,
+            target,
+            item_slug,
+            accepted=accepted,
+            effect_message=effect_message,
+            game_properties=game_properties,
+        )
+        self.inject_npc_llm_system_note(getattr(npc, 'entity_uid', None), note)
+
+        if not accepted or not proactive_reply:
+            return {'success': True, 'notified': True}, 200
+
+        # The NPC already spoke when making the offer; only generate an immediate
+        # follow-up line when a special on-accept effect needs in-character narration.
+        if not str(effect_message or '').strip():
+            return {'success': True, 'notified': True}, 200
+
+        prompt_template = conversation_system_prompt or self._npc_system_prompt_template()
+        http_replies = []
+        owners = self.entity_owners(target) or []
+        normalized_requesting_username = self._normalize_username(
+            requesting_username or (owners[0] if owners else None)
+        )
+        npc_turn = self._run_single_npc_reply_turn(
+            npc,
+            target,
+            prompt_template,
+            llm_conversation_handler=self.llm_conversation_handler,
+            http_replies=http_replies,
+            normalized_requesting_username=normalized_requesting_username,
+            inject_system_messages=[note],
+        )
+
+        response_payload = {'success': True, 'notified': True}
+        if npc_turn is None:
+            response_payload['npc_reply_failed'] = True
+        if http_replies:
+            response_payload['replies'] = http_replies
+        return response_payload, 200
+
+    def handle_npc_out_of_combat_hit(
+        self,
+        npc,
+        attacker,
+        damage_item,
+        *,
+        battle_map=None,
+        conversation_system_prompt=None,
+        requesting_username=None,
+    ):
+        """Let an NPC LLM react in character after being hit outside combat."""
+        if npc is None or damage_item is None:
+            return {'success': False, 'error': 'missing_entities'}, 400
+        if not callable(getattr(npc, 'npc', None)) or not npc.npc():
+            return {'success': False, 'error': 'not_npc'}, 400
+        if callable(getattr(npc, 'dead', None)) and npc.dead():
+            return {'success': False, 'error': 'npc_dead'}, 200
+        if callable(getattr(npc, 'conscious', None)) and not npc.conscious():
+            return {'success': False, 'error': 'npc_unconscious'}, 200
+
+        note = out_of_combat_hit_reaction_note(
+            npc,
+            attacker,
+            damage_item,
+            battle_map=battle_map,
+        )
+        self.inject_npc_llm_system_note(getattr(npc, 'entity_uid', None), note)
+
+        speaker = attacker if attacker is not None else npc
+        prompt_template = conversation_system_prompt or self._npc_system_prompt_template()
+        http_replies = []
+        owners = self.entity_owners(speaker) or []
+        normalized_requesting_username = self._normalize_username(
+            requesting_username or (owners[0] if owners else None)
+        )
+        npc_turn = self._run_single_npc_reply_turn(
+            npc,
+            speaker,
+            prompt_template,
+            llm_conversation_handler=self.llm_conversation_handler,
+            http_replies=http_replies,
+            normalized_requesting_username=normalized_requesting_username,
+            inject_system_messages=[note],
+            npc_initiated=True,
+            local_chat_only=True,
+        )
+
+        response_payload = {'success': True, 'notified': True}
+        if npc_turn is None:
+            response_payload['npc_reply_failed'] = True
+        if http_replies:
+            response_payload['replies'] = http_replies
+        return response_payload, 200
+
+    def handle_npc_steal_detected(
+        self,
+        npc,
+        thief,
+        *,
+        container_info,
+        items,
+        detection_type: str = 'seen',
+        ownership_info=None,
+        can_see: bool = True,
+        battle_map=None,
+        conversation_system_prompt=None,
+        requesting_username=None,
+    ):
+        """Let an NPC LLM react in character immediately after witnessing a theft."""
+        del battle_map
+        if npc is None or thief is None or not items:
+            return {'success': False, 'error': 'missing_entities'}, 400
+        if not callable(getattr(npc, 'npc', None)) or not npc.npc():
+            return {'success': False, 'error': 'not_npc'}, 400
+        if callable(getattr(npc, 'dead', None)) and npc.dead():
+            return {'success': False, 'error': 'npc_dead'}, 200
+        if callable(getattr(npc, 'conscious', None)) and not npc.conscious():
+            return {'success': False, 'error': 'npc_unconscious'}, 200
+
+        note = steal_detection_note(
+            npc,
+            thief,
+            container_info,
+            items,
+            detection_type=detection_type,
+            ownership_info=ownership_info,
+            can_see=can_see,
+        )
+        self.inject_npc_llm_system_note(getattr(npc, 'entity_uid', None), note)
+
+        prompt_template = conversation_system_prompt or self._npc_system_prompt_template()
+        http_replies = []
+        owners = self.entity_owners(thief) or []
+        normalized_requesting_username = self._normalize_username(
+            requesting_username or (owners[0] if owners else None)
+        )
+        npc_turn = self._run_single_npc_reply_turn(
+            npc,
+            thief,
+            prompt_template,
+            llm_conversation_handler=self.llm_conversation_handler,
+            http_replies=http_replies,
+            normalized_requesting_username=normalized_requesting_username,
+            inject_system_messages=[note],
+            npc_initiated=True,
+            local_chat_only=True,
+        )
+
+        response_payload = {'success': True, 'notified': True}
+        if npc_turn is None:
+            response_payload['npc_reply_failed'] = True
+        if http_replies:
+            response_payload['replies'] = http_replies
+        return response_payload, 200
+
+    def handle_npc_pickpocket_detected(
+        self,
+        npc,
+        pickpocketer,
+        *,
+        target,
+        item_name: str,
+        success: bool,
+        detection_type: str = 'seen',
+        can_see: bool = True,
+        role: str = 'witness',
+        conversation_system_prompt=None,
+        requesting_username=None,
+    ):
+        """Let an NPC LLM react immediately after witnessing or catching a pickpocket."""
+        if npc is None or pickpocketer is None:
+            return {'success': False, 'error': 'missing_entities'}, 400
+        if not item_name:
+            item_name = 'something from their belongings'
+        if not callable(getattr(npc, 'npc', None)) or not npc.npc():
+            return {'success': False, 'error': 'not_npc'}, 400
+        if callable(getattr(npc, 'dead', None)) and npc.dead():
+            return {'success': False, 'error': 'npc_dead'}, 200
+        if callable(getattr(npc, 'conscious', None)) and not npc.conscious():
+            return {'success': False, 'error': 'npc_unconscious'}, 200
+
+        if role == 'victim':
+            note = pickpocket_victim_caught_note(npc, pickpocketer, item_name)
+        else:
+            note = pickpocket_attempt_note(
+                npc,
+                pickpocketer,
+                target,
+                item_name,
+                success,
+                detection_type=detection_type,
+                can_see=can_see,
+            )
+        self.inject_npc_llm_system_note(getattr(npc, 'entity_uid', None), note)
+
+        prompt_template = conversation_system_prompt or self._npc_system_prompt_template()
+        http_replies = []
+        owners = self.entity_owners(pickpocketer) or []
+        normalized_requesting_username = self._normalize_username(
+            requesting_username or (owners[0] if owners else None)
+        )
+        npc_turn = self._run_single_npc_reply_turn(
+            npc,
+            pickpocketer,
+            prompt_template,
+            llm_conversation_handler=self.llm_conversation_handler,
+            http_replies=http_replies,
+            normalized_requesting_username=normalized_requesting_username,
+            inject_system_messages=[note],
+            npc_initiated=True,
+            local_chat_only=True,
+        )
+
+        response_payload = {'success': True, 'notified': True}
+        if npc_turn is None:
+            response_payload['npc_reply_failed'] = True
+        if http_replies:
+            response_payload['replies'] = http_replies
+        return response_payload, 200
+
+    def notify_animal_communication_granted(self, listener, *, expiration=None) -> None:
+        """Tell nearby beast-speaking NPCs that a listener can understand them."""
+        if listener is None:
+            return
+
+        note = animal_communication_activation_note(listener)
+        if expiration is not None:
+            note = (
+                f"{note} (active until game time {int(expiration)}.)"
+            )
+
+        try:
+            witness_uids = set(
+                witness_entity_uids(
+                    self.game_session,
+                    source=listener,
+                    target=listener,
+                    distance_ft=30,
+                    volume='normal',
+                )
+            )
+        except Exception:
+            witness_uids = set()
+
+        listener_uid = str(getattr(listener, 'entity_uid', '') or '')
+        prompt_template = self._npc_system_prompt_template()
+
+        for uid in witness_uids:
+            if uid == listener_uid:
+                continue
+            try:
+                npc = self.game_session.entity_by_uid(uid)
+            except Exception:
+                npc = None
+            if npc is None or not _entity_speaks_beast_language(npc):
+                continue
+            owners = self.entity_owners(listener) or []
+            self.handle_npc_item_offer_resolution(
+                npc,
+                listener,
+                'scroll_speak_animals_modified',
+                accepted=True,
+                effect_message=note,
+                conversation_system_prompt=prompt_template,
+                requesting_username=owners[0] if owners else None,
+                proactive_reply=True,
+            )
+
+    def handle_player_insight_request(self, speaker, message,
+                                      explicit_targets=None,
+                                      mentioned_targets=None):
+        """Resolve a player's "Insight Check" request privately.
+
+        Returns the standard ``(dict, status)`` tuple expected by ``/talk``.
+        The player's message is **not** forwarded to NPCs.
+        """
+        target_spec, purpose = parse_player_insight_request(message)
+        target = self._resolve_insight_target(speaker, target_spec,
+                                              explicit_targets or [],
+                                              mentioned_targets or [])
+
+        if target is None:
+            self._emit_player_insight_payload(
+                speaker,
+                "Whom would you like to read? Try 'Insight check on @<name> about <topic>'.",
+                vague=True,
+                clarification='missing_target',
+            )
+            return {'success': True, 'insight': 'needs_target'}, 200
+
+        # Look up something concrete to read. If the player did not give a
+        # purpose and the NPC has not actually said anything yet, ask them to
+        # be more specific instead of rolling.
+        latest_statement = self._latest_npc_statement(speaker, target)
+        if not purpose and not latest_statement:
+            self._emit_player_insight_payload(
+                speaker,
+                f"What about {entity_label(target)} are you trying to read? "
+                "(e.g. 'are they lying about the missing caravan?')",
+                target=target,
+                vague=True,
+                clarification='missing_purpose',
+            )
+            return {'success': True, 'insight': 'needs_purpose'}, 200
+
+        statement_for_check = purpose or latest_statement
+        message_key = insight_check_message_key(
+            getattr(target, 'entity_uid', None),
+            statement_for_check,
+        )
+        existing = self.get_recorded_insight_check(
+            speaker,
+            getattr(target, 'entity_uid', None),
+            statement_for_check,
+        )
+        if existing:
+            self._emit_player_insight_payload(
+                speaker,
+                f"You already read {entity_label(target)} on that line.",
+                target=target,
+                roll_total=existing.get('roll_total'),
+                assessment=existing.get('assessment'),
+                reason=existing.get('reason'),
+                purpose=purpose,
+            )
+            return {
+                'success': True,
+                'insight': existing,
+                'already_checked': True,
+            }, 200
+
+        return self._execute_player_insight_check(
+            speaker,
+            target,
+            statement_for_check,
+            purpose=purpose,
+            message_key=message_key,
+        )
+
+    def _emit_player_perception_payload(self, speaker, message_text, target=None,
+                                        roll_total=None, description=None, focus=None,
+                                        vague=False, clarification=None, message_key=None):
+        entity_id = (
+            getattr(target, 'entity_uid', None)
+            or getattr(speaker, 'entity_uid', None)
+        )
+        payload = {
+            'entity_id': entity_id,
+            'speaker_name': 'Dungeon Master',
+            'message': message_text,
+            'narrative': [],
+            'language': 'common',
+            'targets': [getattr(speaker, 'entity_uid', None)],
+            'target_names': [entity_label(speaker)] if speaker is not None else [],
+            'mentioned_targets': [],
+            'mentioned_handles': [],
+            'volume': 'normal',
+            'distance_ft': 0,
+            'visual_only_usernames': [],
+            'system': True,
+            'perception_check': {
+                'observer': entity_label(speaker) if speaker is not None else None,
+                'target': entity_label(target) if target is not None else None,
+                'target_uid': getattr(target, 'entity_uid', None) if target is not None else None,
+                'roll_total': roll_total,
+                'description': description,
+                'focus': focus,
+                'vague': bool(vague),
+                'clarification': clarification,
+                'message_key': message_key,
+            },
+        }
+        usernames = self.entity_audience_usernames([speaker], include_dm=True)
+        self.emit_conversation_to_usernames(usernames, payload, source_entity=None)
+        return payload
+
+    @staticmethod
+    def _perception_checks_store(speaker):
+        if not hasattr(speaker, 'properties') or speaker.properties is None:
+            return {}
+        store = speaker.properties.setdefault('perception_checks', {})
+        if not isinstance(store, dict):
+            store = {}
+            speaker.properties['perception_checks'] = store
+        return store
+
+    def get_recorded_perception_check(self, speaker, target_uid, focus=None):
+        key = perception_check_message_key(target_uid, focus)
+        recorded = self._perception_checks_store(speaker).get(key)
+        return dict(recorded) if isinstance(recorded, dict) else None
+
+    def record_perception_check(self, speaker, target_uid, focus, result):
+        key = perception_check_message_key(target_uid, focus)
+        payload = dict(result or {})
+        payload['message_key'] = key
+        payload['focus'] = str(focus or '').strip()
+        self._perception_checks_store(speaker)[key] = payload
+        return payload
+
+    def _resolve_perception_target(self, speaker, target_spec, explicit_targets, mentioned_targets):
+        """Pick a visible entity or object the player wants to study."""
+        for candidate in unique_entities(list(mentioned_targets or []) + list(explicit_targets or [])):
+            if candidate is not None and candidate != speaker:
+                return candidate
+
+        if target_spec:
+            rag_handler = self.entity_rag_handler
+            if rag_handler is not None and hasattr(rag_handler, 'resolve_named_target'):
+                try:
+                    candidate = rag_handler.resolve_named_target(
+                        speaker,
+                        target_spec,
+                        speaker=speaker,
+                        include_objects=True,
+                    )
+                except Exception:
+                    candidate = None
+                if candidate is not None and candidate != speaker:
+                    return candidate
+
+        return None
+
+    def _player_can_perceive_target(self, speaker, target) -> bool:
+        if speaker is None or target is None:
+            return False
+        if speaker == target:
+            return True
+        try:
+            battle_map = self.current_game.get_map_for_entity(speaker)
+        except Exception:
+            battle_map = None
+        if battle_map is None:
+            return False
+        try:
+            return bool(battle_map.can_see(speaker, target))
+        except Exception:
+            return False
+
+    def _emit_perception_not_visible(self, speaker, target):
+        self._emit_player_perception_payload(
+            speaker,
+            f"You cannot get a clear look at {entity_label(target)} from where you stand.",
+            target=target,
+            vague=True,
+            clarification='not_visible',
+        )
+        return {'success': True, 'perception': 'not_visible'}, 200
+
+    def _execute_player_perception_check(
+        self,
+        speaker,
+        target,
+        focus=None,
+        *,
+        message_key=None,
+    ):
+        focus_text = str(focus or '').strip()
+        description = (
+            f"Perception check on {entity_label(target)}"
+            + (f" ({focus_text})" if focus_text else '')
+        )
+
+        try:
+            roll = speaker.perception_check(description=description)
+        except Exception as exc:
+            self.logger.error(f"Perception check failed for {entity_label(speaker)}: {exc}")
+            self._emit_player_perception_payload(
+                speaker,
+                'Your perception check could not be completed.',
+                target=target,
+                focus=focus_text or None,
+                vague=True,
+                clarification='roll_failed',
+            )
+            return {'success': False, 'error': 'perception_roll_failed'}, 500
+
+        roll_total = None
+        try:
+            roll_total = roll.result()
+        except Exception:
+            roll_total = None
+
+        scene_description = (
+            'You study the scene, but nothing new stands out to you right now.'
+        )
+        rag_handler = self.entity_rag_handler
+        llm_conversation_handler = self.llm_conversation_handler
+        if rag_handler is not None and llm_conversation_handler is not None \
+                and hasattr(rag_handler, '_evaluate_perception_description'):
+            try:
+                verdict = rag_handler._evaluate_perception_description(
+                    observer=speaker,
+                    target=target,
+                    focus=focus_text,
+                    roll=roll,
+                    llm_conversation_handler=llm_conversation_handler,
+                )
+            except Exception as exc:
+                self.logger.error(f"Perception adjudication failed: {exc}")
+                verdict = None
+            if isinstance(verdict, dict):
+                scene_description = str(
+                    verdict.get('description') or scene_description
+                ).strip() or scene_description
+
+        try:
+            roll_repr = str(roll) if roll is not None else ''
+        except Exception:
+            roll_repr = ''
+        if roll_repr and roll_total is not None:
+            roll_text = f"Perception check ({roll_repr}) = {roll_total}"
+        elif roll_total is not None:
+            roll_text = f"Perception check: {roll_total}"
+        else:
+            roll_text = 'Perception check'
+        message_text = f"{roll_text} studying {entity_label(target)}."
+
+        perception_result = {
+            'target': entity_label(target),
+            'target_uid': getattr(target, 'entity_uid', None),
+            'roll_total': roll_total,
+            'description': scene_description,
+            'focus': focus_text or None,
+            'message_key': message_key or perception_check_message_key(
+                getattr(target, 'entity_uid', None),
+                focus_text or None,
+            ),
+        }
+        self.record_perception_check(
+            speaker,
+            getattr(target, 'entity_uid', None),
+            focus_text or None,
+            perception_result,
+        )
+
+        self._emit_player_perception_payload(
+            speaker,
+            message_text,
+            target=target,
+            roll_total=roll_total,
+            description=scene_description,
+            focus=focus_text or None,
+            message_key=perception_result.get('message_key'),
+        )
+
+        if rag_handler is not None and hasattr(rag_handler, '_log_social_check'):
+            try:
+                roll_breakdown = ''
+                try:
+                    roll_str = str(roll) if roll is not None else ''
+                except Exception:
+                    roll_str = ''
+                if roll_str and roll_total is not None:
+                    roll_breakdown = f"{roll_str} = {roll_total}"
+                elif roll_total is not None:
+                    roll_breakdown = f"total {roll_total}"
+                rag_handler._log_social_check(
+                    f"{entity_label(speaker)} makes a Perception check while speaking with "
+                    f"{entity_label(target)} ({roll_breakdown}).",
+                    entities=[speaker, target],
+                )
+            except Exception:
+                pass
+
+        return {'success': True, 'perception': perception_result}, 200
+
+    def handle_player_perception_button_request(self, speaker, payload):
+        if not callable(getattr(speaker, 'perception_check', None)):
+            return {'success': False, 'error': 'perception_requires_player_character'}, 400
+
+        target_id = (payload or {}).get('target_id')
+        focus = str((payload or {}).get('focus') or '').strip() or None
+        if not target_id:
+            return {'success': False, 'error': 'missing_target'}, 400
+
+        target = self.current_game.get_entity_by_uid(target_id)
+        if target is None:
+            return {'success': False, 'error': 'invalid_target'}, 400
+
+        if not self._player_can_perceive_target(speaker, target):
+            return self._emit_perception_not_visible(speaker, target)
+
+        existing = self.get_recorded_perception_check(speaker, target_id, focus)
+        if existing:
+            return {
+                'success': True,
+                'perception': existing,
+                'already_checked': True,
+            }, 200
+
+        message_key = perception_check_message_key(target_id, focus)
+        return self._execute_player_perception_check(
+            speaker,
+            target,
+            focus=focus,
+            message_key=message_key,
+        )
+
+    def handle_player_perception_request(self, speaker, message,
+                                         explicit_targets=None,
+                                         mentioned_targets=None):
+        target_spec, focus = parse_player_perception_request(message)
+        target = self._resolve_perception_target(
+            speaker,
+            target_spec,
+            explicit_targets or [],
+            mentioned_targets or [],
+        )
+
+        if target is None:
+            self._emit_player_perception_payload(
+                speaker,
+                "Whom or what are you studying? Try '@dm perception on @<name>' or "
+                "'Perception check on @<name> about <detail>'.",
+                vague=True,
+                clarification='missing_target',
+            )
+            return {'success': True, 'perception': 'needs_target'}, 200
+
+        if not self._player_can_perceive_target(speaker, target):
+            return self._emit_perception_not_visible(speaker, target)
+
+        message_key = perception_check_message_key(
+            getattr(target, 'entity_uid', None),
+            focus,
+        )
+        existing = self.get_recorded_perception_check(
+            speaker,
+            getattr(target, 'entity_uid', None),
+            focus,
+        )
+        if existing:
+            self._emit_player_perception_payload(
+                speaker,
+                f"You already studied {entity_label(target)} on that focus.",
+                target=target,
+                roll_total=existing.get('roll_total'),
+                description=existing.get('description'),
+                focus=focus,
+                message_key=existing.get('message_key'),
+            )
+            return {
+                'success': True,
+                'perception': existing,
+                'already_checked': True,
+            }, 200
+
+        return self._execute_player_perception_check(
+            speaker,
+            target,
+            focus=focus,
+            message_key=message_key,
+        )
+
+    def _persist_conversation_line(
+        self,
+        speaker,
+        message,
+        *,
+        targets=None,
+        volume=None,
+        language=None,
+        narrative=None,
+        segments=None,
+        username=None,
+    ):
+        db = getattr(self.current_game, 'campaign_log_db', None)
+        if db is None or not message:
+            return
+        target_labels = []
+        for target in targets or []:
+            try:
+                target_labels.append(entity_label(target))
+            except Exception:
+                target_labels.append(getattr(target, 'entity_uid', str(target)))
+        try:
+            db.append_conversation(
+                speaker_uid=getattr(speaker, 'entity_uid', None),
+                speaker_label=entity_label(speaker),
+                message=message,
+                targets=[getattr(t, 'entity_uid', None) for t in (targets or [])],
+                target_labels=target_labels,
+                volume=volume,
+                language=language,
+                username=username,
+                narrative=narrative,
+            )
+        except Exception as exc:
+            self.logger.debug(f"Campaign conversation log skipped: {exc}")
+
+    def _register_reply_continuation(self, receiver, speaker, reply_plan, *, local_chat_only=False):
+        pending_segments = list(reply_plan.get('pending_segments') or [])
+        if not pending_segments:
+            return None
+        continuation_id = uuid.uuid4().hex
+        self._reply_continuations[continuation_id] = {
+            'receiver_uid': receiver.entity_uid,
+            'speaker_uid': getattr(speaker, 'entity_uid', None) if speaker is not None else None,
+            'pending_segments': pending_segments,
+            'targets': [getattr(t, 'entity_uid', t) for t in (reply_plan.get('targets') or [])],
+            'volume': reply_plan.get('volume'),
+            'language': reply_plan.get('language'),
+            'tts_emotion': reply_plan.get('tts_emotion'),
+            'tts_instruct': reply_plan.get('tts_instruct'),
+            'local_chat_only': bool(local_chat_only),
+        }
+        return continuation_id
+
+    def _beat_segments_to_reply_plan(self, receiver, beat_segments, base_plan):
+        segments, narrative, message, _inferred = self.entity_rag_handler._apply_narrative_segment_policies(
+            list(beat_segments or []),
+            receiver=receiver,
+            speaker=receiver,
+        )
+        if not message and not narrative:
+            return None
+        reply_plan = {
+            'language': base_plan.get('language') or 'common',
+            'message': message,
+            'narrative': narrative,
+            'segments': segments,
+            'targets': list(base_plan.get('targets') or []),
+            'volume': base_plan.get('volume'),
+            'tts_emotion': base_plan.get('tts_emotion'),
+            'tts_instruct': base_plan.get('tts_instruct'),
+            'skip': False,
+        }
+        return reply_plan
+
+    def _emit_reply_continuation_beat(
+        self,
+        continuation_id,
+        *,
+        http_replies=None,
+        normalized_requesting_username=None,
+    ):
+        state = self._reply_continuations.get(continuation_id)
+        if not state:
+            return None
+
+        receiver = self.current_game.get_entity_by_uid(state.get('receiver_uid'))
+        if receiver is None:
+            self._reply_continuations.pop(continuation_id, None)
+            return None
+
+        beat_segments, pending_segments = self.entity_rag_handler.pop_next_reply_beat(
+            state.get('pending_segments') or []
+        )
+        if not beat_segments:
+            self._reply_continuations.pop(continuation_id, None)
+            return None
+
+        speaker = None
+        speaker_uid = state.get('speaker_uid')
+        if speaker_uid:
+            speaker = self.current_game.get_entity_by_uid(speaker_uid)
+
+        targets = []
+        for target_uid in state.get('targets') or []:
+            target = self.current_game.get_entity_by_uid(target_uid)
+            if target is not None:
+                targets.append(target)
+
+        base_plan = {
+            'language': state.get('language'),
+            'targets': targets,
+            'volume': state.get('volume'),
+            'tts_emotion': state.get('tts_emotion'),
+            'tts_instruct': state.get('tts_instruct'),
+        }
+        reply_plan = self._beat_segments_to_reply_plan(receiver, beat_segments, base_plan)
+        if reply_plan is None:
+            self._reply_continuations.pop(continuation_id, None)
+            return None
+
+        if pending_segments:
+            state['pending_segments'] = pending_segments
+        else:
+            self._reply_continuations.pop(continuation_id, None)
+
+        beats_remaining = self.entity_rag_handler.count_speech_beats(pending_segments)
+        reply_distance_ft = speech_distance_for(mode=reply_plan['volume'])
+        try:
+            response_conversations = receiver.send_conversation(
+                reply_plan['message'],
+                distance_ft=reply_distance_ft,
+                targets=reply_plan['targets'],
+                language=reply_plan['language'],
+                volume=reply_plan['volume'],
+                narrative=reply_plan.get('narrative') or [],
+                segments=reply_plan.get('segments') or [],
+            )
+        except TypeError:
+            response_conversations = receiver.send_conversation(
+                reply_plan['message'],
+                distance_ft=reply_distance_ft,
+                targets=reply_plan['targets'],
+                language=reply_plan['language'],
+            )
+
+        recipient_usernames = self.conversation_audience_usernames(
+            receiver,
+            response_conversations,
+            targets=reply_plan['targets'],
+        )
+        visual_whisper_usernames = set()
+        if reply_plan['volume'] == 'whisper':
+            visual_whisper_usernames = self.conversation_visible_whisper_usernames(
+                receiver,
+                audible_usernames=recipient_usernames,
+                targets=reply_plan['targets'],
+            )
+
+        active_continuation_id = continuation_id if beats_remaining > 0 else None
+        conversation_payload = self.conversation_payload(
+            receiver,
+            reply_plan['message'],
+            targets=reply_plan['targets'],
+            volume=reply_plan['volume'],
+            distance_ft=reply_distance_ft,
+            language=reply_plan['language'],
+            visual_only_usernames=visual_whisper_usernames,
+            narrative=reply_plan.get('narrative') or [],
+            segments=reply_plan.get('segments') or [],
+            continuation_id=active_continuation_id,
+            continuation_beats_remaining=beats_remaining,
+        )
+        if state.get('local_chat_only'):
+            conversation_payload['local_chat_only'] = True
+        if not isinstance(receiver, PlayerCharacter):
+            conversation_payload['tts_pending'] = True
+            conversation_payload['tts_emotion'] = reply_plan.get('tts_emotion')
+            conversation_payload['tts_instruct'] = reply_plan.get('tts_instruct')
+        else:
+            conversation_payload['tts_pending'] = False
+
+        emitted_by_username = self.emit_conversation_to_usernames(
+            recipient_usernames | visual_whisper_usernames,
+            conversation_payload,
+            source_entity=receiver,
+        )
+        self._append_http_reply_for_requester(
+            http_replies,
+            normalized_requesting_username,
+            emitted_by_username,
+            conversation_payload,
+            receiver,
+        )
+        self._persist_conversation_line(
+            receiver,
+            reply_plan['message'],
+            targets=reply_plan['targets'],
+            volume=reply_plan['volume'],
+            language=reply_plan['language'],
+            narrative=reply_plan.get('narrative') or [],
+            segments=reply_plan.get('segments') or [],
+        )
+        try:
+            self.entity_rag_handler.apply_conversation_keywords(
+                reply_plan['message'],
+                receiver,
+                speaker=speaker,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[Talk] continuation keyword side effects failed for %s: %s",
+                receiver.label(),
+                exc,
+            )
+        self.logger.info(
+            "[Talk] emitted continuation beat from %s continuation_id=%s beats_remaining=%s preview=%r",
+            receiver.label(),
+            continuation_id,
+            beats_remaining,
+            (reply_plan['message'] or '')[:160],
+        )
+        return {
+            'conversation_payload': conversation_payload,
+            'continuation_id': active_continuation_id,
+            'continuation_beats_remaining': beats_remaining,
+        }
+
+    def talk_continue_response(self, data, requesting_username=None):
+        continuation_id = str((data or {}).get('continuation_id') or '').strip()
+        if not continuation_id:
+            return {'error': 'continuation_id is required'}, 400
+        normalized_requesting_username = self._normalize_username(requesting_username)
+        http_replies = []
+        result = self._emit_reply_continuation_beat(
+            continuation_id,
+            http_replies=http_replies,
+            normalized_requesting_username=normalized_requesting_username,
+        )
+        if result is None:
+            return {'success': False, 'error': 'Continuation not found or complete'}, 404
+        return {
+            'success': True,
+            'replies': http_replies,
+            'continuation_id': result.get('continuation_id'),
+            'continuation_beats_remaining': result.get('continuation_beats_remaining', 0),
+        }, 200
+
+    def talk_response(self, data, conversation_system_prompt, requesting_username=None):
+        talk_started = time.monotonic()
+        http_replies = []
+        normalized_requesting_username = self._normalize_username(requesting_username)
+        dm_impersonate = bool(data.get('dm_impersonate'))
+        dm_impersonate_polish = bool(data.get('dm_impersonate_polish'))
+        polish_only = bool(data.get('polish_only'))
+        entity_id = data.get('entity_id')
+        message = data.get('message')
+        language = data.get('language')
+        primary_targets = data.get('targets', [])
+        volume = self.effective_talk_volume(message, requested_volume=data.get('volume'), requested_distance_ft=data.get('distance_ft'))
+        distance_ft = speech_distance_for(mode=volume, distance_ft=data.get('distance_ft'))
+        self.logger.info(
+            "[Talk] inbound speaker=%s message=%r volume=%s distance_ft=%s targets=%s language=%s",
+            entity_id,
+            (message or '')[:160],
+            volume,
+            distance_ft,
+            primary_targets,
+            language,
+        )
+        if not entity_id:
+            return {'error': 'Entity ID is required'}, 400
+
+        entity = self.current_game.get_entity_by_uid(entity_id)
+        if not entity:
+            return {'error': 'Entity not found'}, 404
+
+        if dm_impersonate:
+            if not self._requester_is_dm(normalized_requesting_username):
+                return {'error': 'DM impersonation requires DM privileges'}, 403
+            if not getattr(entity, 'is_npc', lambda: False)():
+                return {'error': 'DM impersonation requires an NPC speaker'}, 400
+
+        insight_payload = data.get('insight_check')
+        if isinstance(insight_payload, dict):
+            if not callable(getattr(entity, 'insight_check', None)):
+                return {'error': 'Insight checks require a player character'}, 400
+            return self.handle_player_insight_button_request(entity, insight_payload)
+
+        perception_payload = data.get('perception_check')
+        if isinstance(perception_payload, dict):
+            if not callable(getattr(entity, 'perception_check', None)):
+                return {'error': 'Perception checks require a player character'}, 400
+            return self.handle_player_perception_button_request(entity, perception_payload)
+
+        skill_payload = data.get('skill_check')
+        if isinstance(skill_payload, dict):
+            if not isinstance(entity, PlayerCharacter):
+                return {'error': 'Skill checks require a player character'}, 400
+            return self.handle_player_skill_check_button_request(
+                entity,
+                skill_payload,
+                conversation_system_prompt=conversation_system_prompt,
+                requesting_username=normalized_requesting_username,
+            )
+
+        if message is None:
+            return {'error': 'Entity ID and message are required'}, 400
+
+        parsed_input = parse_player_conversation_input(message or '')
+        spoken_message = parsed_input.get('spoken') or ''
+        player_actions = parsed_input.get('actions') or []
+        if not spoken_message and not player_actions:
+            return {'error': 'Message or action is required'}, 400
+
+        if isinstance(entity, PlayerCharacter):
+            self.current_game.increment_game_time(entity)
+
+        # Slash-command shortcut: PCs can ask the DM to manage their personal
+        # journal directly from local chat. These commands never broadcast to
+        # NPCs or other players. Supported forms:
+        #   /journal add <text>      → append a note
+        #   /journal search <query>  → return matching entries (private)
+        #   /journal list [N]        → return the last N entries (default 5)
+        if isinstance(entity, PlayerCharacter) and isinstance(message, str):
+            stripped = message.strip()
+            if stripped.lower().startswith('/journal'):
+                return self._handle_journal_chat_command(entity, stripped)
+
+        if isinstance(entity, PlayerCharacter):
+            from webapp.blueprints.helpers.journal_utils import (
+                _emit_journal_update,
+                _persist_journal_change,
+                grant_npc_journal_hooks,
+            )
+            hook_uids = []
+            for target_uid in primary_targets or []:
+                target = self.current_game.get_entity_by_uid(target_uid)
+                if isinstance(target, Npc) and grant_npc_journal_hooks(entity, target):
+                    hook_uids.append(entity.entity_uid)
+            if hook_uids:
+                _persist_journal_change(entity)
+                _emit_journal_update(hook_uids, reason='npc_hook')
+
+        entity_targets, mentioned_targets = self.resolve_conversation_targets(entity, primary_targets=primary_targets, message=message)
+
+        # Player-side meta requests (e.g. "Insight Check on @Garrick about his
+        # story") are handled privately and never broadcast to NPCs.
+        if (isinstance(entity, PlayerCharacter)
+                and is_player_insight_request(message)):
+            return self.handle_player_insight_request(
+                entity,
+                message,
+                explicit_targets=entity_targets,
+                mentioned_targets=mentioned_targets,
+            )
+
+        if (isinstance(entity, PlayerCharacter)
+                and is_player_perception_request(message)):
+            return self.handle_player_perception_request(
+                entity,
+                message,
+                explicit_targets=entity_targets,
+                mentioned_targets=mentioned_targets,
+            )
+
+        original_spoken_message = spoken_message
+        polished_message = None
+        if dm_impersonate and (dm_impersonate_polish or polish_only):
+            polished_message = self.polish_dm_impersonation_line(
+                entity,
+                spoken_message,
+                conversation_system_prompt=conversation_system_prompt,
+                language=language,
+            )
+            if polished_message:
+                spoken_message = polished_message
+            if polish_only:
+                return {
+                    'success': True,
+                    'draft_message': original_spoken_message,
+                    'polished_message': spoken_message,
+                    'dm_impersonate': True,
+                }, 200
+
+        try:
+            processed_conversations = entity.send_conversation(
+                spoken_message,
+                distance_ft=distance_ft,
+                targets=entity_targets,
+                language=language,
+                volume=volume,
+                actions=player_actions,
+            )
+        except TypeError:
+            processed_conversations = entity.send_conversation(
+                spoken_message,
+                distance_ft=distance_ft,
+                targets=entity_targets,
+                language=language,
+            )
+
+        delivered_targets = unique_entities([
+            receiver for receiver, _processed_message, directed_to in processed_conversations
+            if receiver in (directed_to or [])
+        ])
+        for target in entity_targets:
+            if (
+                getattr(target, 'is_npc', lambda: False)()
+                and getattr(target, 'dialog', False)
+                and target not in delivered_targets
+            ):
+                delivered_targets.append(target)
+        speaker_payload = self.conversation_payload(
+            entity,
+            spoken_message,
+            targets=delivered_targets,
+            volume=volume,
+            distance_ft=distance_ft,
+            mentioned_targets=mentioned_targets,
+            language=language,
+            actions=player_actions,
+        )
+        speaker_audience = self.conversation_audience_usernames(entity, processed_conversations, targets=delivered_targets)
+        visual_whisper_usernames = set()
+        if speaker_payload['volume'] == 'whisper':
+            visual_whisper_usernames = self.conversation_visible_whisper_usernames(
+                entity,
+                audible_usernames=speaker_audience,
+                targets=delivered_targets,
+            )
+            if visual_whisper_usernames:
+                speaker_payload['visual_only_usernames'] = sorted(visual_whisper_usernames)
+        self.emit_conversation_to_usernames(speaker_audience | visual_whisper_usernames, speaker_payload, source_entity=entity)
+        self._persist_conversation_line(
+            entity,
+            spoken_message,
+            targets=delivered_targets,
+            volume=volume,
+            language=language,
+            username=session.get('username'),
+            narrative=player_actions,
+        )
+
+        # Bridge the spoken message into the battle event pipeline so any
+        # readied "on_command" actions (e.g. familiar drinks a healing potion
+        # when its master shouts "drink!") get a chance to fire. We pass the
+        # raw message text plus the explicit recipient list so triggers can
+        # match on phrase substrings.
+        try:
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
+        if battle is not None and getattr(battle, 'started', False) \
+                and getattr(battle, 'readied_actions', None):
+            try:
+                battle.trigger_event('on_command', entity, {
+                    'target': entity,
+                    'message': message,
+                    'targets': list(delivered_targets or []),
+                    'volume': volume,
+                })
+            except Exception:
+                # Conversation must never be blocked by a downstream
+                # readied-action error.
+                pass
+
+        if dm_impersonate:
+            self.logger.info(
+                "[Talk] dm_impersonate complete speaker=%s elapsed_ms=%.1f",
+                entity_id,
+                (time.monotonic() - talk_started) * 1000.0,
+            )
+            return {
+                'success': True,
+                'resolved_target_ids': [target.entity_uid for target in delivered_targets],
+                'mentioned_target_ids': [target.entity_uid for target in mentioned_targets],
+                'volume': volume,
+                'distance_ft': distance_ft,
+                'dm_impersonate': True,
+                'draft_message': original_spoken_message if polished_message else None,
+                'polished_message': polished_message,
+            }, 200
+
+        eligible_receivers = self.select_conversation_responders(
+            processed_conversations,
+            entity,
+            targeted_entities=entity_targets,
+            latest_message=spoken_message or '; '.join(player_actions),
+            language=language,
+            volume=volume,
+        )
+        self.logger.info(
+            "[Talk] delivered_to=%s eligible_responders=%s",
+            [getattr(t, 'entity_uid', t) for t in delivered_targets],
+            [getattr(r, 'entity_uid', r) for r in eligible_receivers],
+        )
+
+        if isinstance(entity, PlayerCharacter) and delivered_targets:
+            self.maybe_open_player_gift_transfer(
+                entity,
+                delivered_targets,
+                original_spoken_message or message,
+                actions=player_actions,
+            )
+
+        llm_conversation_handler = self.llm_conversation_handler
+        relay_instruction = self.message_requests_npc_relay(message)
+        forced_manager = getattr(self.current_game, 'forced_conversation_manager', None)
+        if isinstance(entity, PlayerCharacter) and forced_manager is not None:
+            forced_manager.on_player_reply(entity)
+        for receiver in eligible_receivers:
+            summoned = self.message_summons_npc(message) and self._receiver_was_addressed(
+                receiver,
+                delivered_targets,
+                mentioned_targets,
+            )
+            if summoned:
+                approached = self.maybe_auto_approach_summoned_npc(
+                    receiver,
+                    entity,
+                    message,
+                    delivered_targets=delivered_targets,
+                    mentioned_targets=mentioned_targets,
+                )
+                self.logger.info(
+                    "[Talk] auto-approach for %s summoned=%s approached=%s",
+                    receiver.label(),
+                    summoned,
+                    approached,
+                )
+            elif (
+                self.message_invites_listener_approach(message)
+                and self._receiver_was_addressed(receiver, delivered_targets, mentioned_targets)
+            ):
+                moved = self.ensure_npc_moves_to_speaker(receiver, entity)
+                self.logger.info(
+                    "[Talk] auto-move for %s invited=True moved=%s",
+                    receiver.label(),
+                    moved,
+                )
+
+            inject_notes = None
+            if forced_manager is not None:
+                notes = forced_manager.impatience_notes_for_turn(receiver)
+                if notes:
+                    inject_notes = notes
+            turn_result = self._run_single_npc_reply_turn(
+                receiver,
+                entity,
+                conversation_system_prompt,
+                summoned=summoned,
+                relay_instruction=relay_instruction,
+                llm_conversation_handler=llm_conversation_handler,
+                http_replies=http_replies,
+                normalized_requesting_username=normalized_requesting_username,
+                nudge_on_no_response=receiver in delivered_targets,
+                original_player_message=message,
+                inject_system_messages=inject_notes,
+            )
+            if turn_result is None:
+                continue
+
+            chain_receivers = self.select_npc_chain_responders(
+                turn_result['response_conversations'],
+                receiver,
+                turn_result['reply_plan'],
+                player_speaker=entity,
+            )
+            self.logger.info(
+                "[Talk] npc_chain from %s eligible=%s",
+                receiver.label(),
+                [getattr(r, 'entity_uid', r) for r in chain_receivers],
+            )
+            for chain_receiver in chain_receivers:
+                self._run_single_npc_reply_turn(
+                    chain_receiver,
+                    receiver,
+                    conversation_system_prompt,
+                    llm_conversation_handler=llm_conversation_handler,
+                    http_replies=http_replies,
+                    normalized_requesting_username=normalized_requesting_username,
+                )
+
+        self.logger.info(
+            "[Talk] complete speaker=%s elapsed_ms=%.1f",
+            entity_id,
+            (time.monotonic() - talk_started) * 1000.0,
+        )
+        response_payload = {
+            'success': True,
+            'resolved_target_ids': [target.entity_uid for target in delivered_targets],
+            'mentioned_target_ids': [target.entity_uid for target in mentioned_targets],
+            'volume': volume,
+            'distance_ft': distance_ft,
+        }
+        if http_replies:
+            response_payload['replies'] = http_replies
+        return response_payload, 200
+
+    def _open_entity_dialog_for_targets(
+        self,
+        npc,
+        target_entities,
+        *,
+        map_name=None,
+        forced: bool = False,
+    ) -> None:
+        """Open the JRPG dialog UI for human-controlled owners of ``target_entities``."""
+        from webapp.npc_item_exchange import human_controlled_usernames
+
+        target_entities = [entity for entity in (target_entities or []) if entity is not None]
+        if npc is None or not target_entities:
+            return
+
+        if map_name is None:
+            try:
+                battle_map = self.current_game.get_map_for_entity(npc)
+                map_name = getattr(battle_map, 'name', None)
+            except Exception:
+                map_name = None
+
+        seen_usernames = set()
+        for target in target_entities:
+            for username in human_controlled_usernames(self.current_game, target):
+                if username in seen_usernames:
+                    continue
+                seen_usernames.add(username)
+                for sid in self._sids_for_username(username):
+                    self.socketio.emit('message', {
+                        'type': 'open_entity_dialog',
+                        'entity_id': npc.entity_uid,
+                        'entity_name': npc.label(),
+                        'map_name': map_name,
+                        'forced': forced,
+                    }, to=sid)
+
+    def initiate_npc_address(
+        self,
+        npc,
+        target_entities,
+        *,
+        context=None,
+        open_dialog=False,
+        map_name=None,
+        conversation_system_prompt=None,
+        forced: bool = False,
+    ) -> bool:
+        """Have an NPC speak to player character(s) without a player initiating /talk."""
+        from webapp.llm_handler import read_npc_system_prompt
+        from webapp.blueprints.helpers.runtime_state import get_level
+
+        target_entities = [entity for entity in (target_entities or []) if entity is not None]
+        if not target_entities or npc is None:
+            return False
+
+        if conversation_system_prompt is None:
+            conversation_system_prompt = read_npc_system_prompt(get_level())
+
+        llm_conversation_handler = self.llm_conversation_handler
+        attributes = npc.ability_scores
+        attributes_str = "\n".join([f"{key}: {value}" for key, value in attributes.items()])
+        gear_summary = format_entity_gear_for_conversation(npc, self.game_session)
+        appearance_summary = conversation_self_appearance(npc, session=self.game_session)
+        system_prompt = conversation_system_prompt.format(
+            backstory=npc.backstory(),
+            name=npc.label(),
+            attributes=attributes_str,
+            alignment=npc.alignment().replace("_", " "),
+            languages=", ".join(npc.languages()),
+            gear=gear_summary,
+            appearance=appearance_summary,
+        )
+        llm_conversation_handler.create_conversation(npc.entity_uid, system_prompt)
+        try:
+            llm_conversation_handler.conversations[npc.entity_uid]['system_prompt'] = system_prompt
+        except Exception:
+            pass
+        llm_conversation_handler.update_conversation_history(npc.entity_uid, npc.conversation_buffer)
+        if context:
+            llm_conversation_handler.add_message(npc.entity_uid, 'system', str(context))
+
+        speaker_pc = target_entities[0]
+        response = llm_conversation_handler.generate_response(npc.entity_uid)
+        reply_plan = self.entity_rag_handler.build_conversation_response_plan(
+            response,
+            npc,
+            speaker_pc,
+            llm_conversation_handler,
+        )
+        if reply_plan.get('skip'):
+            self.logger.info(
+                "[Talk] skipping NPC initiative from %s (plan marked skip)",
+                npc.label(),
+            )
+            return False
+
+        reply_distance_ft = speech_distance_for(mode=reply_plan['volume'])
+        try:
+            response_conversations = npc.send_conversation(
+                reply_plan['message'],
+                distance_ft=reply_distance_ft,
+                targets=reply_plan['targets'] or target_entities,
+                language=reply_plan['language'],
+                volume=reply_plan['volume'],
+                narrative=reply_plan.get('narrative') or [],
+                segments=reply_plan.get('segments') or [],
+            )
+        except TypeError:
+            response_conversations = npc.send_conversation(
+                reply_plan['message'],
+                distance_ft=reply_distance_ft,
+                targets=reply_plan['targets'] or target_entities,
+                language=reply_plan['language'],
+            )
+
+        recipient_usernames = self.conversation_audience_usernames(
+            npc,
+            response_conversations,
+            targets=reply_plan['targets'] or target_entities,
+        )
+        visual_whisper_usernames = set()
+        if reply_plan['volume'] == 'whisper':
+            visual_whisper_usernames = self.conversation_visible_whisper_usernames(
+                npc,
+                audible_usernames=recipient_usernames,
+                targets=reply_plan['targets'] or target_entities,
+            )
+
+        conversation_payload = self.conversation_payload(
+            npc,
+            reply_plan['message'],
+            targets=reply_plan['targets'] or target_entities,
+            volume=reply_plan['volume'],
+            distance_ft=reply_distance_ft,
+            language=reply_plan['language'],
+            visual_only_usernames=visual_whisper_usernames,
+            narrative=reply_plan.get('narrative') or [],
+            segments=reply_plan.get('segments') or [],
+        )
+        conversation_payload['tts_pending'] = True
+        conversation_payload['tts_emotion'] = reply_plan.get('tts_emotion')
+        conversation_payload['tts_instruct'] = reply_plan.get('tts_instruct')
+
+        self.emit_conversation_to_usernames(
+            recipient_usernames | visual_whisper_usernames,
+            conversation_payload,
+            source_entity=npc,
+        )
+        self._persist_conversation_line(
+            npc,
+            reply_plan['message'],
+            targets=reply_plan['targets'] or target_entities,
+            volume=reply_plan['volume'],
+            language=reply_plan['language'],
+            narrative=reply_plan.get('narrative') or [],
+            segments=reply_plan.get('segments') or [],
+        )
+        try:
+            self.entity_rag_handler.apply_conversation_keywords(
+                response,
+                npc,
+                speaker=speaker_pc,
+                llm_conversation_handler=llm_conversation_handler,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[Talk] NPC initiative keyword side effects failed for %s: %s",
+                npc.label(),
+                exc,
+            )
+        self.entity_rag_handler.apply_response_plan_directives(
+            reply_plan, npc, speaker=speaker_pc,
+        )
+        try:
+            forced_manager = getattr(self.current_game, 'forced_conversation_manager', None)
+            if forced_manager is not None:
+                forced_manager.maybe_resolve_after_npc_reply(npc, response, speaker=speaker_pc)
+        except Exception as exc:
+            self.logger.warning(
+                "[Talk] forced conversation resolution failed for %s: %s",
+                npc.label(),
+                exc,
+            )
+
+        if open_dialog:
+            self._open_entity_dialog_for_targets(
+                npc,
+                target_entities,
+                map_name=map_name,
+                forced=forced,
+            )
+
+        self.logger.info(
+            "[Talk] NPC initiative from %s to %s open_dialog=%s",
+            npc.label(),
+            [getattr(target, 'entity_uid', target) for target in target_entities],
+            open_dialog,
+        )
+        return True
+
+    def _requester_roles(self, username):
+        if not username:
+            return []
+        roles_fn = self._roles_for_username_getter()
+        if not callable(roles_fn):
+            return []
+        return roles_fn(username) or []
+
+    def _requester_is_dm(self, username):
+        return 'dm' in self._requester_roles(username)
+
+    def _impersonatable_npcs(self, anchor_entity=None):
+        battle_map = None
+        if anchor_entity is not None:
+            try:
+                battle_map = self.current_game.get_map_for_entity(anchor_entity)
+            except Exception:
+                battle_map = None
+        if battle_map is None:
+            try:
+                battle_map = self.current_game.battle_map
+            except Exception:
+                battle_map = None
+        if battle_map is None:
+            return []
+
+        npcs = []
+        for ent in getattr(battle_map, 'entities', []) or []:
+            if not callable(getattr(ent, 'is_npc', None)) or not ent.is_npc():
+                continue
+            npcs.append({
+                'id': ent.entity_uid,
+                'name': entity_label(ent),
+            })
+        npcs.sort(key=lambda entry: (entry.get('name') or '').lower())
+        return npcs
+
+    def polish_dm_impersonation_line(
+        self,
+        npc,
+        draft,
+        *,
+        conversation_system_prompt,
+        language='common',
+    ):
+        draft = str(draft or '').strip()
+        if not draft:
+            return None
+
+        controller = self.llm_conversation_handler
+        if controller is None:
+            return None
+
+        send_message = getattr(controller, '_effective_send_message', None)
+        if not callable(send_message):
+            return None
+
+        attributes = getattr(npc, 'ability_scores', {}) or {}
+        attributes_str = '\n'.join(f'{key}: {value}' for key, value in attributes.items())
+        gear_summary = format_entity_gear_for_conversation(npc, self.game_session)
+        appearance_summary = conversation_self_appearance(npc, session=self.game_session)
+        try:
+            base_prompt = conversation_system_prompt.format(
+                backstory=npc.backstory(),
+                name=npc.label(),
+                attributes=attributes_str,
+                alignment=str(npc.alignment()).replace('_', ' '),
+                languages=', '.join(npc.languages() or ['common']),
+                gear=gear_summary,
+                appearance=appearance_summary,
+            )
+        except Exception:
+            base_prompt = f'You are {entity_label(npc)}.'
+
+        recent_lines = []
+        for entry in (getattr(npc, 'conversation_buffer', None) or [])[-5:]:
+            line = str((entry or {}).get('message') or '').strip()
+            if line:
+                recent_lines.append(line)
+
+        polish_instructions = (
+            'Rewrite the DM draft into a single spoken line for this NPC. '
+            'Match vocabulary, tone, and personality. '
+            'Output ONLY the rewritten spoken words with no quotes, brackets, '
+            'stage directions, or commentary. Preserve the draft meaning.'
+        )
+        import json as _json
+        user_payload = {
+            'draft': draft,
+            'language': language,
+            'recent_speech': recent_lines,
+        }
+        messages = [
+            {'role': 'system', 'content': f'{base_prompt}\n\n{polish_instructions}'},
+            {'role': 'user', 'content': _json.dumps(user_payload, ensure_ascii=True)},
+        ]
+        try:
+            raw_response = send_message(
+                messages,
+                context={
+                    'response_mode': 'conversation',
+                    'skip_continuation': True,
+                    'log_label': 'dm_impersonation_polish',
+                },
+            )
+        except Exception as exc:
+            self.logger.debug(
+                'DM impersonation polish failed for %s: %s',
+                getattr(npc, 'entity_uid', npc),
+                exc,
+            )
+            return None
+
+        polished = str(raw_response or '').strip()
+        polished = re.sub(r'\[.*?\]', '', polished).strip()
+        polished = polished.strip('"\'')
+        if not polished or is_npc_llm_failure_response(polished):
+            return None
+        return polished[:500]
+
+    def conversation_presence_response(
+        self,
+        entity_id=None,
+        username=None,
+        volume=None,
+        range_value=None,
+        *,
+        list_impersonatable=False,
+    ):
+        if list_impersonatable:
+            if not self._requester_is_dm(username):
+                return {'error': 'Forbidden'}, 403
+            return {
+                'impersonatable_npcs': self._impersonatable_npcs(),
+                'speaker': None,
+            }, 200
+
+        if not entity_id and username:
+            current_pov = self.current_game.get_pov_entity_for_user(username)
+            entity_id = getattr(current_pov, 'entity_uid', None)
+
+        if not entity_id:
+            return {'error': 'Entity ID is required'}, 400
+
+        entity = self.current_game.get_entity_by_uid(entity_id)
+        if not entity:
+            cache_key = (entity_id, volume, range_value)
+            self._conversation_presence_cache.pop(cache_key, None)
+            return {'error': 'Entity not found'}, 404
+
+        cache_key = (entity_id, volume, range_value)
+        now = time.monotonic()
+        cached = self._conversation_presence_cache.get(cache_key)
+        if cached is not None:
+            age = now - cached['_ts']
+            if age < self._CONVERSANCE_PRESENCE_CACHE_TTL:
+                cached_result = cached.copy()
+                del cached_result['_ts']
+                return cached_result, 200
+
+        normalized_volume = normalize_speech_mode(mode=volume, distance_ft=range_value)
+        distance_ft = speech_distance_for(mode=normalized_volume, distance_ft=range_value)
+        audible = self.entity_rag_handler.get_nearby_entities(entity, distance_ft, volume=normalized_volume, include_extended=True)
+
+        reachable_entities = [entry for entry in audible if entry.get('reachable_now')]
+        louder_voice_entities = [entry for entry in audible if entry.get('status') == 'requires_louder_voice']
+        heard_only_entities = [entry for entry in audible if entry.get('status') == 'too_far']
+
+        result = {
+            'speaker': {
+                'id': entity.entity_uid,
+                'name': entity_label(entity),
+                'languages': entity.languages() or ['common'],
+            },
+            'volume': normalized_volume,
+            'distance_ft': distance_ft,
+            'entities': audible,
+            'reachable_entities': reachable_entities,
+            'requires_louder_voice_entities': louder_voice_entities,
+            'heard_only_entities': heard_only_entities,
+        }
+        if self._requester_is_dm(username):
+            result['impersonatable_npcs'] = self._impersonatable_npcs(entity)
+
+        self._conversation_presence_cache[cache_key] = result.copy()
+        self._conversation_presence_cache[cache_key]['_ts'] = now
+        return result, 200
+
+    def nearby_entities_response(self, entity_id, volume=None, range_value=None):
+        normalized_volume = normalize_speech_mode(mode=volume, distance_ft=range_value)
+        range_ft = speech_distance_for(mode=normalized_volume, distance_ft=range_value)
+
+        if not entity_id:
+            return {'error': 'Entity ID is required'}, 400
+
+        entity = self.current_game.get_entity_by_uid(entity_id)
+        if not entity:
+            return {'error': 'Entity not found'}, 404
+
+        response = self.entity_rag_handler.get_nearby_entities(entity, range_ft, volume=normalized_volume)
+        return {'entities': response}, 200
+
+
+def register_conversation_routes(app, conversation_service, conversation_system_prompt_getter):
+    def dialog_history():
+        payload, status_code = conversation_service.dialog_history_response(
+            request.args.get('entity_id'),
+            request.args.get('entity_pov', None),
+        )
+        return jsonify(payload), status_code
+
+    def talk():
+        payload, status_code = conversation_service.talk_response(
+            request.get_json() or {},
+            conversation_system_prompt_getter(),
+            requesting_username=session.get('username'),
+        )
+        return jsonify(payload), status_code
+
+    def talk_continue():
+        payload, status_code = conversation_service.talk_continue_response(
+            request.get_json() or {},
+            requesting_username=session.get('username'),
+        )
+        return jsonify(payload), status_code
+
+    def talk_item_transfer_complete():
+        payload, status_code = conversation_service.handle_npc_gift_transfer_complete(
+            request.get_json() or {},
+            conversation_system_prompt_getter(),
+            requesting_username=session.get('username'),
+        )
+        return jsonify(payload), status_code
+
+    def conversation_presence():
+        payload, status_code = conversation_service.conversation_presence_response(
+            entity_id=request.args.get('entity_id'),
+            username=session.get('username'),
+            volume=request.args.get('volume'),
+            range_value=request.args.get('range'),
+            list_impersonatable=request.args.get('list_impersonatable') in ('1', 'true', 'yes'),
+        )
+        return jsonify(payload), status_code
+
+    def nearby_entities():
+        payload, status_code = conversation_service.nearby_entities_response(
+            entity_id=request.args.get('entity_id'),
+            volume=request.args.get('volume'),
+            range_value=request.args.get('range'),
+        )
+        return jsonify(payload), status_code
+
+    app.add_url_rule('/dialog_history', endpoint='dialog_history', view_func=dialog_history, methods=['GET'])
+    app.add_url_rule('/talk', endpoint='talk', view_func=talk, methods=['POST'])
+    app.add_url_rule('/talk/continue', endpoint='talk_continue', view_func=talk_continue, methods=['POST'])
+    app.add_url_rule(
+        '/talk/item_transfer_complete',
+        endpoint='talk_item_transfer_complete',
+        view_func=talk_item_transfer_complete,
+        methods=['POST'],
+    )
+    app.add_url_rule('/conversation_presence', endpoint='conversation_presence', view_func=conversation_presence, methods=['GET'])
+    app.add_url_rule('/nearby_entities', endpoint='nearby_entities', view_func=nearby_entities, methods=['GET'])

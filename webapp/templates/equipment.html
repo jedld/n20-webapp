@@ -1,0 +1,261 @@
+{% set game_session = entity.session %}
+{% set carry = entity.carry_weight_status(game_session) if entity.carry_weight_status is defined else none %}
+{% if carry and carry.carry_capacity_lbs is not none %}
+<div class="inventory-carry-panel" id="inventory-carry-panel"
+     data-weight="{{ carry.weight_lbs }}"
+     data-capacity="{{ carry.carry_capacity_lbs }}">
+    <div class="inventory-carry-header">
+        <div>
+            <strong class="inventory-carry-title">Carried Weight</strong>
+            <div class="inventory-carry-summary">
+                <span class="inventory-carry-value{% if carry.over_capacity %} carry-over{% endif %}">
+                    {{ carry.weight_lbs }} / {{ carry.carry_capacity_lbs | int }} lb
+                </span>
+                {% if carry.strength is not none %}
+                <span class="inventory-carry-str">(Str {{ carry.strength }} × 15)</span>
+                {% endif %}
+            </div>
+        </div>
+        <div class="inventory-carry-remaining{% if carry.over_capacity %} carry-over{% endif %}">
+            {% if carry.over_capacity %}
+            Over by {{ (carry.weight_lbs - carry.carry_capacity_lbs) | round(1) }} lb
+            {% else %}
+            {{ carry.remaining_lbs }} lb left
+            {% endif %}
+        </div>
+    </div>
+    <div class="inventory-carry-bar" role="progressbar"
+         aria-valuemin="0"
+         aria-valuemax="{{ carry.carry_capacity_lbs | int }}"
+         aria-valuenow="{{ carry.weight_lbs }}">
+        <div class="inventory-carry-fill{% if carry.over_capacity %} carry-over{% elif carry.weight_lbs >= carry.carry_capacity_lbs * 0.85 %} carry-warning{% endif %}"
+             style="width: {{ [100, (carry.weight_lbs / carry.carry_capacity_lbs * 100) | round(1)] | min }}%"></div>
+    </div>
+    <div class="inventory-carry-breakdown">
+        <span>Items {{ carry.items_weight_lbs }} lb</span>
+        <span>Equipped {{ carry.equipped_weight_lbs }} lb</span>
+        {% if carry.container_contents_weight_lbs > 0 %}
+        <span>In containers {{ carry.container_contents_weight_lbs }} lb</span>
+        {% endif %}
+    </div>
+    {% if carry.extradimensional_containers %}
+    <div class="inventory-extradimensional-note">
+        {% for bag in carry.extradimensional_containers %}
+        <span class="extradimensional-chip" title="Contents do not add to carried weight">
+            ✦ {{ bag.label }}: {{ bag.carry_weight_lbs | int }} lb carried
+            {% if bag.contents_weight_lbs > 0 %}
+            ({{ bag.contents_weight_lbs }} lb inside)
+            {% endif %}
+        </span>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+{% for item in entity.equipped_items() %}
+{% if item['damage'] and not item['ac'] %}
+<table class="equipped-item-stats{% if item.get('magical') %} magic-item{% endif %}">
+    <thead>
+        <tr>
+            <th style="width: 60px;">{{ item['label'] }}{% if item.get('magical') %} <span class="magic-indicator" title="Magical">✦</span>{% endif %}</th>
+            <th>To Hit</th>
+            <th>Damage</th>
+            <th>Type</th>
+            <th>Range</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>
+                <div class="tile-item">
+                <img class="item-icon"
+                          src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}"
+                          alt="{{ item['label'] }}">
+                </div>
+            </td>
+            <td class="auto-die-roll" data-entity="{{ entity.entity_uid }}" data-description="Attack Roll">
+                1d20&nbsp;+&nbsp;{{ entity.attack_roll_mod(item) }}{% if item.get('magic_bonus', 0) > 0 %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">(+{{ item['magic_bonus'] }})</span>{% endif %}
+            </td>
+            <td>
+            {% if entity.is_two_handed_weapon(item) %}
+                {{ item['damage_2'] }} (2 handed)
+            {% else %}
+                {{ item['damage'] }}
+            {% endif %}
+            {% if item.get('magic_bonus', 0) > 0 %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">+{{ item['magic_bonus'] }}</span>{% endif %}
+            </td>
+            <td>{{ item['damage_type'] }}</td>
+            {% if item['range_max'] %}
+            <td>{{ item['range'] }}/{{ item['range_max'] }}</td>
+            {% else %}
+            <td>{{ item['range'] }}</td>
+            {% endif %}
+        </tr>
+    </tbody>
+</table>
+{% elif item['ac'] or item['bonus_ac'] %}
+<table class="{% if item.get('magical') %}magic-item{% endif %}">
+    <tr>
+        <th style="width: 60px;">{{ item['label'] }}{% if item.get('magical') %} <span class="magic-indicator" title="Magical">✦</span>{% endif %}</th>
+        <th>AC</th>
+        <th>Stealth Disadvantage</th>
+        {% if item.get('weight') is not none %}<th>Weight</th>{% endif %}
+    </tr>
+    <tr>
+        <td>
+            <div class="tile-item">
+            <img class="item-icon"
+                      src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}"
+                      alt="{{ item['label'] }}">
+            </div>
+        </td>
+        <td>{{ item['ac'] or item['bonus_ac'] }}{% if item.get('magic_bonus', 0) > 0 %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">(+{{ item['magic_bonus'] }})</span>{% endif %}</td>
+        <td>{{ "Yes" if item['stealth_disadvantage'] else "" }}</td>
+        {% if item.get('weight') is not none %}<td>{{ item['weight'] }} lb</td>{% endif %}
+    </tr>
+</table>
+{% else %} <!-- Cloak -->
+<table>
+    <tr>
+        <th style="width: 60px;">{{ item['label'] }}</th>
+        <th>Effect</th>
+        <th>Description</th>
+    </tr>
+    <tr>
+        <td>
+            <div class="tile-item">
+                <img class="item-icon" src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}" alt="{{ item['label'] }}">
+            </div>
+        </td>
+        <td>
+            {% if item['effect'] is iterable and item['effect'] is not string %}
+                <ul class="effect-list">
+                    {% for effect in item['effect'] %}
+                        <li>{{ effect }}</li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                {{ item['effect'] }}
+            {% endif %}
+        </td>
+        <td>{{ item['description'] }}</td>
+    </tr>
+</table>
+{% endif %}
+<form method="post" class="form-unequip" action="/unequip">
+    <input type="hidden" name="id" value="{{ entity.entity_uid }}">
+    <input type="hidden" name="item_id" value="{{ item['name'] }}">
+    <button>Unequip</button>
+</form>
+{% endfor %}
+<h2 class="unequipped-items-title">Carried Gear</h2>
+<input type="hidden" id="inventory-is-dm" value="{{ '1' if role is defined and 'dm' in role else '0' }}">
+<ul class="unequipped-items-list tile-inventory">
+{% for item in entity.carried_gear_items() %}
+    <li class="tile-item {% if entity.is_container(item['name'], game_session) %}container-item{% endif %}" data-tooltip="{{ item['label'] }}" data-item-name="{{ item['name'] }}">
+        <div class="item-icon-container">
+            {% if entity.is_container(item['name'], game_session) %}
+            <span class="container-indicator" title="Container">📦</span>
+            {% elif item.get('magical') %}
+            <span class="container-indicator magic-indicator" title="Magical">✦</span>
+            {% endif %}
+            <img class="item-icon" src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}" alt="{{ item['label'] }}">
+            <div class="item-quantity">{{ 'x ' ~ item.get('qty', 1) }}</div>
+            {% if item.get('weight') is not none %}
+            <div class="item-weight-tag">{{ item['weight'] }} lb{% if item.get('qty', 1) > 1 %} ea{% endif %}</div>
+            {% endif %}
+        </div>
+        {% if item.get('type') == 'letter' %}
+        <form method="post" class="form-read-letter" action="/read_letter" target="_blank">
+            <input type="hidden" name="id" value="{{ entity.entity_uid }}">
+            <input type="hidden" name="item_id" value="{{ item['name'] }}">
+            <button type="submit">Read</button>
+        </form>
+        {% endif %}
+        {% if entity.check_equip(item['name']) %}
+        <form method="post" class="form-equip" action="/equip">
+            <input type="hidden" name="id" value="{{ entity.entity_uid }}">
+            <input type="hidden" name="item_id" value="{{ item['name'] }}">
+            <button class="equip-button">Equip</button>
+        </form>
+        {% else %}
+        <p class="item-equip-note">Cannot equip this item</p>
+        {% endif %}
+        {% if entity.is_container(item['name'], game_session) %}
+        {% set container_label = item['label'] %}
+        {% if entity.container_extradimensional(item['name'], game_session) %}
+        <button type="button" class="container-toggle-btn" data-entity="{{ entity.entity_uid }}" data-container="{{ item['name'] }}">Open {{ container_label }}</button>
+        {% else %}
+        <button type="button" class="container-toggle-btn" data-entity="{{ entity.entity_uid }}" data-container="{{ item['name'] }}">Open {{ container_label }}</button>
+        {% endif %}
+        {% endif %}
+    </li>
+    {% if entity.is_container(item['name'], game_session) %}
+    {% set cap_lbs = entity.container_capacity_lbs(item['name'], game_session) %}
+    {% set cap_cu = entity.container_capacity_cu_ft(item['name'], game_session) %}
+    <li class="container-contents-wrapper" id="container-wrapper-{{ item['name'] | replace(' ', '-') }}" style="display: none;">
+        <div class="container-contents" id="container-{{ item['name'] | replace(' ', '-') }}">
+            <div class="container-contents-header">
+                <div>
+                    <strong class="container-title">{{ item['label'] }}</strong>
+                    {% if entity.container_extradimensional(item['name'], game_session) %}
+                    <span class="container-magic-badge" title="Contents do not count toward carried weight">✦ Extradimensional</span>
+                    {% endif %}
+                    <div class="container-capacity-text" data-container="{{ item['name'] }}"></div>
+                </div>
+                <button type="button" class="container-close-btn" data-container="{{ item['name'] | replace(' ', '-') }}">×</button>
+            </div>
+            <div class="container-capacity-bar" data-container="{{ item['name'] }}" aria-hidden="true">
+                <div class="container-capacity-fill"></div>
+            </div>
+            <ul class="container-items-list">
+                <li class="container-loading">Loading...</li>
+            </ul>
+            <div class="container-actions">
+                <button type="button" class="container-add-btn" data-entity="{{ entity.entity_uid }}" data-container="{{ item['name'] }}">Stow Item</button>
+            </div>
+            <p class="container-hint">
+                {% if entity.container_extradimensional(item['name'], game_session) %}
+                {{ item['label'] }} weighs {{ item.get('weight', 15) }} lb regardless of contents.
+                {% if cap_lbs %}Interior capacity: {{ cap_lbs | int }} lb{% if cap_cu %} / {{ cap_cu | int }} cu ft{% endif %}.{% endif %}
+                {% elif cap_lbs %}
+                {{ item['label'] }} holds up to {{ cap_lbs | int }} lb{% if cap_cu %} ({{ cap_cu | int }} cu ft){% endif %} of gear plus its own {{ item.get('weight', 0) }} lb weight.
+                {% else %}
+                Store items inside this container.
+                {% endif %}
+            </p>
+        </div>
+    </li>
+    {% endif %}
+{% else %}
+    <li class="container-empty">No carried gear</li>
+{% endfor %}
+</ul>
+
+<!-- Container Management Modal -->
+<div id="container-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <span class="modal-close">&times;</span>
+        <h3 id="container-modal-title">Stow Item</h3>
+        <form id="container-add-form">
+            <input type="hidden" id="modal-entity-id" name="entity_id">
+            <input type="hidden" id="modal-container-name" name="container_name">
+            <div class="form-group" id="stow-item-select-group">
+                <label for="modal-stow-item">Item from inventory:</label>
+                <select id="modal-stow-item" name="item_name" class="form-control" required>
+                    <option value="">Choose an item…</option>
+                </select>
+            </div>
+            <div class="form-group dm-only-container-field" id="dm-free-text-group" style="display: none;">
+                <label for="modal-item-name">Or enter item name (DM):</label>
+                <input type="text" id="modal-item-name" class="form-control" list="items-catalog" placeholder="Item name">
+                <datalist id="items-catalog"></datalist>
+            </div>
+            <div class="form-group">
+                <label for="modal-item-qty">Quantity:</label>
+                <input type="number" id="modal-item-qty" name="qty" class="form-control" value="1" min="1">
+            </div>
+            <button type="submit" class="btn btn-primary">Stow in Container</button>
+        </form>
+    </div>
+</div>

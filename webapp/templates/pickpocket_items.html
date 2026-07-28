@@ -1,0 +1,89 @@
+<form method="POST" class="pickpocket-items-form" data-action-type="pickpocket">
+{% from 'partials/_transfer_item_display.html' import transfer_item_icon, transfer_item_label %}
+  <div class="panel panel-default">
+    <div class="panel-heading">
+      <h3 class="panel-title">Lift something from {{ target.label() }}</h3>
+    </div>
+    <div class="panel-body">
+      {% if pickpocket_attempt and pickpocket_attempt.roll_total is not none %}
+      <div class="alert alert-success pickpocket-roll-summary" style="margin:0 0 10px;">
+        <strong>Sleight of Hand succeeded</strong>
+        <div class="pickpocket-roll-details" style="margin-top:4px;">
+          Rolled <strong>{{ pickpocket_attempt.roll_total }}</strong>
+          {% if pickpocket_attempt.roll_breakdown %}
+          <span class="text-muted">({{ pickpocket_attempt.roll_breakdown }})</span>
+          {% endif %}
+          vs passive Insight <strong>{{ pickpocket_attempt.passive_insight }}</strong>
+        </div>
+        {% if pickpocket_roll_summary %}
+        <div class="text-muted" style="margin-top:4px;font-size:12px;">{{ pickpocket_roll_summary }}</div>
+        {% endif %}
+      </div>
+      {% endif %}
+      <p class="text-info" style="margin:0 0 8px;">
+        Your sleight of hand succeeded. Choose what you managed to lift (you did not know what they were carrying beforehand).
+      </p>
+      <div class="media pickpocket-pane-header">
+        <div class="media-left">
+          <img class="media-object img-thumbnail" src="{{ url_for('static', filename='/assets/' ~ target.profile_image()) }}" alt="{{ target.label() }}">
+        </div>
+        <div class="media-body">
+          <h4 class="media-heading">{{ target.label() }}</h4>
+          <small class="text-muted">Small items you can grab</small>
+        </div>
+      </div>
+      <ul class="list-group pickpocket-list">
+        {% for item in inventory %}
+        <li class="list-group-item pickpocket-item">
+          <label class="pickpocket-item-name">
+            <input type="radio" name="selected_item" value="{{ item.name }}" {% if loop.first and inventory|length == 1 %}checked{% endif %}>
+            {{ transfer_item_icon(item, 'pickpocket-item-icon') }}
+            {{ transfer_item_label(item, 'pickpocket-item-label') }}
+            {% if item.weight is not none %}
+            <span class="text-muted pickpocket-item-weight">{{ item.weight }} lb</span>
+            {% endif %}
+            <span class="badge">{{ item.qty }}</span>
+          </label>
+        </li>
+        {% else %}
+        <li class="list-group-item text-muted text-center"><em>Their pockets seem empty of small items</em></li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="panel-footer text-right">
+      <button type="button" class="btn btn-default" data-dismiss="modal">Leave it</button>
+      <button type="submit" class="btn btn-primary" {% if not inventory %}disabled{% endif %}>Take item</button>
+    </div>
+  </div>
+</form>
+
+<style>
+  .pickpocket-pane-header img { width: 48px; height: 48px; border: 0; }
+  .pickpocket-pane-header { margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #eee; }
+  .pickpocket-roll-summary strong { font-weight: 600; }
+  .pickpocket-list { max-height: 360px; overflow-y: auto; margin-bottom: 0; }
+  .pickpocket-item { padding: 6px 10px; cursor: pointer; }
+  .pickpocket-item-name {
+    display: flex; align-items: center; gap: 8px; margin: 0; font-weight: normal; width: 100%;
+  }
+  .pickpocket-item-icon { width: 28px; height: 28px; object-fit: contain; flex: 0 0 auto; }
+  .pickpocket-item-label { font-weight: 600; flex: 1 1 auto; min-width: 0; }
+  .pickpocket-item-weight { font-size: 12px; flex: 0 0 auto; }
+  .pickpocket-item.selected, .pickpocket-item:has(input:checked) { background: #eef7ff; }
+</style>
+
+<script>
+  (function () {
+    const form = document.querySelector('.pickpocket-items-form');
+    if (!form || form.dataset.pickpocketBound === '1') return;
+    form.dataset.pickpocketBound = '1';
+
+    form.querySelectorAll('.pickpocket-item').forEach((row) => {
+      row.addEventListener('click', (e) => {
+        if (e.target.matches('input[type="radio"]')) return;
+        const radio = row.querySelector('input[type="radio"]');
+        if (radio) radio.checked = true;
+      });
+    });
+  })();
+</script>
