@@ -354,6 +354,8 @@ class ConversationService:
         self._conversation_presence_cache: dict = {}
         self._CONVERSANCE_PRESENCE_CACHE_TTL = 15.0  # Reduce expensive acoustic recomputation on debounced refreshes
         self._reply_continuations: dict = {}
+        self._stream_tts_queue: list = []
+        self._stream_tts_worker_running = False
 
     @property
     def current_game(self):
@@ -443,6 +445,8 @@ class ConversationService:
         """Whether to push live PCM chunks over Socket.IO during stream delivery."""
         import os
 
+        from webapp.tts.preferences import get_delivery_mode
+
         flag = os.environ.get('VLLM_OMNI_TTS_SOCKET_PCM', '').strip().lower()
         if flag in ('1', 'true', 'yes', 'on'):
             return True
@@ -450,8 +454,10 @@ class ConversationService:
             return False
         mgr = getattr(self, '_tts_manager', None)
         provider = getattr(mgr, '_provider_name', '') if mgr else ''
-        # vLLM sidecar PCM is fragile in browsers; default to WAV + tts_ready only.
-        return provider not in ('qwen3_vllm', 'mock_qwen3_vllm')
+        if provider in ('qwen3_vllm', 'mock_qwen3_vllm'):
+            # Phase 1 default: live PCM when stream delivery is active (~0.76s TTFA).
+            return get_delivery_mode() == 'stream'
+        return True
 
     def _schedule_stream_tts_delivery(self, jobs, base_payload, source_entity) -> None:
         if not jobs:
@@ -459,15 +465,33 @@ class ConversationService:
         socketio = getattr(self, 'socketio', None)
         if socketio is None:
             return
+        self._stream_tts_queue.append((jobs, base_payload, source_entity))
+        self._ensure_stream_tts_worker()
+
+    def _ensure_stream_tts_worker(self) -> None:
+        if self._stream_tts_worker_running or not self._stream_tts_queue:
+            return
+        socketio = getattr(self, 'socketio', None)
+        if socketio is None:
+            return
+        self._stream_tts_worker_running = True
         try:
-            socketio.start_background_task(
-                self._deliver_stream_tts_jobs,
-                jobs,
-                base_payload,
-                source_entity,
-            )
+            socketio.start_background_task(self._drain_stream_tts_queue)
         except Exception as exc:
-            self.logger.warning("[TTS] Failed to schedule stream delivery: %s", exc)
+            self._stream_tts_worker_running = False
+            self.logger.warning("[TTS] Failed to schedule stream delivery worker: %s", exc)
+
+    def _drain_stream_tts_queue(self) -> None:
+        try:
+            while self._stream_tts_queue:
+                jobs, base_payload, source_entity = self._stream_tts_queue.pop(0)
+                self._deliver_stream_tts_jobs(jobs, base_payload, source_entity)
+        except Exception as exc:
+            self.logger.warning("[TTS] Stream delivery worker failed: %s", exc)
+        finally:
+            self._stream_tts_worker_running = False
+            if self._stream_tts_queue:
+                self._ensure_stream_tts_worker()
 
     def _deliver_stream_tts_jobs(self, jobs, base_payload, source_entity) -> None:
         from webapp.tts.reply_cache import store_ready_reply
@@ -1877,16 +1901,14 @@ class ConversationService:
         )
 
     def select_npc_chain_responders(self, processed_conversations, speaker_npc, reply_plan, *, player_speaker=None):
-        if speaker_npc is None or not processed_conversations:
+        if speaker_npc is None:
             return []
 
         heard_entities = {
             listener.entity_uid: listener
-            for listener, _message, _directed_to in processed_conversations
+            for listener, _message, _directed_to in (processed_conversations or [])
             if listener is not None and listener != speaker_npc
         }
-        if not heard_entities:
-            return []
 
         try:
             battle_map = self.current_game.get_map_for_entity(speaker_npc)
@@ -1904,6 +1926,19 @@ class ConversationService:
             resolve_named_targets(message, candidates)
             + resolve_mention_targets(message, candidates)
         )
+        chain_targets = unique_entities(
+            list((reply_plan or {}).get('targets') or []) + named_targets
+        )
+        for target in chain_targets:
+            if target is None or target == speaker_npc:
+                continue
+            uid = getattr(target, 'entity_uid', None)
+            if uid:
+                heard_entities[uid] = target
+
+        if not heard_entities:
+            return []
+
         chain_responders = []
         for target in named_targets:
             if not getattr(target, 'is_npc', lambda: False)():
@@ -2073,6 +2108,7 @@ class ConversationService:
         conversation_system_prompt,
         *,
         speaker=None,
+        player_speaker=None,
         summoned: bool = False,
         relay_instruction: bool = False,
         npc_initiated: bool = False,
@@ -2087,6 +2123,7 @@ class ConversationService:
         system_prompt += self.conversation_response_prompt(
             receiver,
             speaker,
+            player_speaker=player_speaker,
             summoned=summoned,
             relay_instruction=relay_instruction,
             npc_initiated=npc_initiated,
@@ -2110,6 +2147,7 @@ class ConversationService:
         npc_initiated: bool = False,
         open_dialog: bool = False,
         local_chat_only: bool = False,
+        player_speaker=None,
     ):
         if llm_conversation_handler is None:
             llm_conversation_handler = self.llm_conversation_handler
@@ -2119,6 +2157,7 @@ class ConversationService:
             receiver,
             conversation_system_prompt,
             speaker=speaker,
+            player_speaker=player_speaker,
             summoned=summoned,
             relay_instruction=relay_instruction,
             npc_initiated=npc_initiated,
@@ -2132,7 +2171,7 @@ class ConversationService:
         for note in inject_system_messages or []:
             text = str(note or '').strip()
             if text:
-                llm_conversation_handler.add_message(receiver.entity_uid, 'system', text)
+                llm_conversation_handler.add_message(receiver.entity_uid, 'user', text)
 
         self.logger.info("[Talk] generating response for %s (%s)", receiver.label(), receiver.entity_uid)
         response = llm_conversation_handler.generate_response(receiver.entity_uid)
@@ -2162,6 +2201,7 @@ class ConversationService:
             receiver,
             speaker,
             llm_conversation_handler,
+            player_speaker=player_speaker,
         )
         self.logger.info(
             "[Talk] reply plan for %s skip=%s volume=%s targets=%s plan_ms=%.1f",
@@ -2179,7 +2219,7 @@ class ConversationService:
         ):
             llm_conversation_handler.add_message(
                 receiver.entity_uid,
-                'system',
+                'user',
                 (
                     f"{entity_label(speaker)} addressed you directly with a greeting or question. "
                     'Reply briefly in character. Use [TO: speaker] when needed. Do not output [NO_RESPONSE].'
@@ -2196,6 +2236,7 @@ class ConversationService:
                 receiver,
                 speaker,
                 llm_conversation_handler,
+                player_speaker=player_speaker,
             )
 
         if reply_plan['skip']:
@@ -2378,7 +2419,16 @@ class ConversationService:
             )
         return ''
 
-    def conversation_response_prompt(self, receiver, speaker, *, summoned: bool = False, relay_instruction: bool = False, npc_initiated: bool = False):
+    def conversation_response_prompt(
+        self,
+        receiver,
+        speaker,
+        *,
+        player_speaker=None,
+        summoned: bool = False,
+        relay_instruction: bool = False,
+        npc_initiated: bool = False,
+    ):
         target_entities = self.entity_rag_handler.get_conversation_targets(receiver, speaker=speaker)
 
         def _languages_for(target, *, understood=False):
@@ -2507,7 +2557,7 @@ class ConversationService:
             "- When the speaker offers to give you an item, hands something over, or otherwise signals a gift, use [ACCEPT_GIFT: target=speaker|@handle] (optional item=<item_slug> hint) to open their give-item transfer dialog. React in character first if you like.\n"
             "- If you choose violence or to attack player characters, include [GO_HOSTILE] in your response (with or without a spoken line). The server will switch you to a hostile faction and may start combat. Only use this when your character would genuinely fight.\n"
             f"{container_serving_block}"
-            f"{self.entity_rag_handler.offer_item_guidance_for_conversation(receiver, speaker)}\n"
+            f"{self.entity_rag_handler.offer_item_guidance_for_conversation(receiver, speaker, player_speaker)}\n"
             f"{animal_comm_block}"
             f"{landmarks_block}"
             f"{summon_block}"
@@ -4707,6 +4757,7 @@ class ConversationService:
                     llm_conversation_handler=llm_conversation_handler,
                     http_replies=http_replies,
                     normalized_requesting_username=normalized_requesting_username,
+                    player_speaker=entity,
                 )
 
         self.logger.info(

@@ -2887,6 +2887,114 @@
     });
   });
 
+  // Fireball: expanding fiery sphere at the targeted point.
+  register('fireball', function(payload){
+    return new Promise((resolve) => {
+      let center = centerFromGridPos(payload && payload.target_pos);
+      const target = payload && payload.target;
+      if (!center && Array.isArray(target) && target.length === 2 && typeof target[0] === 'number') {
+        center = tileCenterByCoords(target[0], target[1]);
+      } else if (!center && typeof target === 'string') {
+        center = centerOfEntity(target);
+      }
+      if (!center) return resolve();
+
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const maxR = tileSize * 2.2;
+      const { overlay, ctx, destroy } = createOverlay(1106);
+      const t0 = performance.now();
+      const dur = 780;
+
+      function loop(now){
+        const t = Math.min(1, (now - t0) / dur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+
+        const r = maxR * (0.25 + 0.75 * t);
+        const alpha = 0.9 * (1 - t * 0.85);
+        const g = ctx.createRadialGradient(center.x, center.y, r * 0.05, center.x, center.y, r);
+        g.addColorStop(0, `rgba(255,255,220,${(alpha * 0.95).toFixed(2)})`);
+        g.addColorStop(0.35, `rgba(255,150,40,${(alpha * 0.75).toFixed(2)})`);
+        g.addColorStop(0.7, `rgba(220,60,10,${(alpha * 0.45).toFixed(2)})`);
+        g.addColorStop(1, 'rgba(80,10,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        for (let i = 0; i < 18; i++) {
+          const ang = (Math.PI * 2 * i) / 18 + t * 2.4;
+          const dist = r * (0.55 + 0.35 * Math.random());
+          const x = center.x + Math.cos(ang) * dist;
+          const y = center.y + Math.sin(ang) * dist;
+          ctx.beginPath();
+          ctx.arc(x, y, 2 + Math.random() * 3, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255,${180 + Math.floor(Math.random() * 60)},60,${(0.55 * (1 - t)).toFixed(2)})`;
+          ctx.fill();
+        }
+
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(loop); else { destroy(); resolve(); }
+      }
+      requestAnimationFrame(loop);
+    });
+  });
+
+  // Sleep: soft indigo wave and drifting motes over affected area.
+  register('sleep', function(payload){
+    return new Promise((resolve) => {
+      let center = null;
+      const target = payload && payload.target;
+      if (Array.isArray(target) && target.length === 2 && typeof target[0] === 'number') {
+        center = tileCenterByCoords(target[0], target[1]);
+      } else if (typeof target === 'string') {
+        center = centerOfEntity(target);
+      }
+      if (!center && payload && payload.source) {
+        center = centerOfEntity(payload.source);
+      }
+      if (!center) return resolve();
+
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const radius = tileSize * 2.0;
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const t0 = performance.now();
+      const dur = 900;
+
+      function loop(now){
+        const t = Math.min(1, (now - t0) / dur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+
+        const pulse = 0.5 + 0.5 * Math.sin(now * 0.006);
+        const g = ctx.createRadialGradient(center.x, center.y, radius * 0.1, center.x, center.y, radius);
+        g.addColorStop(0, `rgba(170,150,255,${(0.28 * pulse * (1 - t * 0.4)).toFixed(2)})`);
+        g.addColorStop(0.6, `rgba(110,90,200,${(0.18 * (1 - t * 0.5)).toFixed(2)})`);
+        g.addColorStop(1, 'rgba(40,30,80,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        for (let i = 0; i < 12; i++) {
+          const ang = (Math.PI * 2 * i) / 12;
+          const dist = radius * (0.35 + 0.45 * Math.sin(now * 0.004 + i));
+          const x = center.x + Math.cos(ang) * dist;
+          const y = center.y + Math.sin(ang) * dist - t * 18;
+          ctx.font = 'bold 14px serif';
+          ctx.fillStyle = `rgba(220,210,255,${(0.55 * (1 - t)).toFixed(2)})`;
+          ctx.fillText('z', x, y);
+        }
+
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(loop); else { destroy(); resolve(); }
+      }
+      requestAnimationFrame(loop);
+    });
+  });
+
   // Hold Person: violet binding sigils lock the target in place
   register('hold_person', function(payload){
     return new Promise((resolve) => {

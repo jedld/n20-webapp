@@ -89,6 +89,34 @@ def test_select_npc_chain_responders_prefers_name_in_spoken_line():
     assert responders == [henrik]
 
 
+def test_select_npc_chain_responders_includes_explicit_reply_targets():
+    service = ConversationService.__new__(ConversationService)
+    pip = FakeReceiver('pip_barmaid')
+    sheep = Mock()
+    sheep.entity_uid = 'finethir_shinebright'
+    sheep.label = Mock(return_value='Finethir (Sheep)')
+    sheep.is_npc = Mock(return_value=True)
+    sheep.dialog = True
+    aldric = FakeSpeaker('aldric')
+
+    battle_map = Mock()
+    battle_map.entities = [pip, sheep, aldric]
+    current_game = Mock()
+    current_game.get_map_for_entity.return_value = battle_map
+    service._current_game_getter = lambda: current_game
+
+    responders = service.select_npc_chain_responders(
+        [],
+        pip,
+        {
+            'message': 'Um... excuse me, Mr. Sheep? What is it you want?',
+            'targets': [sheep],
+        },
+        player_speaker=aldric,
+    )
+    assert responders == [sheep]
+
+
 def test_message_invites_listener_approach():
     assert ConversationService.message_invites_listener_approach(
         'by the way tell henrik to come over here will ya',

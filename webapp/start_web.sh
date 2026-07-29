@@ -53,6 +53,8 @@ export LLAMA_CPP_BASE_URL="${LLAMA_CPP_BASE_URL:-http://jedld-strix.local:8000}"
 export TTS_ENABLED="${TTS_ENABLED:-1}"
 export TTS_PROVIDER="${TTS_PROVIDER:-cosyvoice}"
 export TTS_DEVICE="${TTS_DEVICE:-cpu}"
+# Low-latency stack (optional): run services/vllm-omni-tts/start_with_voices.sh,
+# then set TTS_PROVIDER=qwen3_vllm, TTS_DELIVERY=stream, VLLM_OMNI_TTS_URL=http://127.0.0.1:8091
 # Pin TTS to a specific GPU (e.g. TTS_CUDA_DEVICE=1 for a second Blackwell card).
 if [ -n "${TTS_CUDA_DEVICE:-}" ] && [ "$TTS_DEVICE" != "cpu" ]; then
   export CUDA_VISIBLE_DEVICES="$TTS_CUDA_DEVICE"

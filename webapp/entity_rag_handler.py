@@ -30,6 +30,7 @@ from natural20.utils.animal_communication import (
 )
 from natural20.utils.conversation_offers import (
     accept_effect_for_item,
+    adjust_item_offer_target,
     canonical_item_slug,
     evaluate_offer_block,
     merged_offer_configs,
@@ -604,7 +605,14 @@ class EntityRAGHandler:
             return None, []
         return SPEECH_MODE_ORDER[required_mode_index], reachable_targets
 
-    def build_conversation_response_plan(self, response: str, receiver: Entity, speaker: Entity = None, llm_conversation_handler=None) -> Dict[str, Any]:
+    def build_conversation_response_plan(
+        self,
+        response: str,
+        receiver: Entity,
+        speaker: Entity = None,
+        llm_conversation_handler=None,
+        player_speaker: Entity = None,
+    ) -> Dict[str, Any]:
         plan = {
             'language': 'common',
             'message': '',
@@ -667,7 +675,12 @@ class EntityRAGHandler:
             else:
                 language = rerendered_language
 
-        action_directives = self.parse_action_directives(processed_response, receiver, speaker=speaker)
+        action_directives = self.parse_action_directives(
+            processed_response,
+            receiver,
+            speaker=speaker,
+            player_speaker=player_speaker,
+        )
         processed_response = action_directives['response']
         plan.update({
             'approach': action_directives['approach'],
@@ -1516,7 +1529,13 @@ class EntityRAGHandler:
             'target_spec': target_spec,
         }
 
-    def parse_action_directives(self, response: str, actor: Entity, speaker: Entity = None) -> Dict[str, Any]:
+    def parse_action_directives(
+        self,
+        response: str,
+        actor: Entity,
+        speaker: Entity = None,
+        player_speaker: Entity = None,
+    ) -> Dict[str, Any]:
         directives = {
             'response': response or '',
             'approach': None,
@@ -1636,8 +1655,18 @@ class EntityRAGHandler:
                     target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=False)
                     if target is None and speaker is not None:
                         target = speaker
+                    item_slug = self._canonical_item_slug(item_raw)
+                    target = adjust_item_offer_target(
+                        target,
+                        target_spec=target_spec,
+                        speaker=speaker,
+                        player_speaker=player_speaker,
+                        item_slug=item_slug,
+                        game_properties=self._game_properties(),
+                        actor=actor,
+                    )
                     directives['offer_item'] = {
-                        'item': self._canonical_item_slug(item_raw),
+                        'item': item_slug,
                         'target': target,
                         'target_spec': target_spec,
                         'auto_use': self._parse_bool(params.get('auto_use')),
@@ -2990,12 +3019,18 @@ class EntityRAGHandler:
             actor_has_map_item=self._actor_has_offer_source(actor, item_slug),
         )
 
-    def offer_item_guidance_for_conversation(self, actor: Entity, speaker: Entity = None) -> str:
+    def offer_item_guidance_for_conversation(
+        self,
+        actor: Entity,
+        speaker: Entity = None,
+        player_speaker: Entity = None,
+    ) -> str:
         """Prompt lines from campaign ``conversation_item_offers`` (and optional NPC overrides)."""
         lines = offer_guidance_lines(
             self.game_session,
             actor,
             speaker,
+            player_speaker=player_speaker,
             game_properties=self._game_properties(),
             actor_has_map_item_fn=lambda entity, slug: self._actor_has_offer_source(entity, slug),
         )

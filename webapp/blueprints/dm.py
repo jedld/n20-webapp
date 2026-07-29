@@ -194,6 +194,16 @@ def admin_load():
             from webapp.tts.preferences import refresh_campaign_delivery_mode
 
             refresh_campaign_delivery_mode(get_current_game().game_session.game_properties)
+            try:
+                import os
+                from webapp.tts.vllm_campaign_voices import register_campaign_voices_if_needed
+
+                register_campaign_voices_if_needed(
+                    get_current_game().game_session.root_path,
+                    provider_name=os.environ.get("TTS_PROVIDER", ""),
+                )
+            except Exception:
+                pass
         except Exception:
             pass
         try:
@@ -2365,6 +2375,16 @@ def admin_reset_campaign():
             from webapp.tts.preferences import refresh_campaign_delivery_mode
 
             refresh_campaign_delivery_mode(get_current_game().game_session.game_properties)
+            try:
+                import os
+                from webapp.tts.vllm_campaign_voices import register_campaign_voices_if_needed
+
+                register_campaign_voices_if_needed(
+                    get_current_game().game_session.root_path,
+                    provider_name=os.environ.get("TTS_PROVIDER", ""),
+                )
+            except Exception:
+                pass
         except Exception:
             pass
         if clear_logs:

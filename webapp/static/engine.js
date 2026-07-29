@@ -86,11 +86,25 @@ let valid_target_cache = {};
 function exitTargetMode() {
   targetMode = false;
   coneMode = false;
+  aoePointTargetMode = false;
   valid_target_cache = {};
+  document.body.classList.remove('aoe-point-targeting');
   if (globalCtx && globalCanvas) {
     globalCtx.clearRect(0, 0, globalCanvas.width, globalCanvas.height);
   }
   $(".tile").css("border", "none");
+}
+
+function enterAoePointTargeting() {
+  aoePointTargetMode = true;
+  document.body.classList.add('aoe-point-targeting');
+}
+
+function targetDistanceFeet(sourceX, sourceY, coordsx, coordsy) {
+  if (aoePointTargetMode || coneMode) {
+    return Math.max(Math.abs(sourceX - coordsx), Math.abs(sourceY - coordsy)) * 5;
+  }
+  return Math.floor(Utils.euclideanDistance(sourceX, sourceY, coordsx, coordsy)) * 5;
 }
 
 let move_path_cache = {};
@@ -221,6 +235,7 @@ let pivotPoints = [];
 let moveMode = false,
   targetMode = false,
   coneMode = false,
+  aoePointTargetMode = false,
   multiTargetMode = false,
   multiTargetModeUnique = false;
 let movePath = [],
@@ -572,6 +587,55 @@ function shouldShowMessageInJrpgDialog(entityId, targets, options) {
     || (Array.isArray(targets) && targets.includes(currentPovEntity));
 }
 
+function tryPlayConversationTts(message) {
+  if (!message || typeof window.TTSPlayer === 'undefined' || !window.TTSPlayer) {
+    return;
+  }
+  const audioUrl = message.audio_url;
+  const ttsStatus = message.tts_status || '';
+  if (!audioUrl || ttsStatus === 'pending' || ttsStatus === 'streaming') {
+    return;
+  }
+  const TTSPlayer = window.TTSPlayer;
+  const replyId = message.reply_id || null;
+  if (replyId
+      && typeof TTSPlayer.hasReplyPlayed === 'function'
+      && TTSPlayer.hasReplyPlayed(replyId)) {
+    return;
+  }
+  const shouldPlay = (
+    (typeof TTSPlayer.shouldAutoplay === 'function' && TTSPlayer.shouldAutoplay())
+    || (typeof TTSPlayer.getDeliveryMode === 'function'
+      && (TTSPlayer.getDeliveryMode() === 'stream' || TTSPlayer.getDeliveryMode() === 'async'))
+  );
+  if (!shouldPlay) {
+    return;
+  }
+  try {
+    if (typeof TTSPlayer.playReplyAudio === 'function') {
+      TTSPlayer.playReplyAudio({
+        audio_url: audioUrl,
+        reply_id: replyId,
+        speaker_name: message.speaker_name || message.entity_name || message.entity_id,
+        entity_id: message.entity_id,
+        tts_emotion: message.tts_emotion || 'calm',
+        tts_gain: message.tts_gain,
+      });
+    } else if (typeof TTSPlayer.onTtsReady === 'function') {
+      TTSPlayer.onTtsReady({
+        audio_url: audioUrl,
+        reply_id: replyId,
+        speaker_name: message.speaker_name || message.entity_name || message.entity_id,
+        entity_id: message.entity_id,
+        tts_emotion: message.tts_emotion || 'calm',
+        tts_gain: message.tts_gain,
+      });
+    }
+  } catch (ttsErr) {
+    console.warn('[Engine] TTS playback failed:', ttsErr);
+  }
+}
+
 function deliverConversationPayload(messagePayload, resolve) {
   const data = { message: messagePayload };
   const { entity_id, message, targets, visual_only, narrative, segments } = data.message;
@@ -623,25 +687,7 @@ function deliverConversationPayload(messagePayload, resolve) {
   };
 
   if (data.message.local_chat_only) {
-    const audioUrl = data.message.audio_url;
-    if (audioUrl && typeof window.TTSPlayer !== 'undefined' && window.TTSPlayer
-        && typeof window.TTSPlayer.shouldAutoplay === 'function' && window.TTSPlayer.shouldAutoplay()) {
-      try {
-        if (typeof window.TTSPlayer.onNPCSpeech === 'function') {
-          const npcName = data.message.speaker_name || data.message.entity_name || entity_id;
-          window.TTSPlayer.onNPCSpeech({
-            audio_url: audioUrl,
-            npc_name: npcName,
-            npc_uid: entity_id,
-            emotion: data.message.tts_emotion || 'calm',
-            tts_gain: data.message.tts_gain,
-            timestamp: Date.now() / 1000,
-          });
-        }
-      } catch (ttsErr) {
-        console.warn('[Engine] TTS playback failed:', ttsErr);
-      }
-    }
+    tryPlayConversationTts(data.message);
     finish();
     return;
   }
@@ -730,42 +776,8 @@ function deliverConversationPayload(messagePayload, resolve) {
 
   const audioUrl = data.message.audio_url;
   const ttsStatus = data.message.tts_status || '';
-  if (audioUrl && ttsStatus !== 'pending' && ttsStatus !== 'streaming'
-      && typeof window.TTSPlayer !== 'undefined' && window.TTSPlayer) {
-    const replyId = data.message.reply_id || null;
-    const alreadyPlayed = replyId
-      && typeof window.TTSPlayer.hasReplyPlayed === 'function'
-      && window.TTSPlayer.hasReplyPlayed(replyId);
-    const shouldPlay = !alreadyPlayed && (
-      (typeof window.TTSPlayer.shouldAutoplay === 'function' && window.TTSPlayer.shouldAutoplay())
-      || (typeof window.TTSPlayer.getDeliveryMode === 'function'
-        && (window.TTSPlayer.getDeliveryMode() === 'stream' || window.TTSPlayer.getDeliveryMode() === 'async'))
-    );
-    if (shouldPlay) {
-      try {
-        if (typeof window.TTSPlayer.onTtsReady === 'function') {
-          window.TTSPlayer.onTtsReady({
-            audio_url: audioUrl,
-            reply_id: data.message.reply_id || null,
-            speaker_name: data.message.speaker_name || data.message.entity_name || entity_id,
-            entity_id: entity_id,
-            tts_emotion: data.message.tts_emotion || 'calm',
-            tts_gain: data.message.tts_gain,
-          });
-        } else if (typeof window.TTSPlayer.onNPCSpeech === 'function') {
-          const npcName = data.message.speaker_name || data.message.entity_name || entity_id;
-          window.TTSPlayer.onNPCSpeech({
-            audio_url: audioUrl,
-            npc_name: npcName,
-            npc_uid: entity_id,
-            emotion: data.message.tts_emotion || 'calm',
-            tts_gain: data.message.tts_gain,
-          });
-        }
-      } catch (ttsErr) {
-        console.warn('[TTSPlayer] Failed to play conversation audio:', ttsErr);
-      }
-    }
+  if (audioUrl && ttsStatus !== 'pending' && ttsStatus !== 'streaming') {
+    tryPlayConversationTts(data.message);
   } else if (audioUrl) {
     console.log('[Engine] TTS audio ready (click speaker to play):', audioUrl);
   }
@@ -2378,7 +2390,7 @@ const switchPOV = (entity_uid, canvas) => {
     // Fallback for older versions or if Utils is not available
     $(".popover-menu, .popover-menu-2").hide();
     $('#targetSelectionModal').modal('hide');
-    targetMode = multiTargetMode = moveMode = coneMode = false;
+    targetMode = multiTargetMode = moveMode = coneMode = aoePointTargetMode = false;
     $(".add-to-target").hide();
     $(".highlighted").removeClass("highlighted");
     $(".target-selection, .active-selection").hide();
@@ -4702,6 +4714,12 @@ $(document).ready(() => {
     const coordsy = $tile.data("coords-y");
 
     if (targetMode) {
+      if (aoePointTargetMode || coneMode) {
+        targetModeCallback({ x: coordsx, y: coordsy });
+        exitTargetMode();
+        e.stopPropagation();
+        return;
+      }
       // Check if there are multiple valid targets at this position
       if (globalActionInfo && (
         globalActionInfo === 'AttackAction' ||
@@ -4858,10 +4876,7 @@ $(document).ready(() => {
 
   // Draws a target line from a source to a given set of coordinates.
   function drawTargetLine(ctx, source, coordsx, coordsy, valid_target = true) {
-    const currentDistance =
-      Math.floor(
-        Utils.euclideanDistance(source.x, source.y, coordsx, coordsy),
-      ) * 5;
+    const currentDistance = targetDistanceFeet(source.x, source.y, coordsx, coordsy);
     const scrollLeft =
       window.pageXOffset || document.documentElement.scrollLeft;
     const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
@@ -5139,7 +5154,7 @@ $(document).ready(() => {
   $(document).on("keydown", (event) => {
     if (event.keyCode === 27) {
       if (moveMode || targetMode || multiTargetMode || coneMode || keyboardMovementMode) {
-        moveMode = targetMode = multiTargetMode = coneMode = false;
+        moveMode = targetMode = multiTargetMode = coneMode = aoePointTargetMode = false;
         accumulatedPath = [];
         pivotPoints = [];
         valid_target_cache = {};
@@ -5216,7 +5231,7 @@ $(document).ready(() => {
     }
     if (targetMode || multiTargetMode || moveMode) {
       e.preventDefault();
-      targetMode = multiTargetMode = moveMode = coneMode = false;
+      targetMode = multiTargetMode = moveMode = coneMode = aoePointTargetMode = false;
       accumulatedPath = [];
       pivotPoints = [];
       valid_target_cache = {};
@@ -6367,6 +6382,7 @@ $(document).ready(() => {
         targetModeMaxRange =
           data.range_max !== undefined ? data.range_max : data.range;
         targetMode = true;
+        enterAoePointTargeting();
         globalActionInfo = action;
         globalOpts = opts;
         globalSourceEntity = entity_uid;
@@ -6390,6 +6406,7 @@ $(document).ready(() => {
         targetModeMaxRange =
           data.range_max !== undefined ? data.range_max : data.range;
         targetMode = true;
+        enterAoePointTargeting();
         globalActionInfo = action;
         globalOpts = opts;
         globalSourceEntity = entity_uid;
@@ -6413,6 +6430,7 @@ $(document).ready(() => {
         targetModeMaxRange =
           data.range_max !== undefined ? data.range_max : data.range;
         targetMode = true;
+        enterAoePointTargeting();
         globalActionInfo = action;
         globalOpts = opts;
         globalSourceEntity = entity_uid;
@@ -6444,6 +6462,7 @@ $(document).ready(() => {
           multiTargetModeUnique = data.unique_targets === true;
           targetMode = false;
           coneMode = false;
+          aoePointTargetMode = false;
           valid_target_cache = {};
           if (typeof showMultiTargetBar === 'function') {
             showMultiTargetBar();
@@ -6451,6 +6470,7 @@ $(document).ready(() => {
         } else {
           targetMode = true;
           coneMode = false;
+          aoePointTargetMode = false;
           globalActionInfo = action;
           globalOpts = opts;
           globalSourceEntity = entity_uid;

@@ -1278,8 +1278,19 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
         if (!replyId || options.tts_skipped || options.ttsSkipped) {
             return;
         }
-        if (status === 'pending' || status === 'streaming') {
+        if (status === 'pending') {
             Chat.scheduleTtsReplyPoll(replyId);
+            return;
+        }
+        if (status === 'streaming') {
+            const mode = window.TTSPlayer
+                && typeof window.TTSPlayer.getDeliveryMode === 'function'
+                ? window.TTSPlayer.getDeliveryMode()
+                : '';
+            // Socket PCM handles stream delivery; poll only as onStreamEnd fallback.
+            if (mode !== 'stream') {
+                Chat.scheduleTtsReplyPoll(replyId);
+            }
         }
     },
     applyTtsStreaming: function (payload) {

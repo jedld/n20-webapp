@@ -705,6 +705,11 @@ input.initiative-text {
   z-index: 999;
 }
 
+body.aoe-point-targeting .tile .fog-of-war,
+body.aoe-point-targeting .tile .brightness-overlay {
+  pointer-events: none;
+}
+
 .brightness-overlay {
   position: absolute;
   z-index: 999;

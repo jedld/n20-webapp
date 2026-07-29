@@ -369,7 +369,7 @@ def get_target():
                 valid_target = target in valid_targets
             return jsonify(valid_target=valid_target, target_squares=target_squares, adv_mod=adv_mod, adv_info=adv_info, attack_mod=attack_mod)
         else:
-            action.validate(battle_map, target)
+            action.validate(battle_map, [x, y])
             if len(action.errors)  > 0:
                 return jsonify(valid_target=False, errors=action.errors)
             return jsonify(valid_target=True, target_squares=target_squares, errors=action.errors)
@@ -589,7 +589,7 @@ def action():
 
     if target_coords:
         mode = action_request.get('mode', None)
-        if mode == 'cone' or mode == 'point_target' or mode == 'cube' or mode == 'square':
+        if mode == 'cone' or mode == 'point_target' or mode == 'cube' or mode == 'square' or mode == 'radius' or mode == 'line':
             target = [target_coords['x'], target_coords['y']]
         else:
             if isinstance(target_coords, list):
@@ -1364,7 +1364,10 @@ def get_targets_at_position():
                 
                 test_build = build_map
                 while not isinstance(test_build, Action):
-                    if test_build['param'][0]['type'] == 'select_empty_space':
+                    param_type = test_build['param'][0]['type']
+                    if param_type == 'select_empty_space':
+                        test_build = test_build['next']([x, y])
+                    elif param_type in ('select_radius', 'select_square', 'select_line', 'select_cone', 'select_cube'):
                         test_build = test_build['next']([x, y])
                     else:
                         break

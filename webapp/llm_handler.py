@@ -1059,6 +1059,44 @@ class LLMHandler:
         for i in range(1, len(messages)):
             if messages[i].get('role') == 'system':
                 messages[i]['role'] = 'user'
+
+    @staticmethod
+    def _normalize_messages_for_chat_completion(messages: List[Dict[str, str]]) -> None:
+        """Merge consecutive same-role turns for OpenAI / llama.cpp chat templates.
+
+        llama.cpp rejects requests with two or more assistant messages at the end
+        of the transcript. NPC buffers can produce ``user, assistant, assistant``
+        when an NPC speaks twice before the player replies again.
+        """
+        if not messages:
+            return
+
+        leading_system: list[str] = []
+        idx = 0
+        while idx < len(messages) and messages[idx].get('role') == 'system':
+            text = str(messages[idx].get('content') or '').strip()
+            if text:
+                leading_system.append(text)
+            idx += 1
+
+        head: list[dict[str, str]] = []
+        if leading_system:
+            head.append({'role': 'system', 'content': '\n\n'.join(leading_system)})
+
+        merged_tail: list[dict[str, str]] = []
+        for msg in messages[idx:]:
+            role = str(msg.get('role') or 'user').strip().lower() or 'user'
+            content = str(msg.get('content') or '').strip()
+            if not content:
+                continue
+            if merged_tail and merged_tail[-1]['role'] == role:
+                merged_tail[-1]['content'] = f"{merged_tail[-1]['content']}\n\n{content}"
+            else:
+                merged_tail.append({'role': role, 'content': content})
+
+        messages.clear()
+        messages.extend(head)
+        messages.extend(merged_tail)
     
     def initialize_provider(self, provider_name: str, config: Dict[str, Any]) -> bool:
         """Initialize a specific LLM provider."""
@@ -1220,6 +1258,7 @@ class LLMHandler:
             logger.debug(f"[LLMHandler] Messages sent to provider: {messages}")
 
         self._only_first_message_may_be_system(messages)
+        self._normalize_messages_for_chat_completion(messages)
 
         provider_info = self.get_provider_info()
         if not is_npc_conversation:

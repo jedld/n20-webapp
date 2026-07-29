@@ -364,3 +364,29 @@ def test_attach_per_listener_tts_skips_generation_when_requested():
     assert result.get('tts_generated') is False
     assert 'audio_url' not in result
     assert len(service._tts_manager.calls) == 0
+
+
+def test_stream_tts_delivery_queues_consecutive_jobs():
+    from webapp.conversation_service import ConversationService
+
+    service = ConversationService(
+        current_game_getter=lambda: Mock(),
+        game_session=Mock(),
+        socketio=Mock(),
+        entity_rag_handler_getter=lambda: Mock(),
+        llm_conversation_handler_getter=lambda: Mock(),
+        roles_for_username_getter=lambda username: [],
+        entity_owners_getter=lambda: {},
+        entities_controlled_by_getter=lambda username: [],
+        logins_getter=lambda: {},
+        logger=Mock(),
+    )
+    service._deliver_stream_tts_jobs = Mock()
+    service.socketio.start_background_task = Mock(side_effect=lambda fn: fn())
+
+    service._schedule_stream_tts_delivery([{'username': 'pc', 'reply_id': 'a'}], {}, Mock())
+    service._schedule_stream_tts_delivery([{'username': 'pc', 'reply_id': 'b'}], {}, Mock())
+
+    assert service._deliver_stream_tts_jobs.call_count == 2
+    assert service._stream_tts_queue == []
+    assert service._stream_tts_worker_running is False

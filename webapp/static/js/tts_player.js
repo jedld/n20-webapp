@@ -23,8 +23,10 @@ window.TTSPlayer = (function () {
     var _initialized = false;
     var _audioCtx = null;
     var _streams = {};
+    var _deferredStreamBuffers = {};
     var _userGestureUnlocked = false;
     var _playedReplyIds = new Set();
+    var _streamDeliveredReplyIds = new Set();
     var _pendingStreamStarts = [];
     var _playbackIdleWaiters = [];
 
@@ -115,6 +117,46 @@ window.TTSPlayer = (function () {
         return samples;
     }
 
+    function getDeferredStreamBuffer(replyId) {
+        if (!replyId) {
+            return null;
+        }
+        if (!_deferredStreamBuffers[replyId]) {
+            _deferredStreamBuffers[replyId] = { chunks: [], end: null };
+        }
+        return _deferredStreamBuffers[replyId];
+    }
+
+    function bufferStreamChunk(data) {
+        var replyId = data.reply_id || data.replyId;
+        if (!replyId || !data.pcm_b64) {
+            return;
+        }
+        getDeferredStreamBuffer(replyId).chunks.push(data);
+    }
+
+    function bufferStreamEnd(data) {
+        var replyId = data.reply_id || data.replyId;
+        if (!replyId) {
+            return;
+        }
+        getDeferredStreamBuffer(replyId).end = data;
+    }
+
+    function flushDeferredStreamBuffer(replyId) {
+        var buffer = _deferredStreamBuffers[replyId];
+        if (!buffer) {
+            return;
+        }
+        delete _deferredStreamBuffers[replyId];
+        buffer.chunks.forEach(function (chunk) {
+            onStreamChunk(chunk);
+        });
+        if (buffer.end) {
+            onStreamEnd(buffer.end);
+        }
+    }
+
     function teardownStream(replyId, stream) {
         if (!stream) {
             return;
@@ -127,19 +169,27 @@ window.TTSPlayer = (function () {
         if (replyId && _streams[replyId] === stream) {
             delete _streams[replyId];
         }
+        if (replyId) {
+            delete _deferredStreamBuffers[replyId];
+        }
     }
 
     function isStreamPlaybackActive(excludeReplyId) {
-        if (!_audioCtx) {
-            return false;
-        }
-        var now = _audioCtx.currentTime;
         return Object.keys(_streams).some(function (replyId) {
             if (excludeReplyId && replyId === excludeReplyId) {
                 return false;
             }
             var stream = _streams[replyId];
-            return stream && !stream.ended && stream.playbackEndTime > now + 0.05;
+            if (!stream) {
+                return false;
+            }
+            if (!stream.ended) {
+                return true;
+            }
+            if (!_audioCtx) {
+                return false;
+            }
+            return stream.playbackEndTime > _audioCtx.currentTime + 0.05;
         });
     }
 
@@ -244,6 +294,7 @@ window.TTSPlayer = (function () {
             sources: [],
         };
         showNPCSpeakingIndicator(normalizeSpeechData(data));
+        flushDeferredStreamBuffer(replyId);
     }
 
     function onStreamStart(data) {
@@ -270,6 +321,9 @@ window.TTSPlayer = (function () {
         var replyId = data.reply_id || data.replyId;
         var stream = replyId ? _streams[replyId] : null;
         if (!stream || stream.ended || !data.pcm_b64) {
+            if (replyId && data.pcm_b64) {
+                bufferStreamChunk(data);
+            }
             return;
         }
         unlockAudioForPlayback();
@@ -324,6 +378,17 @@ window.TTSPlayer = (function () {
         return playReplyAudio(data);
     }
 
+    function streamDeliveredAudio(replyId) {
+        if (!replyId) {
+            return false;
+        }
+        if (_streamDeliveredReplyIds.has(String(replyId))) {
+            return true;
+        }
+        var stream = _streams[replyId];
+        return !!(stream && stream.chunksReceived > 0);
+    }
+
     /**
      * Autoplay a finalized reply exactly once (socket + poll may both fire).
      */
@@ -334,22 +399,27 @@ window.TTSPlayer = (function () {
         if (!audioUrl) {
             return false;
         }
-        try {
-            if (typeof window.Chat !== 'undefined' && window.Chat
-                && typeof window.Chat.applyTtsReady === 'function') {
-                window.Chat.applyTtsReady(data);
-            }
-        } catch (uiErr) {
-            console.warn('[TTSPlayer] applyTtsReady failed:', uiErr);
-        }
-        if (replyId && hasReplyPlayed(replyId)) {
+        applyTtsReadyUi(data);
+        if (replyId && (hasReplyPlayed(replyId) || streamDeliveredAudio(replyId))) {
+            markReplyPlayed(replyId);
             return false;
         }
         if (!shouldAutoPlayAfterReady()) {
             return false;
         }
+        if (isPlaybackActive()) {
+            whenPlaybackIdle(function () {
+                playReplyAudio(data);
+            });
+            return false;
+        }
         if (replyId && _streams[replyId]) {
-            teardownStream(replyId, _streams[replyId]);
+            var activeStream = _streams[replyId];
+            if (activeStream.chunksReceived > 0 || !activeStream.ended) {
+                markReplyPlayed(replyId);
+                return false;
+            }
+            teardownStream(replyId, activeStream);
         }
         markReplyPlayed(replyId);
         onNPCSpeech(Object.assign({}, data, {
@@ -366,21 +436,25 @@ window.TTSPlayer = (function () {
         var audioUrl = data.audio_url || data.audioUrl;
         var chunksPlayed = stream ? stream.chunksReceived : 0;
 
-        if (stream) {
-            stream.ended = true;
-            var cleanupDelay = Math.max(
-                300,
-                (stream.playbackEndTime - stream.ctx.currentTime) * 1000 + 200
-            );
-            setTimeout(function () {
-                teardownStream(replyId, stream);
-                notifyPlaybackIdleWaiters();
-                flushPendingStreamStarts();
-            }, cleanupDelay);
-        } else {
+        if (!stream) {
+            bufferStreamEnd(data);
+            return;
+        }
+
+        stream.ended = true;
+        if (chunksPlayed > 0 && replyId) {
+            _streamDeliveredReplyIds.add(String(replyId));
+            markReplyPlayed(replyId);
+        }
+        var cleanupDelay = Math.max(
+            300,
+            (stream.playbackEndTime - stream.ctx.currentTime) * 1000 + 200
+        );
+        setTimeout(function () {
+            teardownStream(replyId, stream);
             notifyPlaybackIdleWaiters();
             flushPendingStreamStarts();
-        }
+        }, cleanupDelay);
 
         // Live stream failed entirely — one-shot WAV fallback (never stack on PCM).
         if (audioUrl && chunksPlayed === 0) {
@@ -575,6 +649,12 @@ window.TTSPlayer = (function () {
         if (!audioData || !audioData.audioUrl) {
             return;
         }
+        if (isPlaybackActive()) {
+            whenPlaybackIdle(function () {
+                queueAudio(audioData);
+            });
+            return;
+        }
         var urlKey = normalizeAudioUrl(audioData.audioUrl);
         if (_currentAudio && _currentAudio.src && normalizeAudioUrl(_currentAudio.src) === urlKey) {
             return;
@@ -593,6 +673,10 @@ window.TTSPlayer = (function () {
      */
     function playNext() {
         if (_isPlaying || _audioQueue.length === 0 || !_enabled) {
+            return;
+        }
+        if (isStreamPlaybackActive()) {
+            whenPlaybackIdle(playNext);
             return;
         }
 

@@ -883,6 +883,10 @@
     }
     $('#klass').val(ec.klass || '');
     $('#level').val(String(ec.level || 1));
+    if (ec.background) {
+      $('#background').val(ec.background);
+      $('#background').trigger('change');
+    }
 
     const ability = ec.ability || {};
     abilities.forEach(ab=>{

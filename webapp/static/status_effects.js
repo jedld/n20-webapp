@@ -109,6 +109,14 @@
       mix-blend-mode: screen;
       animation: pe-frost-rotate 6s linear infinite;
     }
+    @keyframes pe-sleep-breathe {
+      0% { transform: scale(0.97); opacity: 0.30; }
+      100% { transform: scale(1.02); opacity: 0.16; }
+    }
+    @keyframes pe-sleep-motes {
+      0% { transform: translateY(0px); opacity: 0.45; }
+      100% { transform: translateY(-6px); opacity: 0.18; }
+    }
     @keyframes pe-hold-freeze {
       0% { transform: scale(0.98); opacity: 0.22; }
       100% { transform: scale(1.0); opacity: 0.14; }
@@ -130,6 +138,18 @@
       mix-blend-mode: screen;
       animation: pe-hold-chains 9s linear infinite;
     }
+    .pe-sleep {
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(175, 160, 255, 0.50) 0%, rgba(90, 70, 170, 0.28) 55%, rgba(40, 30, 80, 0.0) 78%);
+      box-shadow: 0 0 14px rgba(130, 110, 220, 0.42), inset 0 0 10px rgba(200, 190, 255, 0.24);
+      animation: pe-sleep-breathe 2.4s ease-in-out infinite alternate;
+    }
+    .pe-sleep-motes {
+      border-radius: 50%;
+      border: 2px dotted rgba(200, 190, 255, 0.45);
+      mix-blend-mode: screen;
+      animation: pe-sleep-motes 2.8s ease-in-out infinite alternate;
+    }
     `;
     const style = document.createElement('style');
     style.id = 'persistent-effects-style';
@@ -148,6 +168,7 @@
   k = k.replace(/\s+/g, '_');
   if (k === 'blessed') k = 'bless';
   if (k === 'hold_person' || k === 'paralyzed') k = 'hold_person';
+  if (k === 'asleep' || k === 'sleeping') k = 'sleep';
   if (k === 'shield_of_faith' || k === 'shield-of-faith' || k === 'shield faith') k = 'shield';
   if (k === 'mage_armor' || k === 'mage-armour') k = 'mage_armor';
   return k;
@@ -161,6 +182,7 @@
     armor_of_agathys: 'pe-armor-agathys',
     bane: 'pe-bane',
     hold_person: 'pe-hold-person',
+    sleep: 'pe-sleep',
     resistance: 'pe-bless',
   };
 
@@ -210,6 +232,10 @@
     if (effKey === 'hold_person') {
       const $chains = $('<div class="pe-overlay pe-hold-person-chains">').attr('data-pe', effKey).css({ width: w, height: h, top: 0, left: 0 });
       $container.append($chains);
+    }
+    if (effKey === 'sleep') {
+      const $motes = $('<div class="pe-overlay pe-sleep-motes">').attr('data-pe', effKey).css({ width: w, height: h, top: 0, left: 0 });
+      $container.append($motes);
     }
 
     return $overlay;

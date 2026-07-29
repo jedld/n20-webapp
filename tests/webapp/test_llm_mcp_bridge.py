@@ -365,3 +365,28 @@ def test_only_first_message_may_be_system_coerces_llama_compatible_roles(handler
     ]
     LLMHandler._only_first_message_may_be_system(msgs)
     assert [m['role'] for m in msgs] == ['system', 'user', 'user']
+
+
+def test_normalize_messages_merges_trailing_assistants():
+    msgs = [
+        {'role': 'system', 'content': 'You are Mara.'},
+        {'role': 'user', 'content': 'hello'},
+        {'role': 'assistant', 'content': 'Welcome.'},
+        {'role': 'assistant', 'content': 'What can I get you?'},
+    ]
+    LLMHandler._normalize_messages_for_chat_completion(msgs)
+    assert [m['role'] for m in msgs] == ['system', 'user', 'assistant']
+    assert 'Welcome.' in msgs[-1]['content']
+    assert 'What can I get you?' in msgs[-1]['content']
+
+
+def test_normalize_messages_merges_leading_system_blocks():
+    msgs = [
+        {'role': 'system', 'content': 'base'},
+        {'role': 'system', 'content': 'extra'},
+        {'role': 'user', 'content': 'hi'},
+    ]
+    LLMHandler._normalize_messages_for_chat_completion(msgs)
+    assert [m['role'] for m in msgs] == ['system', 'user']
+    assert 'base' in msgs[0]['content']
+    assert 'extra' in msgs[0]['content']

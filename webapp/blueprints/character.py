@@ -212,6 +212,7 @@ def character_editor(character_name):
             'pronoun': pc.get('pronoun', ''),
             'race': pc.get('race', ''),
             'subrace': pc.get('subrace', ''),
+            'background': pc.get('background', ''),
             'klass': klass or '',
             'level': level,
             'ability': pc.get('ability', {}),
@@ -271,6 +272,12 @@ def update_character(character_name):
         selected_feats = _parse_json_list_form(request.form, 'feats')
         subclass_choice = (request.form.get('subclass') or '').strip()
         asi_boosts = _parse_json_dict_form(request.form, 'asi_boosts')
+        background_key = (request.form.get('background') or '').strip()
+        background_language_selections = _parse_json_list_form(request.form, 'background_languages')
+        backgrounds_def = get_game_session().load_backgrounds() or {}
+        background_def = backgrounds_def.get(background_key) if background_key else None
+        if background_key and background_def is None:
+            return jsonify(error='Unknown background selection'), 400
 
         classes_def = get_game_session().load_classes() or {}
         cdef = classes_def.get(klass, {}) or {}
@@ -320,6 +327,28 @@ def update_character(character_name):
         else:
             pc.pop('outward_appearance', None)
             pc.pop('appearance', None)
+
+        if background_key and background_def:
+            pc['background'] = background_key
+            for skill in background_def.get('skill_proficiencies', []):
+                pc.setdefault('skills', [])
+                if skill not in pc['skills']:
+                    pc['skills'].append(skill)
+            for tool in background_def.get('tool_proficiencies', []):
+                pc.setdefault('tool_proficiencies', [])
+                if tool not in pc['tool_proficiencies']:
+                    pc['tool_proficiencies'].append(tool)
+            for lang in background_def.get('languages', []):
+                if lang and str(lang).lower() != 'none':
+                    pc.setdefault('languages', [])
+                    if lang not in pc['languages']:
+                        pc['languages'].append(lang)
+            if background_language_selections:
+                pc['languages'] = list(dict.fromkeys(
+                    list(pc.get('languages') or []) + background_language_selections
+                ))
+        elif not background_key:
+            pc.pop('background', None)
 
         # Update inventory from character builder
         inventory_json = (request.form.get('inventory') or '').strip()

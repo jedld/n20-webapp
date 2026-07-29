@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, MagicMock
 from webapp.entity_rag_handler import EntityRAGHandler, PERCEPTION_EMPTY_DESCRIPTION
 from unittest.mock import patch
+from natural20.player_character import PlayerCharacter
 
 
 class TestEntityRAGHandler(unittest.TestCase):
@@ -22,6 +23,7 @@ class TestEntityRAGHandler(unittest.TestCase):
             'conversation_item_offers': {
                 'scroll_speak_animals_modified': {
                     'aliases': ['scroll_speak_animals'],
+                    'prefer_player_character': True,
                     'block_when': [
                         'offer_completed',
                         'target_has_item',
@@ -647,6 +649,26 @@ class TestEntityRAGHandler(unittest.TestCase):
         self.assertEqual(plan['offer_item']['item'], 'scroll_speak_animals_modified')
         self.assertEqual(plan['offer_item']['target'], offer_target)
         self.assertEqual(plan['message'], 'Please take this.')
+
+    def test_build_conversation_response_plan_offer_item_prefers_player_in_chain(self):
+        pip = Mock(entity_uid='pip_barmaid')
+        pc = Mock(spec=PlayerCharacter, entity_uid='aldric')
+        receiver = Mock()
+        receiver.entity_uid = 'finethir'
+        receiver.languages.return_value = ['common']
+
+        self.rag_handler.resolve_named_target = Mock(return_value=pip)
+        self.rag_handler.plan_response_volume = Mock(return_value=('normal', [pip]))
+
+        plan = self.rag_handler.build_conversation_response_plan(
+            '[OFFER_ITEM: item=scroll_speak_animals, target=speaker] Take this scroll.',
+            receiver,
+            speaker=pip,
+            llm_conversation_handler=Mock(),
+            player_speaker=pc,
+        )
+
+        self.assertEqual(plan['offer_item']['target'], pc)
 
     def test_build_conversation_response_plan_preserves_retrieve_offer_sequence(self):
         speaker = Mock()
