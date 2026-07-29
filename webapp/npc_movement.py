@@ -116,6 +116,58 @@ class NpcMovementHelper:
             key=lambda pos: abs(pos[0] - source_x) + abs(pos[1] - source_y),
         )
 
+    def _annotation_home_map(self, target_info: Dict[str, Any]):
+        return target_info.get('annotation_map')
+
+    def _immediate_landmark_square(
+        self,
+        actor: Entity,
+        target_info: Dict[str, Any],
+    ) -> Optional[Tuple[int, int]]:
+        """Return the next square to path toward on the actor's current map."""
+        if target_info.get('kind') != 'annotation':
+            return None
+
+        from natural20.map_annotations import annotation_anchor_square
+
+        battle_map = self.current_game.get_map_for_entity(actor)
+        if battle_map is None:
+            return None
+
+        annotation = target_info.get('annotation') or {}
+        annotation_map = self._annotation_home_map(target_info) or battle_map
+        dest_square = annotation_anchor_square(annotation, annotation_map)
+        if dest_square is None:
+            return None
+
+        dest_x, dest_y = int(dest_square[0]), int(dest_square[1])
+        if annotation_map is battle_map:
+            return self._resolve_reachable_square(actor, battle_map, (dest_x, dest_y))
+
+        try:
+            source_x, source_y = battle_map.position_of(actor)
+        except Exception:
+            return None
+
+        path_compute = PathCompute(None, battle_map, actor, ignore_opposing=True)
+        door_navigation = self.should_use_door_navigation(actor, target_info)
+        plan = path_compute.compute_cross_map_path(
+            battle_map,
+            int(source_x),
+            int(source_y),
+            annotation_map,
+            dest_x,
+            dest_y,
+            door_navigation=door_navigation,
+        )
+        if not plan:
+            return None
+        segment_path = plan[0].get('path') or []
+        if not segment_path:
+            return None
+        portal_x, portal_y = int(segment_path[-1][0]), int(segment_path[-1][1])
+        return self._resolve_reachable_square(actor, battle_map, (portal_x, portal_y))
+
     def _destination_square(self, actor: Entity, target_info: Dict[str, Any]) -> Optional[Tuple[int, int]]:
         kind = target_info.get('kind')
         battle_map = self.current_game.get_map_for_entity(actor)
@@ -129,14 +181,7 @@ class NpcMovementHelper:
             return int(square[0]), int(square[1])
 
         if kind == 'annotation':
-            from natural20.map_annotations import annotation_anchor_square
-
-            annotation = target_info.get('annotation') or {}
-            square = annotation_anchor_square(annotation, battle_map)
-            if square is None:
-                return None
-            resolved = self._resolve_reachable_square(actor, battle_map, (int(square[0]), int(square[1])))
-            return resolved
+            return self._immediate_landmark_square(actor, target_info)
 
         target = target_info.get('target')
         if target is None:
@@ -311,6 +356,32 @@ class NpcMovementHelper:
 
         kind = target_info.get('kind')
         if kind in ('square', 'annotation'):
+            if kind == 'annotation':
+                annotation = target_info.get('annotation') or {}
+                annotation_map = self._annotation_home_map(target_info) or battle_map
+                from natural20.map_annotations import annotation_anchor_square
+
+                dest = annotation_anchor_square(annotation, annotation_map)
+                if dest is None:
+                    spec = target_info.get('target_spec') or annotation.get('id') or 'landmark'
+                    return False, f'Unknown landmark: {spec}'
+                if annotation_map is not battle_map:
+                    try:
+                        source_x, source_y = battle_map.position_of(actor)
+                    except Exception:
+                        return False, 'Cannot determine position for cross-map routing'
+                    plan = PathCompute(None, battle_map, actor, ignore_opposing=True).compute_cross_map_path(
+                        battle_map,
+                        int(source_x),
+                        int(source_y),
+                        annotation_map,
+                        int(dest[0]),
+                        int(dest[1]),
+                        door_navigation=self.should_use_door_navigation(actor, target_info),
+                    )
+                    if not plan:
+                        map_name = getattr(annotation_map, 'name', 'another map')
+                        return False, f'No route to landmark on {map_name}'
             return True, ''
 
         target = target_info.get('target')
@@ -363,6 +434,9 @@ class NpcMovementHelper:
             from natural20.map_annotations import annotation_anchor_square, annotation_contains_point
 
             annotation = target_info.get('annotation') or {}
+            annotation_map = self._annotation_home_map(target_info) or battle_map
+            if annotation_map is not battle_map:
+                return False
             ann_kind = annotation.get('kind')
             try:
                 pos = battle_map.position_of(actor)
@@ -372,7 +446,7 @@ class NpcMovementHelper:
                 return annotation_contains_point(annotation, int(pos[0]), int(pos[1]))
             if ann_kind == 'object_ref':
                 uid = annotation.get('entity_uid')
-                obj = battle_map.object_by_uid(uid) or battle_map.entity_by_uid(uid)
+                obj = annotation_map.object_by_uid(uid) or annotation_map.entity_by_uid(uid)
                 if obj is None:
                     return False
                 try:
@@ -386,9 +460,9 @@ class NpcMovementHelper:
                 if (int(pos[0]), int(pos[1])) == (ax, ay):
                     return True
                 if not battle_map.placeable(actor, ax, ay, squeeze=False):
-                    resolved = self._resolve_reachable_square(actor, battle_map, (ax, ay))
+                    resolved = self._resolve_reachable_square(actor, annotation_map, (ax, ay))
                     if resolved and (int(pos[0]), int(pos[1])) == tuple(resolved):
-                        for obj in battle_map.objects_at(ax, ay):
+                        for obj in annotation_map.objects_at(ax, ay):
                             if self._is_door_object(obj) and hasattr(obj, 'passable') and obj.passable((pos[0], pos[1])):
                                 return True
                         return True
@@ -424,8 +498,9 @@ class NpcMovementHelper:
                 return None
             annotation = target_info.get('annotation') or {}
             if annotation.get('kind') == 'object_ref':
+                annotation_map = self._annotation_home_map(target_info) or battle_map
                 uid = annotation.get('entity_uid')
-                obj = battle_map.object_by_uid(uid) or battle_map.entity_by_uid(uid)
+                obj = annotation_map.object_by_uid(uid) or annotation_map.entity_by_uid(uid)
                 if obj is not None:
                     return self._build_move_toward_target(
                         actor,
@@ -433,11 +508,12 @@ class NpcMovementHelper:
                         distance_ft=distance_ft,
                         door_navigation=self.should_use_door_navigation(actor, target_info),
                     )
-            square = annotation_anchor_square(annotation, battle_map)
+            square = self._immediate_landmark_square(actor, target_info)
             return self._build_move_to_square(
                 actor,
                 square,
                 door_navigation=self.should_use_door_navigation(actor, target_info),
+                battle_map=battle_map,
             )
         if kind in ('entity', 'object'):
             return self._build_move_toward_target(
@@ -494,11 +570,13 @@ class NpcMovementHelper:
         square: Optional[Tuple[int, int]],
         *,
         door_navigation: bool = False,
+        battle_map=None,
     ):
         if actor is None or square is None:
             return None
 
-        battle_map = self.current_game.get_map_for_entity(actor)
+        if battle_map is None:
+            battle_map = self.current_game.get_map_for_entity(actor)
         if battle_map is None:
             return None
 

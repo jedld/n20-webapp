@@ -5,9 +5,7 @@ __pycache__/
 coverage/
 node_modules/
 .env
-webapp/.env
-webapp/flask_session/
-webapp/saves/
+flask_session/
 saves/
 *.log
 .DS_Store

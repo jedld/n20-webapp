@@ -20,6 +20,7 @@
     .points-remaining { font-weight: bold; color: #9cdcfe; }
     .form-inline .form-control { min-width: 180px; }
     .helper { color: #bbb; font-size: 12px; }
+    .spell-preview-badge { font-size: 10px; margin-left: 4px; padding: 1px 4px; border-radius: 3px; background: #5a4a20; color: #f5deb3; border: 1px solid #70532f; }
     /* ----- Character images / token stamp ----- */
     .img-source-tabs { display:flex; gap:4px; margin-bottom:6px; flex-wrap:wrap; }
     .img-source-tabs .btn { background:#333; color:#eee; border:1px solid #555; }
@@ -514,6 +515,7 @@
 
   <script id="races-data" type="application/json">{{ races|tojson|safe }}</script>
   <script id="classes-data" type="application/json">{{ classes|tojson|safe }}</script>
+  <script id="spell-availability-data" type="application/json">{{ spell_availability|default({})|tojson|safe }}</script>
   <script id="backgrounds-data" type="application/json">{{ backgrounds|tojson|safe }}</script>
   {% if edit_mode %}
   <script id="edit-character-data" type="application/json">{{ edit_character|tojson|safe }}</script>

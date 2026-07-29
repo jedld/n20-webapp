@@ -1135,4 +1135,30 @@ describe('engine.js basic behavior', () => {
     povSpy.mockRestore();
     localConversationSpy.mockRestore();
   });
+
+  test('tileCoordsFromClientPoint uses transformed tile bounds', () => {
+    document.body.innerHTML = `
+      <div class="tiles-container">
+        <div class="tile" data-coords-x="5" data-coords-y="0"
+             style="position:absolute;left:0;top:0;width:50px;height:50px;"></div>
+        <div class="tile" data-coords-x="6" data-coords-y="0"
+             style="position:absolute;left:50px;top:0;width:50px;height:50px;"></div>
+      </div>
+    `;
+    const tiles = document.querySelectorAll('.tile');
+    tiles[0].getBoundingClientRect = () => ({
+      left: 0, top: 0, right: 50, bottom: 50, width: 50, height: 50,
+    });
+    tiles[1].getBoundingClientRect = () => ({
+      left: 50, top: 0, right: 100, bottom: 50, width: 50, height: 50,
+    });
+    document.elementFromPoint = (x, y) => {
+      if (x >= 50 && x < 100) return tiles[1];
+      if (x >= 0 && x < 50) return tiles[0];
+      return null;
+    };
+
+    const hit = global.tileCoordsFromClientPoint(75, 25);
+    expect(hit).toEqual(expect.objectContaining({ x: 6, y: 0 }));
+  });
 });

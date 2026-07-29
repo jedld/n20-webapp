@@ -49,7 +49,7 @@
     }
     const $banner = $('<div class="edit-mode-banner" role="status"></div>');
     $banner.text(
-      'Edit mode — drag NPCs to reposition. Click highlighted fixture labels to edit properties. Hold Shift and drag labels to move fixtures or landmarks. Changes save to campaign YAML.',
+      'Edit mode — drag NPCs to reposition. Use the Landmarks panel (bottom-left) to add areas and points. Click fixture or landmark labels to edit; Shift+drag to move. Changes save to campaign YAML.',
     );
     $('body').append($banner);
   }
@@ -348,10 +348,15 @@
       $entry.append($header);
       const $body = $('<div class="popover-actions-body"></div>');
       const $btn = $(
-        '<button type="button" class="btn btn-primary btn-sm action-button edit-fixture-properties-btn">Edit properties</button>',
+        '<button type="button" class="btn btn-primary btn-sm edit-fixture-properties-btn">Edit properties</button>',
       );
       $btn.data('fixture', item);
       $body.append($btn);
+      const $removeBtn = $(
+        '<button type="button" class="btn btn-danger btn-sm edit-fixture-remove-btn">Remove</button>',
+      );
+      $removeBtn.data('fixture', item);
+      $body.append($removeBtn);
       $entry.append($body);
       $stack.append($entry);
     });
@@ -373,6 +378,8 @@
       index: item.index != null ? item.index : undefined,
       object_type: item.object_type || undefined,
       label: item.label,
+      x: item.x != null ? item.x : undefined,
+      y: item.y != null ? item.y : undefined,
     };
   }
 
@@ -419,6 +426,103 @@
         alert(message);
         loadOverlay();
       });
+  }
+
+  function persistRemove(payload) {
+    return $.ajax({
+      url: '/edit/remove',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify(payload),
+    })
+      .done(function (resp) {
+        if (!resp || !resp.success) {
+          alert('Edit remove failed: ' + ((resp && resp.error) || 'unknown error'));
+          loadOverlay();
+          return;
+        }
+        $('#centerActionBar').hide();
+        if (window.Utils && typeof window.Utils.refreshTileSet === 'function') {
+          window.Utils.refreshTileSet();
+        }
+        setTimeout(loadOverlay, 250);
+      })
+      .fail(function (xhr) {
+        let message = 'Edit remove failed';
+        try {
+          const body = JSON.parse(xhr.responseText || '{}');
+          message = body.error || message;
+        } catch (err) {
+          /* ignore */
+        }
+        alert(message);
+        loadOverlay();
+      });
+  }
+
+  function removeFixture(item, options) {
+    if (!item) {
+      return;
+    }
+    const label = item.label || item.id || 'this fixture';
+    const skipConfirm = options && options.skipConfirm;
+    if (!skipConfirm && !window.confirm(`Remove ${label} from the campaign map YAML?`)) {
+      return;
+    }
+    persistRemove(fixturePayloadFromItem(item));
+  }
+
+  function getFixturesAt(x, y) {
+    const fixtures = [];
+    Object.values(overlayState.itemsById).forEach((item) => {
+      if (item.x === x && item.y === y) {
+        fixtures.push(item);
+      }
+    });
+    Object.values(overlayState.terrainById).forEach((item) => {
+      if (item.x === x && item.y === y) {
+        fixtures.push(item);
+      }
+    });
+    return fixtures.slice().sort(compareFixtureStack);
+  }
+
+  function findFixtureForEntityUid(entityUid) {
+    if (!entityUid) {
+      return null;
+    }
+    const $obj = $(
+      `.object-container[data-id="${entityUid}"], .entity[data-id="${entityUid}"]`,
+    ).first();
+    const $tile = $obj.closest('.tile');
+    if (!$tile.length) {
+      return null;
+    }
+    const x = Number($tile.data('coords-x'));
+    const y = Number($tile.data('coords-y'));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+    const fixtures = getFixturesAt(x, y);
+    if (!fixtures.length) {
+      return {
+        id: `pos:${x}:${y}`,
+        kind: 'terrain',
+        x,
+        y,
+      };
+    }
+    const byRuntime = fixtures.find((item) => item.runtime_uid === entityUid);
+    if (byRuntime) {
+      return byRuntime;
+    }
+    const terrain = fixtures.find(
+      (item) => item.kind === 'terrain' || item.source === 'layer_placements',
+    );
+    if (terrain) {
+      return terrain;
+    }
+    return fixtures[0];
   }
 
   window.editMoveItem = function (itemId, targetX, targetY, meta) {
@@ -674,6 +778,12 @@
     }
   });
 
+  $(document).on('click', '.edit-fixture-remove-btn', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    removeFixture($(this).data('fixture'));
+  });
+
   document.addEventListener(
     'click',
     function (e) {
@@ -693,11 +803,21 @@
       }
       const x = Number($tile.data('coords-x'));
       const y = Number($tile.data('coords-y'));
-      const fixtures = getEditableFixturesAt(x, y);
-      if (!fixtures.length || tileHasActionableOccupants($tile)) {
+      const fixtures = getFixturesAt(x, y);
+      if (fixtures.length) {
+        showFixturePropertiesBar(fixtures, x, y);
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') {
+          e.stopImmediatePropagation();
+        }
         return;
       }
-      showFixturePropertiesBar(fixtures, x, y);
+      const editableFixtures = getEditableFixturesAt(x, y);
+      if (!editableFixtures.length || tileHasActionableOccupants($tile)) {
+        return;
+      }
+      showFixturePropertiesBar(editableFixtures, x, y);
       e.preventDefault();
       e.stopPropagation();
       if (typeof e.stopImmediatePropagation === 'function') {
@@ -773,8 +893,11 @@
     tileAtClient,
     snapToTile,
     getEditableFixturesAt,
+    getFixturesAt,
     showFixturePropertiesBar,
     fixturePayloadFromItem,
+    removeFixture,
+    findFixtureForEntityUid,
     reloadOverlay: scheduleOverlayReload,
   };
 

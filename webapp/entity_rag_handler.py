@@ -1510,13 +1510,16 @@ class EntityRAGHandler:
             or params.get('place')
         )
         if target_spec:
-            annotation = self.resolve_map_annotation_target(actor, target_spec)
+            annotation, annotation_map = self.resolve_map_annotation_target_info(actor, target_spec)
             if annotation is not None:
-                return {
+                target_info = {
                     'kind': 'annotation',
                     'annotation': annotation,
                     'target_spec': target_spec,
                 }
+                if annotation_map is not None:
+                    target_info['annotation_map'] = annotation_map
+                return target_info
 
         target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=True)
         if target is None:
@@ -1822,6 +1825,31 @@ class EntityRAGHandler:
     def _game_properties(self) -> Dict[str, Any]:
         return getattr(self.game_session, 'game_properties', None) or {}
 
+    def campaign_setting_prompt(self) -> str:
+        props = self._game_properties()
+        setting = props.get('campaign_setting')
+        if not setting:
+            return ''
+        if isinstance(setting, str):
+            text = setting.strip()
+        elif isinstance(setting, dict):
+            lines = []
+            for key in ('world', 'location', 'era', 'summary', 'lore'):
+                value = setting.get(key)
+                if value:
+                    lines.append(str(value).strip())
+            extra = setting.get('details')
+            if isinstance(extra, list):
+                lines.extend(str(item).strip() for item in extra if str(item).strip())
+            elif extra:
+                lines.append(str(extra).strip())
+            text = '\n'.join(line for line in lines if line)
+        else:
+            text = str(setting).strip()
+        if not text:
+            return ''
+        return f"Campaign setting (Forgotten Realms backdrop — treat as established local knowledge):\n{text}"
+
     def _canonical_item_slug(self, item_slug: str) -> str:
         return canonical_item_slug(item_slug, merged_offer_configs(self._game_properties()))
 
@@ -1873,13 +1901,13 @@ class EntityRAGHandler:
 
         return exact_match or partial_match
 
-    def resolve_map_annotation_target(self, actor: Entity, target_spec: Optional[str]) -> Optional[Dict[str, Any]]:
+    def _find_map_annotation_by_spec(
+        self,
+        target_spec: Optional[str],
+        prefer_map=None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Any]]:
         if not target_spec:
-            return None
-
-        battle_map = self.current_game.get_map_for_entity(actor)
-        if battle_map is None:
-            return None
+            return None, None
 
         from natural20.map_annotations import normalize_annotation_id
 
@@ -1887,18 +1915,67 @@ class EntityRAGHandler:
         lowered = normalized.lower()
         slug = normalize_annotation_id(normalized)
 
-        exact: Optional[Dict[str, Any]] = None
+        if slug:
+            ann, ann_map = self._find_map_annotation(slug, prefer_map)
+            if ann is not None:
+                return ann, ann_map
+
+        search_order = []
+        if prefer_map is not None:
+            search_order.append(prefer_map)
+        for map_obj in getattr(self.game_session, 'maps', {}).values():
+            if map_obj is not prefer_map:
+                search_order.append(map_obj)
+
         partial: Optional[Dict[str, Any]] = None
-        for annotation in battle_map.map_annotations():
-            ann_id = str(annotation.get('id') or '')
-            label = str(annotation.get('label') or '').lower()
-            if slug and ann_id == slug:
-                return annotation
-            if lowered == label:
-                exact = annotation
-            elif lowered in label and partial is None:
-                partial = annotation
-        return exact or partial
+        partial_map = None
+        for map_obj in search_order:
+            for annotation in map_obj.map_annotations():
+                label = str(annotation.get('label') or '').lower()
+                if lowered == label:
+                    return annotation, map_obj
+                if lowered in label and partial is None:
+                    partial = annotation
+                    partial_map = map_obj
+        return partial, partial_map
+
+    def resolve_map_annotation_target(self, actor: Entity, target_spec: Optional[str]) -> Optional[Dict[str, Any]]:
+        battle_map = self.current_game.get_map_for_entity(actor)
+        annotation, _annotation_map = self._find_map_annotation_by_spec(target_spec, battle_map)
+        return annotation
+
+    def resolve_map_annotation_target_info(
+        self,
+        actor: Entity,
+        target_spec: Optional[str],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Any]]:
+        battle_map = self.current_game.get_map_for_entity(actor)
+        return self._find_map_annotation_by_spec(target_spec, battle_map)
+
+    def _find_map_annotation(
+        self,
+        annotation_id: str,
+        prefer_map=None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Any]]:
+        """Resolve a landmark on prefer_map first, then any loaded campaign map."""
+        from natural20.map_annotations import normalize_annotation_id
+
+        slug = normalize_annotation_id(str(annotation_id))
+        if not slug:
+            return None, None
+
+        search_order = []
+        if prefer_map is not None:
+            search_order.append(prefer_map)
+        for map_obj in getattr(self.game_session, 'maps', {}).values():
+            if map_obj is not prefer_map:
+                search_order.append(map_obj)
+
+        for map_obj in search_order:
+            ann = map_obj.map_annotation_by_id(slug)
+            if ann is not None:
+                return ann, map_obj
+        return None, None
 
     def map_landmarks_prompt_for_entity(self, entity: Entity) -> str:
         battle_map = self.current_game.get_map_for_entity(entity)
@@ -1911,11 +1988,16 @@ class EntityRAGHandler:
         known_ids = set()
         props = getattr(entity, 'properties', None) or {}
         for raw_id in props.get('known_places') or props.get('known_landmarks') or []:
-            ann = battle_map.map_annotation_by_id(str(raw_id))
+            ann, ann_map = self._find_map_annotation(str(raw_id), battle_map)
             if ann is None:
                 continue
             known_ids.add(ann.get('id'))
-            lines.append(f"- (known) {format_annotation_for_llm(ann)}")
+            line = format_annotation_for_llm(ann)
+            if ann_map is not None and ann_map is not battle_map:
+                map_name = getattr(ann_map, 'name', None) or getattr(ann_map, 'map_id', None)
+                if map_name:
+                    line = f'{line} — upstairs ({map_name})'
+            lines.append(f"- (known) {line}")
 
         try:
             pos = battle_map.position_of(entity)
@@ -4033,6 +4115,7 @@ class EntityRAGHandler:
             "- [OPEN_SHOP: target=speaker|@handle] when you are a merchant with wares — opens your priced shop UI for the customer (use after welcoming them or when they ask to buy).\n"
             "- [REQUEST_ITEM: item=<item_slug>, target=speaker|@handle] to ask someone to hand you an item.\n"
             "- [ACCEPT_GIFT: target=speaker|@handle] when the speaker offers to give you something (or performs a hand-over action). Opens the player's give-item transfer dialog.\n"
+            f"{self.campaign_setting_prompt()}\n"
             f"{self.map_landmarks_prompt_for_entity(entity)}\n"
             f"{self.offer_item_guidance_for_conversation(entity, requester)}\n"
             f"{self.animal_communication_guidance_for_conversation(entity, speaker=requester)}\n"

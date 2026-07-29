@@ -136,6 +136,49 @@ class TestNpcMovementDoorNavigation(unittest.TestCase):
         self.assertNotEqual(resolved, (13, 17))
         self.assertEqual(abs(resolved[0] - 13) + abs(resolved[1] - 17), 1)
 
+    def test_build_move_step_cross_map_landmark_via_stairs(self):
+        town = self.session.maps['town_market']
+        upstairs = self.session.maps['tavern_2nd_floor']
+        self.current_game.get_map_for_entity.return_value = town
+        npc = town.entity_by_uid('pip_barmaid')
+        npc.properties['known_places'] = ['landmark_standard_room_1']
+        town.place((9, 14), npc)
+        target_info = {
+            'kind': 'annotation',
+            'annotation': {
+                'id': 'landmark_standard_room_1',
+                'kind': 'point',
+                'pos': [7, 1],
+                'label': 'Standard Room 1',
+            },
+            'annotation_map': upstairs,
+            'target_spec': 'landmark_standard_room_1',
+        }
+        viable, reason = self.helper.movement_target_viable(npc, target_info)
+        self.assertTrue(viable, reason)
+        move_action = self.helper.build_move_step(npc, target_info)
+        self.assertIsNotNone(move_action)
+        dest = tuple(move_action.move_path[-1])
+        self.assertIn(dest, {(9, 15), (9, 16)})
+
+    def test_movement_reached_false_until_on_landmark_map(self):
+        town = self.session.maps['town_market']
+        upstairs = self.session.maps['tavern_2nd_floor']
+        self.current_game.get_map_for_entity.return_value = town
+        npc = town.entity_by_uid('pip_barmaid')
+        town.place((9, 14), npc)
+        target_info = {
+            'kind': 'annotation',
+            'annotation': {
+                'id': 'landmark_standard_room_1',
+                'kind': 'point',
+                'pos': [7, 1],
+                'label': 'Standard Room 1',
+            },
+            'annotation_map': upstairs,
+        }
+        self.assertFalse(self.helper.movement_reached(npc, target_info, distance_ft=0))
+
 
 class TestNpcMovementManager(unittest.TestCase):
     def setUp(self):

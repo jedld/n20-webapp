@@ -551,9 +551,13 @@ def read_letter():
 def action():
 
     battle = get_current_game().get_current_battle()
-    action_request = request.json
-    entity_id = action_request['id']
-    action_type = action_request['action']
+    action_request = request.json or {}
+    entity_id = action_request.get('id')
+    if not entity_id:
+        return jsonify({'status': 'error', 'message': 'Missing entity id'}), 400
+    action_type = action_request.get('action')
+    if not action_type:
+        return jsonify({'status': 'error', 'message': 'Missing action'}), 400
     opts = action_request.get('opts', {})
 
     selected_spell = opts.get('spell')

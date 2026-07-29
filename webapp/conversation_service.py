@@ -2492,6 +2492,8 @@ class ConversationService:
         animal_comm_block = f"{animal_comm_text}\n" if animal_comm_text else ''
         landmarks_text = self.entity_rag_handler.map_landmarks_prompt_for_entity(receiver)
         landmarks_block = f"\n{landmarks_text}\n" if landmarks_text else ''
+        setting_text = self.entity_rag_handler.campaign_setting_prompt()
+        setting_block = f"\n{setting_text}\n" if setting_text else ''
         container_serving_text = self.entity_rag_handler.container_serving_guidance_for_conversation(receiver)
         container_serving_block = f"{container_serving_text}\n" if container_serving_text else ''
         summon_block = ''
@@ -2559,6 +2561,7 @@ class ConversationService:
             f"{container_serving_block}"
             f"{self.entity_rag_handler.offer_item_guidance_for_conversation(receiver, speaker, player_speaker)}\n"
             f"{animal_comm_block}"
+            f"{setting_block}"
             f"{landmarks_block}"
             f"{summon_block}"
             f"{relay_block}"

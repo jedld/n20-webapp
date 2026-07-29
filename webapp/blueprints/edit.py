@@ -9,6 +9,7 @@ from natural20.edit_schema import editable_object_types, get_edit_ui_schema, obj
 from natural20.map_annotations import normalize_annotation, normalize_annotation_id, validate_annotation_id
 from natural20.map_editor import (
     apply_terrain_placement_to_live_map,
+    apply_terrain_removal_to_live_map,
     build_edit_overlay,
     enrich_edit_overlay_with_runtime_uids,
     list_map_annotation_documents,
@@ -17,6 +18,7 @@ from natural20.map_editor import (
     place_map_layer_item,
     place_map_terrain,
     remove_map_annotation,
+    remove_map_item,
     save_map_annotation,
 )
 from webapp.blueprints.helpers.auth_utils import user_role
@@ -402,6 +404,63 @@ def edit_move():
     )
 
 
+@edit_bp.route("/edit/remove", methods=["POST"])
+def edit_remove():
+    denied = _require_edit_dm()
+    if denied:
+        return denied
+
+    if not request.is_json:
+        return jsonify({"success": False, "error": "Request must be JSON"}), 400
+
+    data = request.get_json() or {}
+    required = ("item_id", "kind")
+    if any(key not in data for key in required):
+        return jsonify({"success": False, "error": "Missing required parameters"}), 400
+
+    current_game = get_current_game()
+    battle_map = current_game.get_map_for_user(session["username"])
+    map_name = battle_map.name
+
+    index_raw = data.get("index")
+    try:
+        index = int(index_raw) if index_raw is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "index must be a number"}), 400
+
+    x_raw = data.get("x")
+    y_raw = data.get("y")
+    try:
+        x = int(x_raw) if x_raw is not None else None
+        y = int(y_raw) if y_raw is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "x/y must be numbers"}), 400
+
+    try:
+        removed = remove_map_item(
+            current_game.game_session,
+            map_name,
+            item_id=str(data["item_id"]),
+            kind=str(data["kind"]),
+            token=data.get("token"),
+            layer=data.get("layer"),
+            source=data.get("source"),
+            index=index,
+            x=x,
+            y=y,
+        )
+    except (KeyError, ValueError, IndexError) as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
+
+    if removed.get("x") is not None and removed.get("y") is not None:
+        apply_terrain_removal_to_live_map(battle_map, current_game.game_session, map_name, removed)
+    current_game.reload_map_by_name(map_name)
+    get_socketio().emit("message", {"type": "refresh_map"})
+    return jsonify({"success": True, "map": map_name, "removed": removed})
+
+
 @edit_bp.route("/edit/layer/place", methods=["POST"])
 def edit_layer_place():
     denied = _require_edit_dm()
@@ -453,7 +512,9 @@ def edit_layer_place():
     except OSError as exc:
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
 
-    apply_terrain_placement_to_live_map(battle_map, current_game.game_session, map_name, placed)
+    if placed.get("placement_kind") != "object":
+        apply_terrain_placement_to_live_map(battle_map, current_game.game_session, map_name, placed)
+    current_game.reload_map_by_name(map_name)
     get_socketio().emit("message", {"type": "refresh_map"})
     return jsonify({"success": True, "map": map_name, "placement": placed})
 
@@ -503,7 +564,9 @@ def edit_terrain_place():
     except OSError as exc:
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
 
-    apply_terrain_placement_to_live_map(battle_map, current_game.game_session, map_name, placed)
+    if placed.get("placement_kind") != "object":
+        apply_terrain_placement_to_live_map(battle_map, current_game.game_session, map_name, placed)
+    current_game.reload_map_by_name(map_name)
     get_socketio().emit("message", {"type": "refresh_map"})
     return jsonify({"success": True, "map": map_name, "placement": placed})
 

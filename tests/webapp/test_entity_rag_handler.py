@@ -1634,6 +1634,61 @@ class TestEntityRAGHandler(unittest.TestCase):
         self.assertNotEqual(result['description'], PERCEPTION_EMPTY_DESCRIPTION)
         self.assertIn('halfling', result['description'].lower())
 
+    def test_map_landmarks_prompt_includes_cross_map_known_places(self):
+        ground_floor = Mock()
+        ground_floor.name = 'town_market'
+        ground_floor.map_annotations.return_value = [
+            {'id': 'taproom', 'label': 'Taproom', 'kind': 'area', 'bounds': {'x1': 1, 'y1': 1, 'x2': 2, 'y2': 2}},
+        ]
+        ground_floor.map_annotation_by_id.side_effect = lambda ann_id: (
+            {'id': 'taproom', 'label': 'Taproom', 'kind': 'area', 'bounds': {'x1': 1, 'y1': 1, 'x2': 2, 'y2': 2}}
+            if ann_id == 'taproom' else None
+        )
+        ground_floor.map_annotations_at.return_value = []
+
+        upstairs = Mock()
+        upstairs.name = 'tavern_2nd_floor'
+        upstairs.map_annotations.return_value = []
+        upstairs.map_annotation_by_id.side_effect = lambda ann_id: (
+            {
+                'id': 'landmark_standard_room_1',
+                'label': 'Standard Room 1',
+                'kind': 'point',
+                'pos': [7, 1],
+                'description': 'Tavern Standard Room # 1',
+            }
+            if ann_id == 'landmark_standard_room_1' else None
+        )
+
+        self.mock_game_session.maps = {
+            'town_market': ground_floor,
+            'tavern_2nd_floor': upstairs,
+        }
+
+        npc = Mock()
+        npc.properties = {
+            'known_places': ['taproom', 'landmark_standard_room_1'],
+        }
+        self.mock_current_game.get_map_for_entity.return_value = ground_floor
+
+        prompt = self.rag_handler.map_landmarks_prompt_for_entity(npc)
+
+        self.assertIn('Taproom', prompt)
+        self.assertIn('Standard Room 1', prompt)
+        self.assertIn('upstairs (tavern_2nd_floor)', prompt)
+
+    def test_campaign_setting_prompt_from_game_properties(self):
+        self.mock_game_session.game_properties = {
+            'campaign_setting': {
+                'world': 'Forgotten Realms',
+                'location': 'Amphail',
+                'summary': 'A cattle town on the Long Road.',
+            },
+        }
+        prompt = self.rag_handler.campaign_setting_prompt()
+        self.assertIn('Amphail', prompt)
+        self.assertIn('Forgotten Realms', prompt)
+
 
 if __name__ == '__main__':
     unittest.main() 

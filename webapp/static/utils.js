@@ -24,8 +24,13 @@ const Utils = {
       // memoized /path responses from the previous map are stale.
       try { if (typeof clearMovePathCache === 'function') clearMovePathCache(); } catch (e) { }
       Utils.invalidateMovementGridCache();
-      Utils.refreshTileSet(callback = () => {
-        Utils.updateMapDisplay(data, canvas);
+      // Update map metadata before fetching tiles so refreshTileSet does not
+      // ignore the response due to a stale body[data-current-map] value.
+      Utils.updateMapDisplay(data, canvas);
+      if (window.EditMode && typeof window.EditMode.clearOverlay === 'function') {
+        window.EditMode.clearOverlay();
+      }
+      Utils.refreshTileSet(false, false, 0, 0, null, () => {
         // Re-invalidate after DOM swap so the next draw recomputes from the
         // freshly mounted tiles container.
         Utils.invalidateMovementGridCache();
@@ -50,8 +55,14 @@ const Utils = {
         } catch (e) { console.warn('Failed to apply map default effect', e); }
         // Ask server to (re)send effects after map switch in case client missed anything
         try { if (typeof socket !== 'undefined' && socket && socket.emit) socket.emit('request_effects'); } catch (e) { }
+        if (window.EditMode && typeof window.EditMode.loadOverlay === 'function') {
+          window.EditMode.loadOverlay();
+        }
+        if (window.MapAnnotationsEdit && typeof window.MapAnnotationsEdit.reload === 'function') {
+          window.MapAnnotationsEdit.reload();
+        }
         if (first_callback) first_callback();
-      })
+      }, true);
     });
   },
 
@@ -372,6 +383,16 @@ const Utils = {
     const items1 = $tile1.find('.item-container').length;
     const items2 = $tile2.find('.item-container').length;
     if (items1 !== items2) {
+      return false;
+    }
+
+    // Compare door highlight markers (edit / DM door indicators)
+    const doorHighlight1 = $tile1.find('.door-highlight-marker').length;
+    const doorHighlight2 = $tile2.find('.door-highlight-marker').length;
+    if (doorHighlight1 !== doorHighlight2) {
+      return false;
+    }
+    if ($tile1.hasClass('tile-door-highlight') !== $tile2.hasClass('tile-door-highlight')) {
       return false;
     }
 

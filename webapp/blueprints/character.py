@@ -9,6 +9,7 @@ import yaml
 from flask import Blueprint, request, jsonify, session, redirect, url_for, render_template
 
 from natural20.player_character import PlayerCharacter
+from natural20.utils.char_class_spells import spell_availability_map
 
 from webapp.dndbeyond_import import (
     import_character_from_dndbeyond,
@@ -153,12 +154,14 @@ def character_builder():
         classes = get_game_session().load_classes()
         backgrounds = get_game_session().load_backgrounds()
         equipment_packs = get_game_session().load_equipment_packs()
+        spell_availability = spell_availability_map(get_game_session(), classes)
         return render_template('character_builder.html',
                                title=get_title(),
                                races=races,
                                classes=classes,
                                backgrounds=backgrounds,
                                equipment_packs=equipment_packs,
+                               spell_availability=spell_availability,
                                edit_mode=False,
                                cancel_url='/')
     except Exception as e:
@@ -227,6 +230,7 @@ def character_editor(character_name):
         }
 
         cancel_url = request.args.get('next') or '/'
+        spell_availability = spell_availability_map(get_game_session(), classes)
         return render_template(
             'character_builder.html',
             title=get_title(),
@@ -234,6 +238,7 @@ def character_editor(character_name):
             classes=classes,
             backgrounds=backgrounds,
             equipment_packs=equipment_packs,
+            spell_availability=spell_availability,
             edit_mode=True,
             edit_character=edit_character,
             editing_character=character_name,

@@ -3886,6 +3886,142 @@
     });
   });
 
+  // Web: sticky strands burst over the targeted square.
+  register('web', function(payload){
+    return new Promise((resolve) => {
+      let targetCenter = null;
+      const target = payload && payload.target;
+      if (Array.isArray(target) && target.length === 2 && typeof target[0] === 'number') {
+        targetCenter = tileCenterByCoords(target[0], target[1]);
+      } else if (typeof target === 'string') {
+        targetCenter = centerOfEntity(target);
+      }
+      if (!targetCenter && payload && payload.source) {
+        targetCenter = centerOfEntity(payload.source);
+      }
+      if (!targetCenter) return resolve();
+
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const { overlay, ctx, destroy } = createOverlay(1103);
+      const start = performance.now();
+      const duration = 720;
+      const strands = Array.from({ length: 24 }).map(() => ({
+        a: Math.random() * Math.PI * 2,
+        r: tileSize * (0.4 + Math.random() * 1.4),
+        w: 0.8 + Math.random() * 1.6,
+      }));
+
+      const draw = (now) => {
+        const t = Math.min(1, (now - start) / duration);
+        const fade = 1 - t * 0.35;
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const spread = tileSize * (0.8 + 1.6 * t);
+        const g = ctx.createRadialGradient(targetCenter.x, targetCenter.y, 0, targetCenter.x, targetCenter.y, spread);
+        g.addColorStop(0, `rgba(235,245,255,${(0.35 * fade).toFixed(2)})`);
+        g.addColorStop(0.55, `rgba(180,200,220,${(0.22 * fade).toFixed(2)})`);
+        g.addColorStop(1, 'rgba(120,140,160,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(targetCenter.x, targetCenter.y, spread, 0, Math.PI * 2);
+        ctx.fill();
+
+        strands.forEach((s) => {
+          const x1 = targetCenter.x + Math.cos(s.a) * s.r * 0.2;
+          const y1 = targetCenter.y + Math.sin(s.a) * s.r * 0.2;
+          const x2 = targetCenter.x + Math.cos(s.a) * s.r * (0.35 + 0.65 * t);
+          const y2 = targetCenter.y + Math.sin(s.a) * s.r * (0.35 + 0.65 * t);
+          ctx.strokeStyle = `rgba(240,248,255,${(0.55 * fade).toFixed(2)})`;
+          ctx.lineWidth = s.w;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.quadraticCurveTo(
+            (x1 + x2) / 2 + Math.sin(s.a) * 8,
+            (y1 + y2) / 2 - Math.cos(s.a) * 8,
+            x2, y2,
+          );
+          ctx.stroke();
+        });
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      requestAnimationFrame(draw);
+    });
+  });
+
+  // Mirror Image: brief shimmer of afterimages on the caster.
+  register('mirror_image', function(payload){
+    return new Promise((resolve) => {
+      const src = payload && payload.source ? centerOfEntity(payload.source) : null;
+      if (!src) return resolve();
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const { overlay, ctx, destroy } = createOverlay(1105);
+      const t0 = performance.now();
+      const dur = 680;
+      const offsets = [[-tileSize * 0.22, -tileSize * 0.12], [tileSize * 0.2, -tileSize * 0.08], [0, tileSize * 0.18]];
+
+      function loop(now){
+        const t = Math.min(1, (now - t0) / dur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        offsets.forEach((off, i) => {
+          const alpha = (0.45 - i * 0.08) * (1 - t * 0.5);
+          const r = tileSize * 0.34;
+          const g = ctx.createRadialGradient(src.x + off[0], src.y + off[1], 0, src.x + off[0], src.y + off[1], r);
+          g.addColorStop(0, `rgba(200,230,255,${alpha.toFixed(2)})`);
+          g.addColorStop(1, 'rgba(120,170,220,0)');
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(src.x + off[0], src.y + off[1], r, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(loop); else { destroy(); resolve(); }
+      }
+      requestAnimationFrame(loop);
+    });
+  });
+
+  // Absorb Elements: brief elemental flare on the caster.
+  register('absorb_elements', function(payload){
+    return new Promise((resolve) => {
+      const src = payload && payload.source ? centerOfEntity(payload.source) : null;
+      if (!src) return resolve();
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const t0 = performance.now();
+      const dur = 620;
+      const palette = [
+        [255, 120, 40],
+        [80, 180, 255],
+        [200, 80, 255],
+        [255, 230, 80],
+        [120, 255, 180],
+      ];
+      const color = palette[Math.floor(Math.random() * palette.length)];
+
+      function loop(now){
+        const t = Math.min(1, (now - t0) / dur);
+        const alpha = 0.75 * (1 - t);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const r = 28 + 36 * t;
+        const g = ctx.createRadialGradient(src.x, src.y, 0, src.x, src.y, r);
+        g.addColorStop(0, `rgba(${color[0]},${color[1]},${color[2]},${alpha.toFixed(2)})`);
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(src.x, src.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(loop); else { destroy(); resolve(); }
+      }
+      requestAnimationFrame(loop);
+    });
+  });
+
   // Expose API
   global.SpellEffects = { register, play };
 })(window);

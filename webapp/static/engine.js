@@ -837,8 +837,67 @@ function afterMapPlacementRefresh() {
   }
 }
 
+/** Resolve map tile coords from viewport pointer position (pan/zoom-safe). */
+function tileCoordsFromClientPoint(clientX, clientY) {
+  if (clientX == null || clientY == null) {
+    return null;
+  }
+
+  const elementBelow = document.elementFromPoint(clientX, clientY);
+  if (elementBelow) {
+    const $tile = $(elementBelow).closest('.tile');
+    if ($tile.length) {
+      const x = parseInt($tile.attr('data-coords-x'), 10);
+      const y = parseInt($tile.attr('data-coords-y'), 10);
+      if (!Number.isNaN(x) && !Number.isNaN(y)) {
+        return { x, y, $tile };
+      }
+    }
+  }
+
+  let hit = null;
+  $('.tiles-container .tile').each(function () {
+    const rect = this.getBoundingClientRect();
+    if (
+      clientX >= rect.left
+      && clientX < rect.right
+      && clientY >= rect.top
+      && clientY < rect.bottom
+    ) {
+      const $tile = $(this);
+      const x = parseInt($tile.attr('data-coords-x'), 10);
+      const y = parseInt($tile.attr('data-coords-y'), 10);
+      if (!Number.isNaN(x) && !Number.isNaN(y)) {
+        hit = { x, y, $tile };
+        return false;
+      }
+    }
+  });
+  return hit;
+}
+
+function centerDragImageOnCursor(e, $source) {
+  const transfer = e.originalEvent && e.originalEvent.dataTransfer;
+  if (!transfer || typeof transfer.setDragImage !== 'function') {
+    return;
+  }
+  const node = ($source && $source.length)
+    ? ($source.find('img').get(0) || $source.get(0))
+    : null;
+  if (!node) {
+    return;
+  }
+  const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+  const offsetX = rect && rect.width ? Math.floor(rect.width / 2) : 16;
+  const offsetY = rect && rect.height ? Math.floor(rect.height / 2) : 16;
+  try {
+    transfer.setDragImage(node, offsetX, offsetY);
+  } catch (_) { /* ignore */ }
+}
+
 window.scheduleRefreshMap = scheduleRefreshMap;
 window.afterMapPlacementRefresh = afterMapPlacementRefresh;
+window.tileCoordsFromClientPoint = tileCoordsFromClientPoint;
 
 // Serialize DM map placements so rapid drag-and-drop cannot overlap requests.
 let mapPlacementTail = Promise.resolve();
@@ -5657,6 +5716,7 @@ $(document).ready(() => {
     $(this).addClass("dragging");
     e.originalEvent.dataTransfer.effectAllowed = "copy";
     e.originalEvent.dataTransfer.setData("text/plain", draggedNPC);
+    centerDragImageOnCursor(e, $(this));
 
     // Add visual feedback for empty tiles
     $("body").addClass("npc-drag-active");
@@ -5676,41 +5736,37 @@ $(document).ready(() => {
     draggedNPC = null;
   });
 
-  // Battlefield drop zone functionality
-  $(".tiles-container").on("dragover", ".tile", function (e) {
-    if (draggedNPC || draggedObject || $('body').hasClass('object-drag-active')) {
-      e.preventDefault();
+  // Battlefield drop zone functionality — resolve tile from pointer, not event target
+  // (avoids -1 offsets when the map is panned/zoomed or the drag hotspot is top-left).
+  $(".tiles-container").on("dragover", function (e) {
+    if (!(draggedNPC || draggedObject || $('body').hasClass('object-drag-active'))) {
+      return;
+    }
+    e.preventDefault();
+    if (e.originalEvent.dataTransfer) {
       e.originalEvent.dataTransfer.dropEffect = "copy";
-
-      const $tile = $(this);
-
-      if (draggedNPC) {
-        // Only show drop zone for NPCs if tile is empty
-        const hasEntity = $tile.find(".entity").length > 0;
-        if (!hasEntity) {
-          $(".tile").removeClass("drag-over");
-          $tile.addClass("battlefield-drop-zone drag-over");
-        }
-      } else if (draggedObject || $('body').hasClass('object-drag-active')) {
-        // Objects and terrain can be placed anywhere, so always show drop zone
-        $(".tile").removeClass("drag-over");
-        $tile.addClass("battlefield-drop-zone drag-over");
-      }
     }
+
+    const hit = tileCoordsFromClientPoint(e.originalEvent.clientX, e.originalEvent.clientY);
+    $(".tile").removeClass("battlefield-drop-zone drag-over");
+    if (!hit) {
+      return;
+    }
+
+    if (draggedNPC && hit.$tile.find(".entity").length > 0) {
+      return;
+    }
+    hit.$tile.addClass("battlefield-drop-zone drag-over");
   });
 
-  $(".tiles-container").on("dragleave", ".tile", function (e) {
-    if (draggedNPC || draggedObject || $('body').hasClass('object-drag-active')) {
-      $(this).removeClass("drag-over");
-    }
-  });
-
-  $(".tiles-container").on("drop", ".tile", function (e) {
+  $(".tiles-container").on("drop", function (e) {
     e.preventDefault();
 
-    const $tile = $(this);
-    const x = parseInt($tile.data("coords-x"));
-    const y = parseInt($tile.data("coords-y"));
+    const hit = tileCoordsFromClientPoint(e.originalEvent.clientX, e.originalEvent.clientY);
+    if (!hit) {
+      return;
+    }
+    const { x, y, $tile } = hit;
 
     if (draggedNPC) {
       // Handle NPC spawning (only on empty tiles)
@@ -5922,6 +5978,7 @@ $(document).ready(() => {
       $(e.currentTarget).addClass('dragging');
       e.originalEvent.dataTransfer.effectAllowed = 'copy';
       e.originalEvent.dataTransfer.setData('text/plain', draggedObject);
+      centerDragImageOnCursor(e, $(e.currentTarget));
       $('body').addClass('object-drag-active');
       $('.tile').each(function () {
         $(this).addClass('empty-tile-highlight');
@@ -5930,9 +5987,12 @@ $(document).ready(() => {
 
     $terrainItem.on('dragend', (e) => {
       $(e.currentTarget).removeClass('dragging');
-      $('body').removeClass('object-drag-active');
-      $('.tile').removeClass('battlefield-drop-zone drag-over empty-tile-highlight');
-      draggedObject = null;
+      // Defer cleanup so the tile drop handler can read draggedObject/dataTransfer.
+      setTimeout(() => {
+        $('body').removeClass('object-drag-active');
+        $('.tile').removeClass('battlefield-drop-zone drag-over empty-tile-highlight');
+        draggedObject = null;
+      }, 0);
     });
   }
 
@@ -6058,6 +6118,7 @@ $(document).ready(() => {
         $(e.currentTarget).addClass('dragging');
         e.originalEvent.dataTransfer.effectAllowed = 'copy';
         e.originalEvent.dataTransfer.setData('text/plain', draggedObject);
+        centerDragImageOnCursor(e, $(e.currentTarget));
 
         // Add visual feedback for tiles
         $('body').addClass('object-drag-active');
@@ -6070,9 +6131,11 @@ $(document).ready(() => {
 
       $objectItem.on('dragend', (e) => {
         $(e.currentTarget).removeClass('dragging');
-        $('body').removeClass('object-drag-active');
-        $(".tile").removeClass("battlefield-drop-zone drag-over empty-tile-highlight");
-        draggedObject = null;
+        setTimeout(() => {
+          $('body').removeClass('object-drag-active');
+          $(".tile").removeClass("battlefield-drop-zone drag-over empty-tile-highlight");
+          draggedObject = null;
+        }, 0);
       });
 
       $objectList.append($objectItem);
@@ -6115,6 +6178,19 @@ $(document).ready(() => {
     const entityUid = $(this).data('entity-uid');
 
     if (entityUid) {
+      if (
+        isEditMode() &&
+        window.EditMode &&
+        typeof window.EditMode.findFixtureForEntityUid === 'function'
+      ) {
+        const fixture = window.EditMode.findFixtureForEntityUid(entityUid);
+        if (fixture && typeof window.EditMode.removeFixture === 'function') {
+          $('#deleteEntityModal').modal('hide');
+          window.EditMode.removeFixture(fixture, { skipConfirm: true });
+          return;
+        }
+      }
+
       ajaxPost("/delete_entity", {
         entity_uid: entityUid
       }, (data) => {
@@ -6814,7 +6890,7 @@ $(document).ready(() => {
   });
 
   $(document).on('click', '#centerActionBar .center-action-entry', function (e) {
-    if ($(e.target).closest('.action-button, .action-end-turn, .talk-action, .action-info, .delete-entity-btn').length) {
+    if ($(e.target).closest('.action-button, .action-end-turn, .talk-action, .action-info, .delete-entity-btn, .edit-fixture-remove-btn, .edit-fixture-properties-btn').length) {
       return;
     }
     activateCenterActionEntry($(this));
@@ -6822,6 +6898,9 @@ $(document).ready(() => {
 
   // --- Action Button Handler ---
   $(".actions-container").on("click", ".action-button", function (e) {
+    if ($(this).hasClass('edit-fixture-remove-btn') || $(this).hasClass('edit-fixture-properties-btn')) {
+      return;
+    }
     e.stopPropagation();
     const $button = $(this);
     const $overlayEntry = $button.closest('.center-action-entry');
@@ -6839,6 +6918,10 @@ $(document).ready(() => {
       $(this).closest(".tile").data("coords-id") ||
       $(this).data("id") ||
       $(this).closest(".tile").find(".object-container").data("id");
+    if (!entity_uid) {
+      console.warn('Action button clicked without entity id');
+      return;
+    }
     let coordsx =
       $(this).closest('.center-action-entry').data('coordsX') !== undefined
         ? $(this).closest('.center-action-entry').data('coordsX')

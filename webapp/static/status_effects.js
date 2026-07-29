@@ -150,6 +150,37 @@
       mix-blend-mode: screen;
       animation: pe-sleep-motes 2.8s ease-in-out infinite alternate;
     }
+    @keyframes pe-mirror-flicker {
+      0% { opacity: 0.22; transform: scale(0.98); }
+      100% { opacity: 0.42; transform: scale(1.02); }
+    }
+    .pe-mirror-image {
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(190, 220, 255, 0.38) 0%, rgba(120, 170, 220, 0.18) 58%, rgba(60, 90, 120, 0.0) 78%);
+      box-shadow: 0 0 12px rgba(150, 200, 255, 0.35), inset 0 0 10px rgba(220, 240, 255, 0.22);
+      animation: pe-mirror-flicker 1.4s ease-in-out infinite alternate;
+    }
+    @keyframes pe-absorb-pulse {
+      0% { opacity: 0.28; transform: scale(0.97); }
+      100% { opacity: 0.48; transform: scale(1.03); }
+    }
+    .pe-absorb-elements {
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255, 180, 90, 0.42) 0%, rgba(120, 200, 255, 0.22) 45%, rgba(80, 120, 200, 0.0) 75%);
+      box-shadow: 0 0 14px rgba(255, 200, 120, 0.35), inset 0 0 10px rgba(150, 220, 255, 0.25);
+      animation: pe-absorb-pulse 1.8s ease-in-out infinite alternate;
+    }
+    @keyframes pe-web-strands {
+      0% { opacity: 0.35; }
+      100% { opacity: 0.55; }
+    }
+    .pe-web, .pe-restrained {
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(230, 240, 255, 0.40) 0%, rgba(170, 190, 210, 0.22) 55%, rgba(100, 120, 140, 0.0) 78%);
+      border: 2px solid rgba(220, 235, 255, 0.35);
+      box-shadow: 0 0 10px rgba(200, 220, 240, 0.35), inset 0 0 8px rgba(240, 248, 255, 0.25);
+      animation: pe-web-strands 2.2s ease-in-out infinite alternate;
+    }
     `;
     const style = document.createElement('style');
     style.id = 'persistent-effects-style';
@@ -171,6 +202,9 @@
   if (k === 'asleep' || k === 'sleeping') k = 'sleep';
   if (k === 'shield_of_faith' || k === 'shield-of-faith' || k === 'shield faith') k = 'shield';
   if (k === 'mage_armor' || k === 'mage-armour') k = 'mage_armor';
+  if (k === 'mirror_image' || k === 'mirror-image') k = 'mirror_image';
+  if (k === 'absorb_elements' || k === 'absorb-elements') k = 'absorb_elements';
+  if (k === 'restrained' || k === 'webbed') k = 'web';
   return k;
   }
 
@@ -183,6 +217,9 @@
     bane: 'pe-bane',
     hold_person: 'pe-hold-person',
     sleep: 'pe-sleep',
+    mirror_image: 'pe-mirror-image',
+    absorb_elements: 'pe-absorb-elements',
+    web: 'pe-web',
     resistance: 'pe-bless',
   };
 

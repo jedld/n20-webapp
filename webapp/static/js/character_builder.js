@@ -48,6 +48,19 @@
     if(!el) return {};
     try { return JSON.parse(el.textContent || '{}'); } catch(e){ return {}; }
   }
+  function getSpellAvailability(){
+    const el = document.getElementById('spell-availability-data');
+    if(!el) return {};
+    try { return JSON.parse(el.textContent || '{}'); } catch(e){ return {}; }
+  }
+
+  function spellPickerLabel(spellSlug){
+    const label = String(spellSlug || '').replace(/_/g, ' ');
+    if(getSpellAvailability()[spellSlug] === false){
+      return `${label}<span class="spell-preview-badge" title="Not yet playable in combat">preview</span>`;
+    }
+    return label;
+  }
 
   const RACES = getRaces();
   const CLASSES = getClasses();
@@ -274,7 +287,7 @@
         col.append(`
           <div class="checkbox">
             <label>
-              <input type="checkbox" class="cb-spell-level" data-level="${spellLevel}" data-name="${sp}" id="${id}"> ${sp.replace(/_/g,' ')}
+              <input type="checkbox" class="cb-spell-level" data-level="${spellLevel}" data-name="${sp}" id="${id}"> ${spellPickerLabel(sp)}
             </label>
           </div>`);
         row.append(col);
@@ -391,7 +404,7 @@
           col.append(`
             <div class="checkbox">
               <label>
-                <input type="checkbox" class="cb-cantrip" data-name="${sp}" id="${id}"> ${sp.replace(/_/g,' ')}
+                <input type="checkbox" class="cb-cantrip" data-name="${sp}" id="${id}"> ${spellPickerLabel(sp)}
               </label>
             </div>`);
           row.append(col);
