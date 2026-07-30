@@ -29,6 +29,28 @@ from webapp.blueprints.helpers.runtime_state import (
     get_socketio,
 )
 
+
+def _resolve_edit_map_name(current_game, battle_map, data) -> str:
+    """Pick the YAML map to edit; honors stack overlay map_name from the client."""
+    requested = (data or {}).get("map_name")
+    if not requested:
+        return battle_map.name
+    requested = str(requested)
+    game_session = current_game.game_session
+    stack = getattr(battle_map, "map_stack", None)
+    if stack is not None and requested in stack.maps_in_stack():
+        return requested
+    if requested in game_session.maps:
+        return requested
+    return battle_map.name
+
+
+def _edit_map_object(current_game, map_name):
+    game_session = current_game.game_session
+    if map_name not in game_session.maps:
+        raise KeyError(f"Unknown map: {map_name}")
+    return game_session.maps[map_name]
+
 edit_bp = Blueprint("edit", __name__)
 
 
@@ -72,8 +94,28 @@ def edit_overlay():
             "success": True,
             "map": battle_map.name,
             "overlay": overlay,
+            "map_stack": _map_stack_payload(battle_map),
         }
     )
+
+
+def _map_stack_payload(battle_map):
+    stack = getattr(battle_map, 'map_stack', None)
+    if stack is None:
+        return None
+    return {
+        'id': stack.id,
+        'floors': [
+            {
+                'map': f.map_name,
+                'anchor': list(f.anchor),
+                'elevation_ft': f.elevation_ft,
+                'ceiling_height_ft': f.ceiling_height_ft,
+                'role': f.role,
+            }
+            for f in stack.floors
+        ],
+    }
 
 
 @edit_bp.route("/edit/object/schema", methods=["GET"])
@@ -349,13 +391,14 @@ def edit_move():
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
-    map_name = battle_map.name
+    map_name = _resolve_edit_map_name(current_game, battle_map, data)
+    target_map = _edit_map_object(current_game, map_name)
 
-    if x < 0 or y < 0 or x >= battle_map.size[0] or y >= battle_map.size[1]:
+    if x < 0 or y < 0 or x >= target_map.size[0] or y >= target_map.size[1]:
         return jsonify(
             {
                 "success": False,
-                "error": f"Coordinates out of bounds ({battle_map.size[0]}x{battle_map.size[1]})",
+                "error": f"Coordinates out of bounds for {map_name} ({target_map.size[0]}x{target_map.size[1]})",
             }
         ), 400
 
@@ -484,13 +527,14 @@ def edit_layer_place():
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
-    map_name = battle_map.name
+    map_name = _resolve_edit_map_name(current_game, battle_map, data)
+    target_map = _edit_map_object(current_game, map_name)
 
-    if x < 0 or y < 0 or x >= battle_map.size[0] or y >= battle_map.size[1]:
+    if x < 0 or y < 0 or x >= target_map.size[0] or y >= target_map.size[1]:
         return jsonify(
             {
                 "success": False,
-                "error": f"Coordinates out of bounds ({battle_map.size[0]}x{battle_map.size[1]})",
+                "error": f"Coordinates out of bounds for {map_name} ({target_map.size[0]}x{target_map.size[1]})",
             }
         ), 400
 
@@ -513,7 +557,7 @@ def edit_layer_place():
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
 
     if placed.get("placement_kind") != "object":
-        apply_terrain_placement_to_live_map(battle_map, current_game.game_session, map_name, placed)
+        apply_terrain_placement_to_live_map(target_map, current_game.game_session, map_name, placed)
     current_game.reload_map_by_name(map_name)
     get_socketio().emit("message", {"type": "refresh_map"})
     return jsonify({"success": True, "map": map_name, "placement": placed})
@@ -541,13 +585,14 @@ def edit_terrain_place():
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
-    map_name = battle_map.name
+    map_name = _resolve_edit_map_name(current_game, battle_map, data)
+    target_map = _edit_map_object(current_game, map_name)
 
-    if x < 0 or y < 0 or x >= battle_map.size[0] or y >= battle_map.size[1]:
+    if x < 0 or y < 0 or x >= target_map.size[0] or y >= target_map.size[1]:
         return jsonify(
             {
                 "success": False,
-                "error": f"Coordinates out of bounds ({battle_map.size[0]}x{battle_map.size[1]})",
+                "error": f"Coordinates out of bounds for {map_name} ({target_map.size[0]}x{target_map.size[1]})",
             }
         ), 400
 
@@ -565,7 +610,7 @@ def edit_terrain_place():
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
 
     if placed.get("placement_kind") != "object":
-        apply_terrain_placement_to_live_map(battle_map, current_game.game_session, map_name, placed)
+        apply_terrain_placement_to_live_map(target_map, current_game.game_session, map_name, placed)
     current_game.reload_map_by_name(map_name)
     get_socketio().emit("message", {"type": "refresh_map"})
     return jsonify({"success": True, "map": map_name, "placement": placed})

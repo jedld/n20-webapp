@@ -10,6 +10,12 @@ const Utils = {
     const overlay = btn.nextElementSibling;
     overlay.style.display = (overlay.style.display === "none" || overlay.style.display === "") ? "block" : "none";
   },
+  reloadEditOverlayIfNeeded: function () {
+    if (window.EditMode && typeof window.EditMode.loadOverlay === 'function'
+        && String($('body').data('edit-mode')).toLowerCase() === 'true') {
+      window.EditMode.loadOverlay();
+    }
+  },
   refreshPortraits: function () {
     Utils.ajaxGet('/refresh-portraits', {}, (data) => {
       $('#floating-entity-portraits').html(data);
@@ -99,6 +105,7 @@ const Utils = {
         }
         if (callback) callback();
         try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { }
+        Utils.reloadEditOverlayIfNeeded();
       });
       return;
     }
@@ -112,6 +119,13 @@ const Utils = {
 
       // Parse the HTML to extract individual tiles and check for map info
       const $newContent = $('<div>').html(data);
+      if ($newContent.find('[data-stack-id]').length) {
+        $('.tiles-container').html(data);
+        window.lastAppliedSequence = currentSequence;
+        if (callback) callback();
+        Utils.reloadEditOverlayIfNeeded();
+        return;
+      }
       const $newTiles = $newContent.find('.tile');
 
       // Check if this update is for the current map
@@ -685,6 +699,22 @@ const Utils = {
     Utils._movementLastSignature = null;
   },
 
+  /** Stack-composite overlay offset (overlay-local coords → world/base grid). */
+  getStackCompositeOffset: function () {
+    const meta = document.querySelector('.map-metadata[data-stack-composite="1"]');
+    if (!meta) {
+      return { active: false, x: 0, y: 0, mapName: null };
+    }
+    return {
+      active: true,
+      x: parseInt(meta.getAttribute('data-stack-anchor-x'), 10) || 0,
+      y: parseInt(meta.getAttribute('data-stack-anchor-y'), 10) || 0,
+      mapName: meta.getAttribute('data-stack-active-map')
+        || meta.getAttribute('data-map-name')
+        || null,
+    };
+  },
+
   // Compute and cache the tile grid origin in viewport coords. Tiles are laid
   // out at (x+1)*tile_size, (y+1)*tile_size relative to .tiles-container
   // (see templates/map.html), so we only need ONE getBoundingClientRect on
@@ -758,10 +788,13 @@ const Utils = {
     }
 
     // Compute all centers in O(n) with no DOM reads.
+    const stackOff = Utils.getStackCompositeOffset();
     const centers = new Array(movePath.length);
     for (let i = 0; i < movePath.length; i++) {
       const c = movePath[i];
-      centers[i] = { x: grid.ox + c[0] * tile_size + half, y: grid.oy + c[1] * tile_size + half };
+      const gx = stackOff.active ? c[0] + stackOff.x : c[0];
+      const gy = stackOff.active ? c[1] + stackOff.y : c[1];
+      centers[i] = { x: grid.ox + gx * tile_size + half, y: grid.oy + gy * tile_size + half };
     }
 
     // Group segments by dashed/solid and stroke each group with ONE path.

@@ -1,0 +1,29 @@
+{# Base-map peek tiles composited under overlay windows (overlay-local coordinates) #}
+{% for layer in tiles %}
+  {% for row in layer %}
+    {% for tile in row %}
+      {% if not tile.get('underlay_empty') %}
+        <div class="tile map-stack-underlay-tile"
+             data-coords-x="{{ tile['x'] }}"
+             data-coords-y="{{ tile['y'] }}"
+             data-world-x="{{ tile.get('world_x', tile['x']) }}"
+             data-world-y="{{ tile.get('world_y', tile['y']) }}"
+             style="top: {{ tile['y'] * tile_size_px + tile_size_px }}px;
+                    left: {{ tile['x'] * tile_size_px + tile_size_px }}px;
+                    width: {{ tile_size_px }}px;
+                    height: {{ tile_size_px }}px;">
+          {% if tile['objects'] %}
+            {% for obj in tile['objects'] %}
+              <div class="object-container" data-id="{{ obj['id'] }}" style="width: {{ tile_size_px }}px; height: {{ tile_size_px }}px;">
+                {% if obj['image'] %}
+                  <img class="object-image" src="{{ url_for('static', filename='assets/' ~ obj['image']) }}" style="{{ obj['transforms'] }}"/>
+                {% endif %}
+              </div>
+            {% endfor %}
+          {% endif %}
+          <div class="brightness-overlay" style="opacity: {{ tile.get('opacity', 1) }};"></div>
+        </div>
+      {% endif %}
+    {% endfor %}
+  {% endfor %}
+{% endfor %}

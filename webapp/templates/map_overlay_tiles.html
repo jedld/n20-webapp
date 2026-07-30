@@ -1,0 +1,148 @@
+{# Overlay floor tiles — keep in sync with map.html tile body #}
+{% for layer in tiles %}
+  {% for row in layer %}
+    <div style="display: flex;">
+      {% for tile in row %}
+        {% if not tile.get('stack_void') %}
+        <div class="tile map-stack-tile{% if tile.get('detect_magic_sense') %} detect-magic-sense{% endif %}{% if tile.get('peek_through') %} peek-through{% endif %}{% if tile.get('stack_opening') %} stack-opening{% endif %}{% if highlight_doors and tile.get('door') and tile['line_of_sight'] %} tile-door-highlight{% endif %}"
+             data-layer-map="{{ tile.get('layer_map', '') }}"
+             data-light="{{ tile['light'] }}"
+             data-coords-x="{{ tile['x'] }}"
+             data-coords-y="{{ tile['y'] }}"
+             data-world-x="{{ tile.get('world_x', tile['x']) }}"
+             data-world-y="{{ tile.get('world_y', tile['y']) }}"
+             {% if tile.get('id') %}data-coords-id="{{ tile['id'] }}"{% endif %}
+             data-difficult="{{ tile.get('difficult', False) }}"
+             data-blocked="{{ tile.get('blocked', False) }}"
+             data-door="{{ tile.get('door', False) }}"
+             data-darkvision="{{ tile.get('has_darkvision', False) }}"
+             data-darkvision-color="{{ tile.get('darkvision_color', False) }}"
+             style="top: {{ tile['y'] * tile_size_px + tile_size_px }}px;
+                    left: {{ tile['x'] * tile_size_px + tile_size_px }}px;
+                    width: {{ tile_size_px }}px;
+                    height: {{ tile_size_px }}px;">
+          {% if not tile['line_of_sight'] %}
+            <div class="fog-of-war" style="width: {{ tile_size_px }}px; height: {{ tile_size_px }}px;"></div>
+          {% endif %}
+          {% if tile['objects'] %}
+            {% for obj in tile['objects'] %}
+              <div class="object-container"
+                   data-id="{{ obj['id'] }}"
+                   data-label="{{ (obj['label'] or obj['name'])|default('')|e }}"
+                   data-tooltip="{{ obj['name'] }}"
+                   style="width: {{ tile_size_px }}px; height: {{ tile_size_px }}px;">
+                {% if obj['image'] and tile['line_of_sight'] %}
+                  <img class="object-image"
+                       src="{{ url_for('static', filename='assets/' ~ obj['image']) }}"
+                       data-tooltip="{{ obj['name'] }}"
+                       style="{{ obj['transforms'] }}; top: {{ obj['token_offset_px'][0] }}px; left: {{ obj['token_offset_px'][1] }}px;"/>
+                {% endif %}
+              </div>
+              {% if obj['secret_door_marker'] %}
+                <div class="secret-door-marker {% if obj['secret_door_marker_opened'] %}secret-door-marker-opened{% else %}secret-door-marker-closed{% endif %}" aria-hidden="true">
+                  {% if obj['secret_door_marker_edges']['top'] %}
+                    <div class="secret-door-marker-line secret-door-marker-top">
+                      <span class="secret-door-marker-label">S</span>
+                    </div>
+                  {% endif %}
+                  {% if obj['secret_door_marker_edges']['right'] %}
+                    <div class="secret-door-marker-line secret-door-marker-right">
+                      <span class="secret-door-marker-label">S</span>
+                    </div>
+                  {% endif %}
+                  {% if obj['secret_door_marker_edges']['bottom'] %}
+                    <div class="secret-door-marker-line secret-door-marker-bottom">
+                      <span class="secret-door-marker-label">S</span>
+                    </div>
+                  {% endif %}
+                  {% if obj['secret_door_marker_edges']['left'] %}
+                    <div class="secret-door-marker-line secret-door-marker-left">
+                      <span class="secret-door-marker-label">S</span>
+                    </div>
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% if obj['teleporter_marker'] %}
+                <div class="teleporter-marker" aria-hidden="true"
+                     style="--teleporter-marker-color: {{ obj['teleporter_marker_color'] }};"></div>
+              {% endif %}
+              {% if obj['grease_marker'] %}
+                <div class="grease-marker" aria-hidden="true"
+                     style="--grease-seed: '{{ obj['grease_marker_seed'] or 'seed' }}';"></div>
+              {% endif %}
+              {% if highlight_doors and obj.get('door_highlight') and tile['line_of_sight'] %}
+                <div class="door-highlight-marker {% if obj.get('door_highlight_opened') %}door-highlight-marker-opened{% endif %}" aria-hidden="true" title="{{ obj.get('label') or 'Door' }}">
+                  {% if obj.get('door_highlight_edges', {}).get('top') %}
+                    <div class="door-highlight-marker-line door-highlight-marker-top"></div>
+                  {% endif %}
+                  {% if obj.get('door_highlight_edges', {}).get('right') %}
+                    <div class="door-highlight-marker-line door-highlight-marker-right"></div>
+                  {% endif %}
+                  {% if obj.get('door_highlight_edges', {}).get('bottom') %}
+                    <div class="door-highlight-marker-line door-highlight-marker-bottom"></div>
+                  {% endif %}
+                  {% if obj.get('door_highlight_edges', {}).get('left') %}
+                    <div class="door-highlight-marker-line door-highlight-marker-left"></div>
+                  {% endif %}
+                </div>
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          <div class="brightness-overlay" style="opacity: {{ tile['opacity'] }};"></div>
+          {% if tile.get('id') and tile.get('entity') %}
+            <div class="entity" data-id="{{ tile['id'] }}" data-label="{{ tile.get('label', '')|e }}">
+              {% set entity_size = tile.get('entity_size', 'medium') %}
+              {% set multiplier = 2 if entity_size == 'large' else 1 %}
+              {% set image_size_px = tile_size_px * multiplier %}
+              {% if tile.get('is_flying') %}
+              <div class="flying-entity-wrapper" style="transform: {{ transform_for(tile) }};">
+                <img class="npc flying-entity"
+                     src="{{ url_for('static', filename='assets/' ~ tile['entity']) }}"
+                     style="width: {{ image_size_px }}px;
+                            height: {{ image_size_px }}px;
+                            opacity: {{ opacity_for(tile) }};
+                            filter: {{ filter_for(tile) }};
+                            {% if tile.get('team_border_tint') %}border: 3px solid {{ tile['team_border_tint'] }}; box-shadow: 0 0 10px {{ tile['team_border_tint'] }}; border-radius: 12px;{% endif %}" />
+              </div>
+              {% else %}
+              <img class="npc"
+                   src="{{ url_for('static', filename='assets/' ~ tile['entity']) }}"
+                   style="width: {{ image_size_px }}px;
+                          height: {{ image_size_px }}px;
+                          opacity: {{ opacity_for(tile) }};
+                          filter: {{ filter_for(tile) }};
+                          transform: {{ transform_for(tile) }};
+                          {% if tile.get('team_border_tint') %}border: 3px solid {{ tile['team_border_tint'] }}; box-shadow: 0 0 10px {{ tile['team_border_tint'] }}; border-radius: 12px;{% endif %}" />
+              {% endif %}
+              {% if tile.get('team_group') %}
+                <div class="team-token-indicator"
+                     style="position: absolute; top: 4px; left: 4px; min-width: 22px; height: 22px; padding: 0 6px; background: {{ tile.get('team_border_tint') or '#333333' }}; color: white; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; box-shadow: 0 2px 6px rgba(0,0,0,0.45); z-index: 4; text-transform: uppercase;">
+                  {{ tile['team_group'] }}
+                </div>
+              {% endif %}
+              <div class="effect">
+                {% for effect in tile.get('effects', []) %}
+                  <img src="{{ url_for('static', filename='assets/effect/' ~ effect|lower ~ '.png') }}"
+                       class="effect-img"
+                       alt="{{ effect }}"
+                       data-tooltip="{{ effect }}">
+                {% endfor %}
+              </div>
+              {% if tile.get('hp') is defined and tile.get('hp') is not none and tile.get('max_hp') %}
+                {% set health_width = (tile['hp'] / tile['max_hp']) * image_size_px %}
+                {% set color = 'red' if (tile['hp'] / tile['max_hp']) < 0.2 else 'green' %}
+                <div class="health-bar"
+                     style="width: {{ health_width }}px; background-color: {{ color }};">
+                </div>
+              {% endif %}
+              {% if tile.get('label') %}
+                <div class="nameplate">{{ tile['label'] }}</div>
+              {% endif %}
+            </div>
+          {% endif %}
+        </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% endfor %}
+{% endfor %}

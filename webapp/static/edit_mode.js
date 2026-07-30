@@ -36,7 +36,9 @@
 
   function clearOverlay() {
     $('.edit-mode-layer, .edit-mode-banner').remove();
-    $('.tile').removeClass('edit-highlight-spawn edit-fixture-drag-source edit-has-fixture-labels');
+    $('.tile').removeClass(
+      'edit-highlight-spawn edit-fixture-drag-source edit-has-fixture-labels edit-highlight-wall edit-highlight-door edit-highlight-teleporter edit-fixture-drop-target',
+    );
     overlayState.itemsById = {};
     overlayState.itemsByRuntimeUid = {};
     overlayState.terrainById = {};
@@ -117,6 +119,69 @@
     return $layer;
   }
 
+  function stackEditContext() {
+    const meta = document.querySelector('.map-metadata[data-stack-composite="1"]');
+    if (!meta) {
+      return null;
+    }
+    const mapName = meta.getAttribute('data-stack-active-map') || meta.getAttribute('data-map-name');
+    if (!mapName) {
+      return null;
+    }
+    const anchorX = parseInt(meta.getAttribute('data-stack-anchor-x'), 10);
+    const anchorY = parseInt(meta.getAttribute('data-stack-anchor-y'), 10);
+    return {
+      mapName,
+      anchorX: Number.isFinite(anchorX) ? anchorX : 0,
+      anchorY: Number.isFinite(anchorY) ? anchorY : 0,
+    };
+  }
+
+  function scopedEditTiles() {
+    const stack = stackEditContext();
+    if (stack) {
+      return $(`.map-stack-overlay[data-layer-map="${stack.mapName}"] .map-stack-tile`);
+    }
+    return $('.tiles-container .tile').not('.map-stack-underlay-tile');
+  }
+
+  function findEditTile(x, y) {
+    const stack = stackEditContext();
+    if (stack && stack.mapName) {
+      const $overlay = $(`.map-stack-overlay[data-layer-map="${stack.mapName}"]`);
+      if ($overlay.length) {
+        let $tile = $overlay.find(
+          `.map-stack-tile[data-coords-x="${x}"][data-coords-y="${y}"]`,
+        );
+        if ($tile.length) {
+          return $tile.first();
+        }
+
+        const worldX = x + stack.anchorX;
+        const worldY = y + stack.anchorY;
+        $tile = $overlay.find(
+          `.map-stack-tile[data-world-x="${worldX}"][data-world-y="${worldY}"]`,
+        );
+        if ($tile.length) {
+          return $tile.first();
+        }
+
+        if (x >= stack.anchorX && y >= stack.anchorY) {
+          const localX = x - stack.anchorX;
+          const localY = y - stack.anchorY;
+          $tile = $overlay.find(
+            `.map-stack-tile[data-coords-x="${localX}"][data-coords-y="${localY}"]`,
+          );
+          if ($tile.length) {
+            return $tile.first();
+          }
+        }
+      }
+    }
+    const $tile = scopedEditTiles().filter(`[data-coords-x="${x}"][data-coords-y="${y}"]`);
+    return $tile.length ? $tile.first() : $();
+  }
+
   function createDragHandle(item, stackIndex) {
     const $handle = $('<span class="edit-mode-drag-handle" role="button"></span>');
     $handle.addClass(categoryClass(item.category));
@@ -160,7 +225,7 @@
     }
     const sorted = items.slice().sort(compareFixtureStack);
     const head = sorted[0];
-    const $tile = $(`.tile[data-coords-x="${head.x}"][data-coords-y="${head.y}"]`);
+    const $tile = findEditTile(head.x, head.y);
     if (!$tile.length) {
       return;
     }
@@ -176,15 +241,25 @@
       if (item.kind !== 'spawn_point') {
         return;
       }
-      $(`.tile[data-coords-x="${item.x}"][data-coords-y="${item.y}"]`).addClass('edit-highlight-spawn');
+      $(findEditTile(item.x, item.y)).addClass('edit-highlight-spawn');
     });
   }
 
   function highlightExistingTiles() {
-    $('.tile[data-door="True"], .tile[data-door="true"]').addClass('edit-highlight-door');
-    $('.tile .teleporter-marker').closest('.tile').addClass('edit-highlight-teleporter');
-    $('.tile .secret-door-marker').closest('.tile').addClass('edit-highlight-door');
-    $('.tile[data-blocked="True"], .tile[data-blocked="true"]').addClass('edit-highlight-wall');
+    scopedEditTiles().each(function () {
+      const $tile = $(this);
+      const door = String($tile.attr('data-door') || '').toLowerCase() === 'true';
+      const blocked = String($tile.attr('data-blocked') || '').toLowerCase() === 'true';
+      if (door || $tile.find('.secret-door-marker').length) {
+        $tile.addClass('edit-highlight-door');
+      }
+      if ($tile.find('.teleporter-marker').length) {
+        $tile.addClass('edit-highlight-teleporter');
+      }
+      if (blocked) {
+        $tile.addClass('edit-highlight-wall');
+      }
+    });
   }
 
   function edgesAreActive(edges) {
@@ -236,7 +311,7 @@
 
   function renderFixtureEdgeMarkers(entries) {
     collectFixtureEdgesByTile(entries).forEach((tileEdges) => {
-      const $tile = $(`.tile[data-coords-x="${tileEdges.x}"][data-coords-y="${tileEdges.y}"]`);
+      const $tile = findEditTile(tileEdges.x, tileEdges.y);
       if (!$tile.length) {
         return;
       }
@@ -397,6 +472,14 @@
     };
   }
 
+  function refreshTilesAfterEditChange() {
+    if (window.Utils && typeof window.Utils.refreshTileSet === 'function') {
+      window.Utils.refreshTileSet(false, false, 0, 0, null, null, true);
+      return;
+    }
+    loadOverlay();
+  }
+
   function persistMove(payload) {
     return $.ajax({
       url: '/edit/move',
@@ -410,10 +493,7 @@
           loadOverlay();
           return;
         }
-        if (window.Utils && typeof window.Utils.refreshTileSet === 'function') {
-          window.Utils.refreshTileSet();
-        }
-        setTimeout(loadOverlay, 250);
+        refreshTilesAfterEditChange();
       })
       .fail(function (xhr) {
         let message = 'Edit save failed';
@@ -442,10 +522,7 @@
           return;
         }
         $('#centerActionBar').hide();
-        if (window.Utils && typeof window.Utils.refreshTileSet === 'function') {
-          window.Utils.refreshTileSet();
-        }
-        setTimeout(loadOverlay, 250);
+        refreshTilesAfterEditChange();
       })
       .fail(function (xhr) {
         let message = 'Edit remove failed';
@@ -595,15 +672,22 @@
       dragGhost.css('visibility', 'hidden');
     }
 
-    let hit = null;
     try {
+      if (typeof window.tileCoordsFromClientPoint === 'function') {
+        const resolved = window.tileCoordsFromClientPoint(clientX, clientY);
+        if (resolved) {
+          return { x: resolved.x, y: resolved.y, mapName: resolved.mapName || null };
+        }
+        return null;
+      }
+
       const elementBelow = document.elementFromPoint(clientX, clientY);
-      hit = tileCoordsFromElement($(elementBelow).closest('.tile'));
+      let hit = tileCoordsFromElement($(elementBelow).closest('.tile'));
       if (hit) {
         return hit;
       }
 
-      $('.tiles-container .tile').each(function () {
+      scopedEditTiles().each(function () {
         const rect = this.getBoundingClientRect();
         if (
           clientX >= rect.left &&
@@ -660,6 +744,12 @@
     const payload = payloadForHandle($handle);
     payload.x = target.x;
     payload.y = target.y;
+    const stack = stackEditContext();
+    if (stack) {
+      payload.map_name = stack.mapName;
+    } else if (target.mapName) {
+      payload.map_name = target.mapName;
+    }
     persistMove(payload);
   }
 
@@ -710,7 +800,7 @@
     if (!target) {
       return;
     }
-    const $targetTile = $(`.tile[data-coords-x="${target.x}"][data-coords-y="${target.y}"]`);
+    const $targetTile = findEditTile(target.x, target.y);
     if ($targetTile.length && (!dragSourceTile || $targetTile[0] !== dragSourceTile[0])) {
       $targetTile.addClass('edit-fixture-drop-target');
       currentDropTarget = target;
@@ -899,6 +989,9 @@
     removeFixture,
     findFixtureForEntityUid,
     reloadOverlay: scheduleOverlayReload,
+    stackEditContext,
+    findEditTile,
+    scopedEditTiles,
   };
 
   $(function () {
@@ -909,10 +1002,33 @@
     loadOverlay();
     const originalRefresh = window.Utils && window.Utils.refreshTileSet;
     if (originalRefresh) {
-      window.Utils.refreshTileSet = function () {
-        const result = originalRefresh.apply(this, arguments);
-        scheduleOverlayReload();
-        return result;
+      window.Utils.refreshTileSet = function (
+        is_setup,
+        pov,
+        x,
+        y,
+        entity_uid,
+        callback,
+        forceFullRefresh,
+      ) {
+        const wrappedCallback = function () {
+          if (typeof callback === 'function') {
+            callback();
+          }
+          if (isEditMode() && !forceFullRefresh) {
+            scheduleOverlayReload(400);
+          }
+        };
+        return originalRefresh.call(
+          this,
+          is_setup,
+          pov,
+          x,
+          y,
+          entity_uid,
+          wrappedCallback,
+          forceFullRefresh,
+        );
       };
     }
   });

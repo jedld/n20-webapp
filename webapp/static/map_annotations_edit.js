@@ -46,8 +46,26 @@
     if (!$container.length) {
       return null;
     }
+    const stack = stackEditContext();
+    if (stack) {
+      const $overlay = $(`.map-stack-overlay[data-layer-map="${stack.mapName}"]`);
+      if ($overlay.length) {
+        const rect = $overlay[0].getBoundingClientRect();
+        const sampleTile = $overlay.find('.map-stack-tile').get(0);
+        const size = sampleTile
+          ? sampleTile.getBoundingClientRect().width || tileSize()
+          : tileSize();
+        if (size) {
+          const x = Math.floor((clientX - rect.left) / size);
+          const y = Math.floor((clientY - rect.top) / size);
+          if (x >= 0 && y >= 0) {
+            return { x, y };
+          }
+        }
+      }
+    }
     const rect = $container[0].getBoundingClientRect();
-    const sampleTile = $container.find('.tile').get(0);
+    const sampleTile = scopedAnnotationTiles().get(0) || $container.find('.tile').get(0);
     const size = sampleTile
       ? sampleTile.getBoundingClientRect().width || tileSize()
       : tileSize();
@@ -71,12 +89,12 @@
     let hit = null;
     try {
       const elementBelow = document.elementFromPoint(clientX, clientY);
-      hit = tileCoordsFromElement($(elementBelow).closest('.tile'));
+      hit = tileCoordsFromElement($(elementBelow).closest('.map-stack-tile, .tile'));
       if (hit) {
         return hit;
       }
 
-      $('.tiles-container .tile').each(function () {
+      scopedAnnotationTiles().each(function () {
         const rect = this.getBoundingClientRect();
         if (
           clientX >= rect.left &&
@@ -202,7 +220,7 @@
     if (!target) {
       return;
     }
-    const $targetTile = $(`.tile[data-coords-x="${target.x}"][data-coords-y="${target.y}"]`);
+    const $targetTile = findAnnotationTile(target.x, target.y);
     if ($targetTile.length && (!dragSourceTile || $targetTile[0] !== dragSourceTile[0])) {
       $targetTile.addClass('map-annotation-drop-target');
       currentDropTarget = target;
@@ -306,9 +324,65 @@
     return Number($('.tiles-container').data('tile-size')) || 70;
   }
 
+  function stackEditContext() {
+    if (window.EditMode && typeof window.EditMode.stackEditContext === 'function') {
+      return window.EditMode.stackEditContext();
+    }
+    const meta = document.querySelector('.map-metadata[data-stack-composite="1"]');
+    if (!meta) {
+      return null;
+    }
+    const mapName = meta.getAttribute('data-stack-active-map') || meta.getAttribute('data-map-name');
+    if (!mapName) {
+      return null;
+    }
+    const anchorX = parseInt(meta.getAttribute('data-stack-anchor-x'), 10);
+    const anchorY = parseInt(meta.getAttribute('data-stack-anchor-y'), 10);
+    return {
+      mapName,
+      anchorX: Number.isFinite(anchorX) ? anchorX : 0,
+      anchorY: Number.isFinite(anchorY) ? anchorY : 0,
+    };
+  }
+
+  function scopedAnnotationTiles() {
+    const stack = stackEditContext();
+    if (stack) {
+      return $(`.map-stack-overlay[data-layer-map="${stack.mapName}"] .map-stack-tile`);
+    }
+    return $('.tiles-container .tile').not('.map-stack-underlay-tile');
+  }
+
+  function findAnnotationTile(x, y) {
+    if (window.EditMode && typeof window.EditMode.findEditTile === 'function') {
+      const $tile = window.EditMode.findEditTile(x, y);
+      if ($tile.length) {
+        return $tile;
+      }
+    }
+    const stack = stackEditContext();
+    if (stack) {
+      const $overlay = $(`.map-stack-overlay[data-layer-map="${stack.mapName}"]`);
+      if ($overlay.length) {
+        let $tile = $overlay.find(
+          `.map-stack-tile[data-coords-x="${x}"][data-coords-y="${y}"]`,
+        );
+        if ($tile.length) {
+          return $tile.first();
+        }
+      }
+    }
+    const $scoped = scopedAnnotationTiles().filter(`[data-coords-x="${x}"][data-coords-y="${y}"]`);
+    return $scoped.length ? $scoped.first() : $();
+  }
+
   function tileFromEvent(event) {
-    const $tile = $(event.target).closest('.tile');
-    if (!$tile.length) {
+    const $tile = $(event.target).closest('.map-stack-tile, .tile');
+    if (!$tile.length || $tile.hasClass('map-stack-underlay-tile')) {
+      return null;
+    }
+    const stack = stackEditContext();
+    if (stack && !$tile.closest(`.map-stack-overlay[data-layer-map="${stack.mapName}"]`).length) {
       return null;
     }
     return {
@@ -355,7 +429,7 @@
 
   function highlightAnnotationTiles(coords, selected) {
     coords.forEach((pt) => {
-      const $tile = $(`.tile[data-coords-x="${pt[0]}"][data-coords-y="${pt[1]}"]`);
+      const $tile = findAnnotationTile(pt[0], pt[1]);
       if (selected) {
         $tile.addClass('map-annotation-selected-tile');
       }
@@ -400,7 +474,7 @@
   }
 
   function markTile(x, y, label, kind, opacity, annotation) {
-    const $tile = $(`.tile[data-coords-x="${x}"][data-coords-y="${y}"]`);
+    const $tile = findAnnotationTile(x, y);
     if (!$tile.length) {
       return;
     }
@@ -862,8 +936,8 @@
   }
 
   function bindTileClicks() {
-    $(document).off('click.mapAnnotations', '.tile');
-    $(document).on('click.mapAnnotations', '.tile', handleTileClick);
+    $(document).off('click.mapAnnotations', '.map-stack-tile, .tile');
+    $(document).on('click.mapAnnotations', '.map-stack-tile, .tile', handleTileClick);
   }
 
   function loadAnnotations() {

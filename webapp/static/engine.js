@@ -163,7 +163,14 @@ function tryBuildLocalPathCostMapFromTiles() {
   if (typeof PathComputeModule === 'undefined') {
     return false;
   }
-  const tiles = document.querySelectorAll('.tile');
+  let tiles = document.querySelectorAll('.tile');
+  const stackOff = Utils.getStackCompositeOffset && Utils.getStackCompositeOffset();
+  if (stackOff && stackOff.active) {
+    const overlayTiles = document.querySelectorAll('.map-stack-overlay .map-stack-tile');
+    if (overlayTiles.length) {
+      tiles = overlayTiles;
+    }
+  }
   if (!tiles.length) {
     return false;
   }
@@ -832,9 +839,6 @@ function scheduleRefreshMap(delayMs = 180, options = {}) {
 
 function afterMapPlacementRefresh() {
   scheduleRefreshMap(80);
-  if (isEditMode() && window.EditMode && typeof window.EditMode.reloadOverlay === 'function') {
-    window.EditMode.reloadOverlay();
-  }
 }
 
 /** Resolve map tile coords from viewport pointer position (pan/zoom-safe). */
@@ -843,20 +847,72 @@ function tileCoordsFromClientPoint(clientX, clientY) {
     return null;
   }
 
+  const stackOff = Utils.getStackCompositeOffset && Utils.getStackCompositeOffset();
+  const stackActive = stackOff && stackOff.active && stackOff.mapName;
+  const overlayTileSelector = stackActive
+    ? `.map-stack-overlay[data-layer-map="${stackOff.mapName}"] .map-stack-tile`
+    : null;
+
   const elementBelow = document.elementFromPoint(clientX, clientY);
   if (elementBelow) {
-    const $tile = $(elementBelow).closest('.tile');
+    const $tile = stackActive
+      ? $(elementBelow).closest(overlayTileSelector)
+      : $(elementBelow).closest('.tile');
     if ($tile.length) {
       const x = parseInt($tile.attr('data-coords-x'), 10);
       const y = parseInt($tile.attr('data-coords-y'), 10);
       if (!Number.isNaN(x) && !Number.isNaN(y)) {
-        return { x, y, $tile };
+        return {
+          x,
+          y,
+          $tile,
+          mapName: $tile.attr('data-layer-map') || (stackActive ? stackOff.mapName : null),
+        };
       }
     }
   }
 
   let hit = null;
+  const candidates = stackActive
+    ? document.querySelectorAll(overlayTileSelector)
+    : document.querySelectorAll('.tiles-container .tile');
+  candidates.forEach((tileEl) => {
+    if (hit) {
+      return;
+    }
+    const rect = tileEl.getBoundingClientRect();
+    if (
+      clientX >= rect.left
+      && clientX < rect.right
+      && clientY >= rect.top
+      && clientY < rect.bottom
+    ) {
+      const $tile = $(tileEl);
+      const x = parseInt($tile.attr('data-coords-x'), 10);
+      const y = parseInt($tile.attr('data-coords-y'), 10);
+      if (!Number.isNaN(x) && !Number.isNaN(y)) {
+        hit = {
+          x,
+          y,
+          $tile,
+          mapName: $tile.attr('data-layer-map') || (stackActive ? stackOff.mapName : null),
+        };
+      }
+    }
+  });
+  if (hit) {
+    return hit;
+  }
+
+  if (!stackActive) {
+    return null;
+  }
+
+  // Fallback: base-map tiles when pointer is outside the overlay footprint.
   $('.tiles-container .tile').each(function () {
+    if (hit) {
+      return false;
+    }
     const rect = this.getBoundingClientRect();
     if (
       clientX >= rect.left
@@ -868,7 +924,7 @@ function tileCoordsFromClientPoint(clientX, clientY) {
       const x = parseInt($tile.attr('data-coords-x'), 10);
       const y = parseInt($tile.attr('data-coords-y'), 10);
       if (!Number.isNaN(x) && !Number.isNaN(y)) {
-        hit = { x, y, $tile };
+        hit = { x, y, $tile, mapName: null };
         return false;
       }
     }
@@ -3201,14 +3257,33 @@ const getTilePositionInContainer = ($tile, spriteW, spriteH) => {
   if (!$tile.length) {
     return null;
   }
-  const x = Number($tile.data('coords-x'));
-  const y = Number($tile.data('coords-y'));
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    return null;
-  }
   const tileSize = parseInt($('.tiles-container').data('tile-size') || 64, 10);
   const halfW = (spriteW || tileSize) / 2;
   const halfH = (spriteH || tileSize) / 2;
+
+  const tileEl = $tile[0];
+  const $spriteContainer = getMovementSpriteContainer();
+  if (tileEl && tileEl.getBoundingClientRect && $spriteContainer.length) {
+    const tileRect = tileEl.getBoundingClientRect();
+    const containerRect = $spriteContainer[0].getBoundingClientRect();
+    if (tileRect.width > 0 && containerRect.width > 0) {
+      return {
+        left: tileRect.left - containerRect.left + tileRect.width / 2 - halfW,
+        top: tileRect.top - containerRect.top + tileRect.height / 2 - halfH,
+      };
+    }
+  }
+
+  let x = Number($tile.data('coords-x'));
+  let y = Number($tile.data('coords-y'));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return null;
+  }
+  const stackOff = Utils.getStackCompositeOffset ? Utils.getStackCompositeOffset() : { active: false, x: 0, y: 0 };
+  if (stackOff.active && $tile.closest('.map-stack-overlay').length) {
+    x += stackOff.x;
+    y += stackOff.y;
+  }
   const pos = {
     left: x * tileSize + tileSize + tileSize / 2 - halfW,
     top: y * tileSize + tileSize + tileSize / 2 - halfH
@@ -4994,9 +5069,14 @@ $(document).ready(() => {
 
   // Highlight tile info or draw movement data on hover.
   $(".tiles-container").on("mouseover", ".tile", function () {
-    const coordsx = $(this).data("coords-x");
-    const coordsy = $(this).data("coords-y");
-    let tooltip = $(this).data("tooltip") || "";
+    const $tile = $(this);
+    const coordsx = $tile.data("coords-x");
+    const coordsy = $tile.data("coords-y");
+    const displayX = $tile.data("world-x");
+    const displayY = $tile.data("world-y");
+    const showX = displayX !== undefined ? displayX : coordsx;
+    const showY = displayY !== undefined ? displayY : coordsy;
+    let tooltip = $tile.data("tooltip") || "";
     if (targetMode) {
       $(".highlighted").removeClass("highlighted");
       $(".tile").css("z-index", 0);
@@ -5040,13 +5120,13 @@ $(document).ready(() => {
           }
 
           $("#coords-box").html(
-            `<p>X: ${coordsx}</p><p>Y: ${coordsy}</p>${tooltip}`,
+            `<p>X: ${showX}</p><p>Y: ${showY}</p>${tooltip}`,
           );
         });
       }
     } else {
       $("#coords-box").html(
-        `<p>X: ${coordsx}</p><p>Y: ${coordsy}</p>${tooltip}`,
+        `<p>X: ${showX}</p><p>Y: ${showY}</p>${tooltip}`,
       );
       if (moveMode && !keyboardMovementMode && (source.x !== coordsx || source.y !== coordsy)) {
         // Skip duplicate work when the mouseover bubbles from child elements
@@ -5766,7 +5846,7 @@ $(document).ready(() => {
     if (!hit) {
       return;
     }
-    const { x, y, $tile } = hit;
+    const { x, y, $tile, mapName } = hit;
 
     if (draggedNPC) {
       // Handle NPC spawning (only on empty tiles)
@@ -5806,7 +5886,7 @@ $(document).ready(() => {
 
       enqueueMapPlacement(() => {
         if (isEditMode()) {
-          return placeInEditMode(objectType, x, y);
+          return placeInEditMode(objectType, x, y, mapName);
         }
         return postJsonPlacement('/spawn_object', {
           object_type: objectType,
@@ -5961,8 +6041,12 @@ $(document).ready(() => {
     return TERRAIN_PRESET_IDS.has(objectType);
   }
 
-  function placeInEditMode(objectType, x, y) {
-    return postJsonPlacement('/edit/layer/place', { object_type: objectType, x, y });
+  function placeInEditMode(objectType, x, y, mapName) {
+    const payload = { object_type: objectType, x, y };
+    if (mapName) {
+      payload.map_name = mapName;
+    }
+    return postJsonPlacement('/edit/layer/place', payload);
   }
 
   function placeTerrainInEditMode(objectType, x, y) {

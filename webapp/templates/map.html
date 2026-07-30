@@ -1,11 +1,54 @@
 <!-- Map identifier for tile optimization -->
-<div class="map-metadata" data-map-name="{{ current_map_name }}" style="display: none;"></div>
+<div class="map-metadata" data-map-name="{{ current_map_name }}"{% if stack_layers %} data-stack-id="{{ stack_layers.id }}"{% if stack_layers.get('composite_mode') %} data-stack-composite="1" data-stack-active-map="{{ stack_layers.get('active_layer_map', current_map_name) }}" data-stack-anchor-x="{{ stack_layers.anchor[0] }}" data-stack-anchor-y="{{ stack_layers.anchor[1] }}"{% endif %}{% endif %} style="display: none;"></div>
+
+{% set stack_composite = stack_layers and stack_layers.get('composite_mode') %}
+
+{% if stack_composite and stack_layers.layers|length > 1 %}
+  {% for layer in stack_layers.layers %}
+    {% if layer.role != 'base' %}
+    {% set overlay_w = layer.size[0] * tile_size_px %}
+    {% set overlay_h = layer.size[1] * tile_size_px %}
+  {% set overlay_off_x = (layer.image_offset_px[0] if layer.image_offset_px else 0) %}
+  {% set overlay_off_y = (layer.image_offset_px[1] if layer.image_offset_px else 0) %}
+    <div class="map-stack-overlay" data-layer-map="{{ layer.name }}" data-anchor-x="{{ layer.anchor[0] }}" data-anchor-y="{{ layer.anchor[1] }}" data-elevation-ft="{{ layer.elevation_ft }}" style="position: absolute; z-index: 6; pointer-events: none; left: {{ layer.anchor[0] * tile_size_px }}px; top: {{ layer.anchor[1] * tile_size_px }}px; width: {{ overlay_w + tile_size_px }}px; height: {{ overlay_h + tile_size_px }}px;">
+      <img class="map-stack-overlay-bg" alt="" aria-hidden="true"
+           src="{{ url_for('assets.serve_map_image', filename=layer.background) }}"
+           style="position: absolute; z-index: 0; pointer-events: none; left: {{ tile_size_px + overlay_off_x }}px; top: {{ tile_size_px + overlay_off_y }}px; width: {{ overlay_w }}px; height: {{ overlay_h }}px; object-fit: cover; object-position: top left;">
+      {% if stack_layers.get('base_peek_underlay') %}
+      <div class="map-stack-window-peek" style="position: absolute; z-index: 1; pointer-events: none; top: 0; left: 0;">
+        {% set tiles = [stack_layers.base_peek_underlay] %}
+        {% include 'map_underlay_tiles.html' %}
+      </div>
+      {% endif %}
+      <div class="map-stack-overlay-tiles" style="position: absolute; z-index: 2; top: 0; left: 0; width: 100%; height: 100%;">
+        {% set tiles = [layer.tiles] %}
+        {% include 'map_overlay_tiles.html' %}
+      </div>
+    </div>
+    {% endif %}
+  {% endfor %}
+{% elif stack_underlay_mode and stack_layers and stack_layers.get('base_peek_underlay') %}
+<div class="map-stack-underlay" style="position: absolute; z-index: 0; pointer-events: none; top: 0; left: 0;">
+  {% set tiles = [stack_layers.base_peek_underlay] %}
+  {% include 'map_underlay_tiles.html' %}
+</div>
+{% elif stack_layers and stack_layers.layers|length > 1 %}
+  {% for layer in stack_layers.layers %}
+    {% if layer.role != 'base' %}
+    <div class="map-stack-overlay" data-layer-map="{{ layer.name }}" data-anchor-x="{{ layer.anchor[0] }}" data-anchor-y="{{ layer.anchor[1] }}" data-elevation-ft="{{ layer.elevation_ft }}" style="position: absolute; z-index: 5; pointer-events: none; left: {{ (layer.anchor[0]) * tile_size_px }}px; top: {{ (layer.anchor[1]) * tile_size_px }}px;">
+      {% set tiles = [layer.tiles] %}
+      {% include 'map_overlay_tiles.html' %}
+    </div>
+    {% endif %}
+  {% endfor %}
+{% endif %}
 
 {% for layer in tiles %}
   {% for row in layer %}
     <div style="display: flex;">
       {% for tile in row %}
-        <div class="tile{% if tile.get('detect_magic_sense') %} detect-magic-sense{% endif %}{% if highlight_doors and tile.get('door') and tile['line_of_sight'] %} tile-door-highlight{% endif %}"
+        {% if not tile.get('under_overlay') %}
+        <div class="tile{% if tile.get('detect_magic_sense') %} detect-magic-sense{% endif %}{% if tile.get('peek_through') %} map-stack-tile peek-through{% endif %}{% if highlight_doors and tile.get('door') and tile['line_of_sight'] %} tile-door-highlight{% endif %}"
              data-light="{{ tile['light'] }}"
              data-tooltip="{{ tile.get('terrain_tooltip', '')|safe }}"
              data-coords-x="{{ tile['x'] }}"
@@ -189,7 +232,7 @@
                 <i class="glyphicon glyphicon-plus"></i>
           </button>
           {# --- Dialog bubble for dialog-capable entities --- #}
-          {% if tile['dialog'] and pov_entity and pov_entity.entity_uid != tile.id and within_talking_distance(tile.id) %}
+          {% if tile['dialog'] and tile.id and pov_entity and pov_entity.entity_uid != tile.id and within_talking_distance(tile.id) %}
             <div class="dialog-bubble hover-only" data-id="{{ tile.id }}" data-name="{{ tile.name }}">
               <i class="glyphicon glyphicon-comment"></i>
             </div>
@@ -266,6 +309,7 @@
             </div>
           {% endif %}
         </div>
+        {% endif %}
       {% endfor %}
     </div>
   {% endfor %}

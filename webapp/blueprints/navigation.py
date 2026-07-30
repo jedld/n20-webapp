@@ -25,6 +25,7 @@ from natural20.ai.path_compute import PathCompute
 from natural20.ai.pathfinding_cost_map import build_pathfinding_snapshot
 from natural20.player_character import PlayerCharacter
 from natural20.web.json_renderer import JsonRenderer
+from natural20.web.stack_renderer import build_stack_render_layers, stack_for_map
 
 from .helpers.auth_utils import logged_in, user_role
 from .helpers.pvp import pvp_team_config
@@ -65,6 +66,112 @@ _PATH_RESPONSE_CACHE_LIMIT = 256
 _DIFFICULT_TERRAIN_CACHE = {}
 
 eval_context = {}
+
+
+def _battle_map_for_render(current_game, username, *, is_dm=False):
+    """Map used for tile rendering — follows the user's active map view."""
+    if is_dm:
+        return current_game.get_map_for_user(username)
+    return current_game.get_map_for_user(username)
+
+
+def _sync_stack_pov_to_view_map(current_game, battle_map, pov_entities):
+    """If the user's view is an overlay floor but their token is still downstairs, move them up."""
+    if not pov_entities or battle_map is None:
+        return
+    session = getattr(current_game, 'game_session', None)
+    stack = stack_for_map(session, battle_map) if session else None
+    if stack is None:
+        return
+    floor = stack.floor_for_map(battle_map.name)
+    if floor is None or floor.is_base:
+        return
+
+    pov_list = pov_entities if isinstance(pov_entities, list) else [pov_entities]
+    base_floor = next((f for f in stack.floors if f.is_base), None)
+    if base_floor is None:
+        return
+
+    battle = current_game.get_current_battle()
+    for entity in pov_list:
+        if entity is None or entity in battle_map.entities:
+            continue
+        if entity not in base_floor.map.entities:
+            continue
+        pos = base_floor.map.entity_or_object_pos(entity)
+        if pos is None:
+            continue
+        wx, wy, _ = stack.local_to_world(base_floor.map_name, pos[0], pos[1])
+        local = stack.world_to_local(wx, wy, battle_map.name)
+        if local is None:
+            continue
+        if not (stack.is_stack_opening(wx, wy) or stack.in_overlay_footprint(floor, wx, wy)):
+            continue
+        if battle_map.placeable(entity, local[0], local[1], battle):
+            from natural20.map_stack_movement import transfer_entity_to_map
+            transfer_entity_to_map(entity, base_floor.map, battle_map, local[0], local[1], battle)
+            return
+
+
+def _stack_composite_mode(stack_layers):
+    return bool(stack_layers and stack_layers.get('composite_mode'))
+
+
+def _stack_underlay_mode(stack_layers):
+    """Legacy alias — composite upstairs view."""
+    return _stack_composite_mode(stack_layers)
+
+
+def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_entities, logger=None):
+    """Return (stack_layers dict|None, tiles list for template)."""
+    session = current_game.game_session
+    stack = stack_for_map(session, battle_map)
+    if stack is not None:
+        floor = stack.floor_for_map(battle_map.name)
+        if floor is not None and floor.is_base:
+            renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
+            return None, [renderer.render(entity_pov=pov_entities)]
+        stack_layers = build_stack_render_layers(
+            session, battle_map, battle, padding=map_padding, entity_pov=pov_entities,
+        )
+        if stack_layers and stack_layers.get('composite_mode'):
+            base_layer = stack_layers['layers'][0]
+            return stack_layers, [base_layer['tiles']]
+    renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
+    return None, [renderer.render(entity_pov=pov_entities)]
+
+
+def _stack_display_map(current_game, battle_map):
+    """When compositing an overlay, canvas size matches the base map."""
+    stack = stack_for_map(current_game.game_session, battle_map)
+    if stack is not None:
+        floor = stack.floor_for_map(battle_map.name)
+        if floor is not None and not floor.is_base:
+            base = next((f for f in stack.floors if f.is_base), None)
+            if base is not None:
+                return base.map
+    return battle_map
+
+
+def _background_for_stack_view(current_game, username, battle_map, display_map, stack_composite):
+    """Base-map background when compositing; otherwise the active map background."""
+    if stack_composite and display_map is not battle_map:
+        try:
+            state = current_game.get_time_of_day_state() if hasattr(current_game, 'get_time_of_day_state') else None
+            if state is not None:
+                filename = display_map.background_image_for_time_of_day(state)
+                if filename:
+                    return f'maps/{filename}'
+        except Exception:
+            pass
+        try:
+            filename = display_map.background_image()
+            if filename:
+                return f'maps/{filename}'
+        except Exception:
+            pass
+        return f'maps/{display_map.name}.png'
+    return current_game.get_background_image_for_user(username)
 
 
 def _difficult_terrain_lookup(battle_map, entity, battle):
@@ -151,19 +258,28 @@ def index():
                     pass
             battle_map = entity_map or current_game.get_map_for_user(session['username'])
         else:
-            battle_map = current_game.get_map_for_entity(pov_entity)
+            battle_map = _battle_map_for_render(current_game, session['username'])
     else:
-        battle_map = current_game.get_map_for_user(session['username'])
+        battle_map = _battle_map_for_render(current_game, session['username'], is_dm=True)
 
     battle = current_game.get_current_battle()
     available_maps = current_game.get_available_maps()
-    background = current_game.get_background_image_for_user(session['username'])
-    renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
-    rendered_pov_entities = render_pov_entities()
+    rendered_pov_entities = entities_controlled_by(session['username'], battle_map)
+    if not rendered_pov_entities:
+        rendered_pov_entities = render_pov_entities()
+    _sync_stack_pov_to_view_map(current_game, battle_map, rendered_pov_entities)
 
-    my_2d_array = [renderer.render(entity_pov=rendered_pov_entities)]
-    map_width, map_height = battle_map.size
-    left_offset_px, top_offset_px = battle_map.image_offset_px
+    stack_layers, my_2d_array = _render_tiles_for_user(
+        current_game, battle_map, battle, map_padding, rendered_pov_entities, logger=logger,
+    )
+    display_map = _stack_display_map(current_game, battle_map)
+    stack_underlay_mode = _stack_underlay_mode(stack_layers)
+    stack_composite = _stack_composite_mode(stack_layers)
+    map_width, map_height = display_map.size
+    left_offset_px, top_offset_px = display_map.image_offset_px
+    background = _background_for_stack_view(
+        current_game, session['username'], battle_map, display_map, stack_composite,
+    )
 
     tiles_dimension_height = map_height * tile_px
     tiles_dimension_width = map_width * tile_px
@@ -192,6 +308,8 @@ def index():
     return render_template(
         'index.html',
         tiles=my_2d_array,
+        stack_layers=stack_layers,
+        stack_underlay_mode=stack_underlay_mode,
         tile_size_px=tile_px,
         pov_entity=current_pov_entity,
         background_path=f"assets/{background}",
@@ -307,8 +425,16 @@ def switch_map():
     map_name = request.form['map']
     current_game.switch_map_for_user(session['username'], map_name)
     battle_map = current_game.get_map_for_user(session['username'])
-    background = current_game.get_background_image_for_user(session['username'])
-    map_width, map_height = battle_map.size
+    battle = current_game.get_current_battle()
+    display_map = _stack_display_map(current_game, battle_map)
+    stack = stack_for_map(current_game.game_session, battle_map)
+    floor = stack.floor_for_map(battle_map.name) if stack else None
+    stack_underlay_mode = bool(stack and floor and not floor.is_base)
+    stack_composite = stack_underlay_mode
+    background = _background_for_stack_view(
+        current_game, session['username'], battle_map, display_map, stack_composite,
+    )
+    map_width, map_height = display_map.size
     tiles_dimension_height = map_height * tile_px
     tiles_dimension_width = map_width * tile_px
 
@@ -340,7 +466,7 @@ def switch_map():
     return jsonify(
         background=f"assets/{background}",
         name=map_name,
-        image_offset_px=battle_map.image_offset_px,
+        image_offset_px=display_map.image_offset_px,
         height=tiles_dimension_height,
         width=tiles_dimension_width,
         map_default_effect=map_default,
@@ -561,7 +687,6 @@ def update():
     is_pov = request.args.get('pov', 'false') == 'true'
     battle_map = current_game.get_map_for_user(session['username'])
     battle = current_game.get_current_battle()
-    renderer = JsonRenderer(battle_map, battle, padding=map_padding)
 
     entity = battle_map.entity_by_uid(entity_uid) if entity_uid else battle_map.entity_at(x, y)
     pov_entity = current_game.get_pov_entity_for_user(session['username'])
@@ -579,29 +704,37 @@ def update():
         if not _pov_entities:
             _pov_entities = render_pov_entities()
     else:
-        _pov_entities = render_pov_entities()
+        _pov_entities = entities_controlled_by(session['username'], battle_map)
+        if not _pov_entities:
+            _pov_entities = render_pov_entities()
 
     if entity and ('dm' in user_role() or entity in entities_controlled_by(session['username'], battle_map)):
         current_game.set_pov_entity_for_user(session['username'], entity)
         pov_entity = entity
-        _pov_entities = render_pov_entities()
+        _pov_entities = entities_controlled_by(session['username'], battle_map) or [entity]
     elif is_pov and not entity:
         current_game.set_pov_entity_for_user(session['username'], None)
         pov_entity = None
-        _pov_entities = render_pov_entities()
+        _pov_entities = entities_controlled_by(session['username'], battle_map) or render_pov_entities()
 
     if 'dm' not in user_role() and pov_entity is None and (_pov_entities is None or len(_pov_entities) == 0):
         user_entities = entities_controlled_by(session['username'], battle_map)
         _pov_entities = user_entities if user_entities else []
 
     logger.debug(f"entity: {entity}, pov_entity: {pov_entity}, _pov_entities: {_pov_entities}")
+    _sync_stack_pov_to_view_map(current_game, battle_map, _pov_entities)
     _t_render = time.perf_counter()
-    my_2d_array = [renderer.render(entity_pov=_pov_entities)]
+    stack_layers, my_2d_array = _render_tiles_for_user(
+        current_game, battle_map, battle, map_padding, _pov_entities, logger=logger,
+    )
+    stack_underlay_mode = _stack_underlay_mode(stack_layers)
     _t_after_render = time.perf_counter()
     response = render_template(
         'map.html',
         pov_entity=pov_entity,
         tiles=my_2d_array,
+        stack_layers=stack_layers,
+        stack_underlay_mode=stack_underlay_mode,
         tile_size_px=tile_px,
         random=random,
         is_setup=is_setup,

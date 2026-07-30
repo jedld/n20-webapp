@@ -49,12 +49,24 @@ def can_rest_for(entity_uid):
 
 def within_talking_distance(entity_uid):
     """Return True if the POV entity is within 2 tiles and has line of sight."""
+    if not entity_uid:
+        return False
     current_game = get_current_game()
     current_map = current_game.get_map_for_user(session['username'])
     pov_entity = current_game.get_pov_entity_for_user(session['username'])
-    if not pov_entity:
+    if not pov_entity or not current_map:
         return False
-    return current_map.distance(pov_entity.entity_uid, entity_uid) <= 2 and current_map.can_see(pov_entity, entity_uid)
+    try:
+        if current_map.entity_by_uid(entity_uid) is None:
+            return False
+        if pov_entity not in current_map.entities:
+            return False
+        return (
+            current_map.distance(pov_entity.entity_uid, entity_uid) <= 2
+            and current_map.can_see(pov_entity, entity_uid)
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def entities_controlled_by(username, battle_map=None):
