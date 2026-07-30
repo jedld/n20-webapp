@@ -88,6 +88,7 @@ function exitTargetMode() {
   coneMode = false;
   aoePointTargetMode = false;
   valid_target_cache = {};
+  setStackTargetPointerEvents(false);
   document.body.classList.remove('aoe-point-targeting');
   if (globalCtx && globalCanvas) {
     globalCtx.clearRect(0, 0, globalCanvas.width, globalCanvas.height);
@@ -251,6 +252,8 @@ let movePath = [],
 let jumpMode = false;          // toggled within movement to mark a jump segment
 let jumpStartIndex = null;     // index within movePath where jump starts (inclusive)
 let lastPathForJump = null;    // cache the last data.path returned while hovering
+let ctrlHeldForDescent = false; // hold Ctrl to pathfind/jump to a lower floor
+let lastStackDescent = null;   // last /path stack_descent preview payload
 let max_targets = 1;
 let targetModeCallback = null,
   moveModeCallback = null;
@@ -278,6 +281,89 @@ function isTypingIntoField(target) {
       '.modal, #jrpgDialogPanel, #command-form, #ai-chat-panel, #chat-form, #draggable-chat-form'
     ).length > 0
   );
+}
+
+function stackDescentModeActive() {
+  return !!(jumpMode || ctrlHeldForDescent);
+}
+
+function stackPathRequestExtras(destX, destY) {
+  if (!stackDescentModeActive()) {
+    return {};
+  }
+  const extras = { allow_stack_descent: 1 };
+  const meta = document.querySelector('.map-metadata[data-stack-composite="1"]');
+  const baseMap = meta && meta.getAttribute('data-stack-base-map');
+  if (baseMap) {
+    extras.to_map = baseMap;
+  }
+  if (destX != null && destY != null) {
+    extras['to[x]'] = destX;
+    extras['to[y]'] = destY;
+  }
+  return extras;
+}
+
+function resolveStackMovementDest($tile) {
+  const localX = Number($tile.data('coords-x'));
+  const localY = Number($tile.data('coords-y'));
+  const inOverlay = $tile.closest('.map-stack-overlay').length > 0;
+  const isPeek = $tile.hasClass('peek-through') || $tile.hasClass('map-stack-underlay-tile');
+  const descentX = $tile.data('descent-target-x');
+  const descentY = $tile.data('descent-target-y');
+  const worldX = $tile.data('world-x');
+  const worldY = $tile.data('world-y');
+
+  if (stackDescentModeActive() && (isPeek || !inOverlay)) {
+    if (descentX !== undefined && descentY !== undefined) {
+      return { x: Number(descentX), y: Number(descentY), localX, localY };
+    }
+    if (!inOverlay || $tile.hasClass('map-stack-underlay-tile')) {
+      const wx = worldX !== undefined ? Number(worldX) : localX;
+      const wy = worldY !== undefined ? Number(worldY) : localY;
+      return { x: wx, y: wy, localX, localY };
+    }
+  }
+  return { x: localX, y: localY, localX, localY };
+}
+
+function resolveStackTargetCoords($tile) {
+  const localX = Number($tile.data('coords-x'));
+  const localY = Number($tile.data('coords-y'));
+  const isUnderlay = $tile.hasClass('map-stack-underlay-tile');
+  const isPeek = $tile.hasClass('peek-through') || isUnderlay;
+  const peekX = $tile.data('descent-target-x');
+  const peekY = $tile.data('descent-target-y');
+  const worldX = $tile.data('world-x');
+  const worldY = $tile.data('world-y');
+
+  if (isUnderlay && worldX !== undefined && worldY !== undefined) {
+    return { x: Number(worldX), y: Number(worldY), localX, localY };
+  }
+  if (isPeek && peekX !== undefined && peekY !== undefined) {
+    return { x: Number(peekX), y: Number(peekY), localX, localY };
+  }
+  return { x: localX, y: localY, localX, localY };
+}
+
+function setStackTargetPointerEvents(active) {
+  $('.map-stack-underlay').css('pointer-events', active ? 'auto' : 'none');
+  if (active) {
+    $('.map-stack-underlay-tile').css('z-index', 2);
+    $('.tile.peek-through').css('pointer-events', 'none');
+  } else {
+    $('.map-stack-underlay-tile').css('z-index', '');
+    $('.tile.peek-through').css('pointer-events', '');
+  }
+}
+
+function movementPathDrawOptions(data) {
+  const opts = { suppressArrow: jumpMode };
+  if (data && data.stack_descent) {
+    opts.stackDescent = data.stack_descent;
+    opts.basePath = data.stack_descent.base_path;
+  }
+  return opts;
 }
 
 function setActionBarInstructions(message) {
@@ -3852,11 +3938,11 @@ function handleDirectWSADMovement(event) {
       }
       Utils.ajaxGet(
         "/path",
-        {
+        Object.assign({
           from: source,
           to: { x: newX, y: newY },
           accumulatedPath: accumulatedPath.length > 0 ? JSON.stringify(accumulatedPath) : null
-        },
+        }, stackPathRequestExtras()),
         (data) => {
           console.log("WSAD path check response:", data);
           move_path_cache[cacheKey] = data;
@@ -4413,6 +4499,17 @@ $(document).ready(() => {
     UserVolumeControl.init();
   }
 
+  $(document).on('change', '#stack-layer-select', function () {
+    const mapName = $(this).val();
+    const currentMap = $('body').data('current-map');
+    if (!mapName || mapName === currentMap) {
+      return;
+    }
+    Utils.switchMap(mapName, globalCanvas, () => {
+      $('#stack-layer-select').val(mapName);
+    });
+  });
+
   // --- Canvas Setup ---
   const tile_size = $(".tiles-container").data("tile-size");
 
@@ -4844,8 +4941,10 @@ $(document).ready(() => {
       return;
     }
     const $tile = $(this);
-    const coordsx = $tile.data("coords-x");
-    const coordsy = $tile.data("coords-y");
+    const targetCoords = resolveStackTargetCoords($tile);
+    const coordsx = targetCoords.x;
+    const coordsy = targetCoords.y;
+    const cacheKey = `${coordsx}-${coordsy}`;
 
     if (targetMode) {
       if (aoePointTargetMode || coneMode) {
@@ -5009,7 +5108,7 @@ $(document).ready(() => {
   });
 
   // Draws a target line from a source to a given set of coordinates.
-  function drawTargetLine(ctx, source, coordsx, coordsy, valid_target = true) {
+  function drawTargetLine(ctx, source, coordsx, coordsy, valid_target = true, $tgtTile = null) {
     const currentDistance = targetDistanceFeet(source.x, source.y, coordsx, coordsy);
     const scrollLeft =
       window.pageXOffset || document.documentElement.scrollLeft;
@@ -5021,9 +5120,11 @@ $(document).ready(() => {
     const srcCenter = getTileCenter(
       `.tile[data-coords-x="${source.x}"][data-coords-y="${source.y}"]`,
     );
-    const tgtCenter = getTileCenter(
-      `.tile[data-coords-x="${coordsx}"][data-coords-y="${coordsy}"]`,
-    );
+    const tgtCenter = $tgtTile && $tgtTile.length
+      ? getTileCenter($tgtTile)
+      : getTileCenter(
+        `.tile[data-coords-x="${coordsx}"][data-coords-y="${coordsy}"]`,
+      );
     ctx.moveTo(srcCenter.x, srcCenter.y);
     ctx.lineTo(tgtCenter.x, tgtCenter.y);
     const arrowSize = 10;
@@ -5070,28 +5171,39 @@ $(document).ready(() => {
   // Highlight tile info or draw movement data on hover.
   $(".tiles-container").on("mouseover", ".tile", function () {
     const $tile = $(this);
-    const coordsx = $tile.data("coords-x");
-    const coordsy = $tile.data("coords-y");
+    const moveDest = resolveStackMovementDest($tile);
+    const targetCoords = resolveStackTargetCoords($tile);
+    const coordsx = moveDest.localX;
+    const coordsy = moveDest.localY;
+    const pathDestX = moveDest.x;
+    const pathDestY = moveDest.y;
+    const targetX = targetCoords.x;
+    const targetY = targetCoords.y;
     const displayX = $tile.data("world-x");
     const displayY = $tile.data("world-y");
-    const showX = displayX !== undefined ? displayX : coordsx;
-    const showY = displayY !== undefined ? displayY : coordsy;
+    const showX = stackDescentModeActive() && (pathDestX !== coordsx || pathDestY !== coordsy)
+      ? pathDestX
+      : (targetMode && (targetX !== coordsx || targetY !== coordsy) ? targetX : (displayX !== undefined ? displayX : coordsx));
+    const showY = stackDescentModeActive() && (pathDestX !== coordsx || pathDestY !== coordsy)
+      ? pathDestY
+      : (targetMode && (targetX !== coordsx || targetY !== coordsy) ? targetY : (displayY !== undefined ? displayY : coordsy));
     let tooltip = $tile.data("tooltip") || "";
     if (targetMode) {
+      const cacheKey = `${targetX}-${targetY}`;
       $(".highlighted").removeClass("highlighted");
       $(".tile").css("z-index", 0);
       $(this).css("z-index", 999);
       const data_payload = JSON.stringify({
         id: globalSourceEntity,
-        x: coordsx,
-        y: coordsy,
+        x: targetX,
+        y: targetY,
         coneMode: coneMode,
         action_info: globalActionInfo,
         opts: globalOpts,
       });
 
-      if (valid_target_cache[`${coordsx}-${coordsy}`]) {
-        drawTargetLine(globalCtx, source, coordsx, coordsy, valid_target_cache[`${coordsx}-${coordsy}`]);
+      if (valid_target_cache[cacheKey]) {
+        drawTargetLine(globalCtx, source, targetX, targetY, valid_target_cache[cacheKey], $tile);
       } else {
         Utils.ajaxGet("/target", { payload: data_payload }, (data) => {
           const { adv_info, valid_target } = data;
@@ -5105,8 +5217,8 @@ $(document).ready(() => {
               $(`.tile[data-coords-x="${value[0]}"][data-coords-y="${value[1]}"]`).css("border", "2px solid red");
             });
           } else {
-            valid_target_cache[`${coordsx}-${coordsy}`] = valid_target;
-            drawTargetLine(globalCtx, source, coordsx, coordsy, valid_target);
+            valid_target_cache[cacheKey] = valid_target;
+            drawTargetLine(globalCtx, source, targetX, targetY, valid_target, $tile);
           }
           if (adv_info) {
             adv_info[0].forEach(
@@ -5128,17 +5240,17 @@ $(document).ready(() => {
       $("#coords-box").html(
         `<p>X: ${showX}</p><p>Y: ${showY}</p>${tooltip}`,
       );
-      if (moveMode && !keyboardMovementMode && (source.x !== coordsx || source.y !== coordsy)) {
+      if (moveMode && !keyboardMovementMode && (pathDestX !== source.x || pathDestY !== source.y)) {
         // Skip duplicate work when the mouseover bubbles from child elements
         // (entity sprites, tooltips, etc.) without changing the tile.
-        if (lastHoverCoords && lastHoverCoords.x === coordsx && lastHoverCoords.y === coordsy) {
+        if (lastHoverCoords && lastHoverCoords.x === pathDestX && lastHoverCoords.y === pathDestY) {
           return;
         }
-        lastHoverCoords = { x: coordsx, y: coordsy };
+        lastHoverCoords = { x: pathDestX, y: pathDestY };
         if (!localPathCostMap) {
           loadLocalPathCostMap(source, function () {});
         }
-        const cacheKey = `${source.x}-${source.y}-${coordsx}-${coordsy}-${pivotPoints.join("-")}`;
+        const cacheKey = `${source.x}-${source.y}-${pathDestX}-${pathDestY}-${pivotPoints.join("-")}-${stackDescentModeActive() ? 'sd' : 'n'}`;
 
         // Function to process and draw movement path
         const processMovementData = (data) => {
@@ -5154,12 +5266,15 @@ $(document).ready(() => {
 
             // Store current position for potential pivot points
             currentPosition = {
-              x: coordsx,
-              y: coordsy,
+              x: pathDestX,
+              y: pathDestY,
+              localX: coordsx,
+              localY: coordsy,
               cost: available_cost,
               path: data.path
             };
             lastPathForJump = data.path;
+            lastStackDescent = data.stack_descent || null;
 
             // Add the new path segment to the movement path
             movePath = [...movePath, ...data.path];
@@ -5170,8 +5285,13 @@ $(document).ready(() => {
               available_cost,
               data.placeable,
               data.terrain_info,
-              { suppressArrow: jumpMode }
+              movementPathDrawOptions(data)
             );
+
+            if (data.stack_descent && data.stack_descent.label) {
+              const warn = `<p style="color:#cc5500;font-weight:bold;">${data.stack_descent.label}</p>`;
+              $("#coords-box").append(warn);
+            }
 
             // If in jump mode, draw a curved green segment preview and enforce jump range limit
             if (jumpMode && movePath.length > 1) {
@@ -5217,7 +5337,7 @@ $(document).ready(() => {
           }
 
           // Set a new timer to delay the path request
-          const pendingDest = { x: coordsx, y: coordsy };
+          const pendingDest = { x: pathDestX, y: pathDestY, localX: coordsx, localY: coordsy };
           pathDebounceTimer = setTimeout(() => {
             // If the cursor has moved off this tile by the time the timer
             // fires, skip the fetch entirely.
@@ -5226,7 +5346,11 @@ $(document).ready(() => {
                 lastHoverCoords.y !== pendingDest.y) {
               return;
             }
-            const localData = computeLocalPathResponse(source, pendingDest, accumulatedPath);
+            const localData = computeLocalPathResponse(
+              source,
+              { x: pendingDest.x, y: pendingDest.y },
+              accumulatedPath,
+            );
             if (localData) {
               setMovePathCache(cacheKey, localData);
               if (lastHoverCoords &&
@@ -5240,11 +5364,11 @@ $(document).ready(() => {
             currentPathXhr = $.ajax({
               url: "/path",
               type: 'GET',
-              data: {
+              data: Object.assign({
                 from: source,
-                to: pendingDest,
+                to: { x: pendingDest.x, y: pendingDest.y },
                 accumulatedPath: accumulatedPath.length > 0 ? JSON.stringify(accumulatedPath) : null
-              },
+              }, stackPathRequestExtras(pendingDest.x, pendingDest.y)),
               success: (data) => {
                 currentPathXhr = null;
                 setMovePathCache(cacheKey, data);
@@ -5349,6 +5473,15 @@ $(document).ready(() => {
           jumpStartIndex = (movePath && movePath.length > 0) ? (movePath.length - 1) : null;
         }
       }
+    }
+    if (event.key === 'Control') {
+      ctrlHeldForDescent = true;
+    }
+  });
+
+  $(document).on('keyup.stackDescent', (event) => {
+    if (event.key === 'Control') {
+      ctrlHeldForDescent = false;
     }
   });
 
@@ -6363,7 +6496,14 @@ $(document).ready(() => {
           }
           ajaxPost(
             "/action",
-            { id: entity_uid, action, opts, path, manual_jump },
+            {
+              id: entity_uid,
+              action,
+              opts,
+              path,
+              manual_jump,
+              stack_descent: lastStackDescent || null,
+            },
             (data) => {
               console.log("Action request successful:", data);
               refreshTurn();
@@ -6373,6 +6513,7 @@ $(document).ready(() => {
           // reset jump UI state after commit
           jumpMode = false;
           jumpStartIndex = null;
+          lastStackDescent = null;
           lastPathForJump = null;
         };
         $(".popover-menu").hide();
@@ -6631,6 +6772,7 @@ $(document).ready(() => {
           targetMode = true;
           coneMode = false;
           aoePointTargetMode = false;
+          setStackTargetPointerEvents(true);
           globalActionInfo = action;
           globalOpts = opts;
           globalSourceEntity = entity_uid;

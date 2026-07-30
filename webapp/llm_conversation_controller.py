@@ -231,7 +231,7 @@ class LLMConversationController:
                 role = "assistant"
                 message_content = spoken
 
-            elif conversation_id in directed_uids or (target_uid == conversation_id and not directed_uids):
+            elif conversation_id in directed_uids or target_uid == conversation_id:
                 role = "user"
                 message_content = self._format_incoming_player_turn(message)
             else:

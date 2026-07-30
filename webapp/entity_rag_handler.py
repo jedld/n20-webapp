@@ -514,7 +514,7 @@ class EntityRAGHandler:
 
         if battle_map is not None:
             try:
-                reachability = conversation_reachability(receiver, battle_map, mode='shout')
+                reachability = conversation_reachability(receiver, battle_map, mode='shout', battle=self.current_game.get_current_battle())
             except Exception:
                 reachability = []
 
@@ -575,11 +575,17 @@ class EntityRAGHandler:
         if battle_map is None:
             return normalize_speech_mode(mode=volume), list(targets)
 
+        battle = None
+        try:
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
+
         if volume:
             selected_mode = normalize_speech_mode(mode=volume)
             reachability = {
                 entry['entity'].entity_uid: entry
-                for entry in conversation_reachability(receiver, battle_map, mode=selected_mode)
+                for entry in conversation_reachability(receiver, battle_map, mode=selected_mode, battle=battle)
             }
             reachable_targets = [
                 target for target in targets
@@ -589,7 +595,7 @@ class EntityRAGHandler:
 
         reachability = {
             entry['entity'].entity_uid: entry
-            for entry in conversation_reachability(receiver, battle_map, mode='whisper')
+            for entry in conversation_reachability(receiver, battle_map, mode='whisper', battle=battle)
         }
         reachable_targets = []
         required_mode_index = 0
@@ -5152,11 +5158,16 @@ class EntityRAGHandler:
         
         try:
             battle_map = self.current_game.get_map_for_entity(entity)
+            battle = None
+            try:
+                battle = self.current_game.get_current_battle()
+            except Exception:
+                battle = None
             try:
                 if include_extended:
-                    nearby = conversation_reachability(entity, battle_map, distance_ft=range_ft, mode=volume)
+                    nearby = conversation_reachability(entity, battle_map, distance_ft=range_ft, mode=volume, battle=battle)
                 else:
-                    nearby = audible_entities(entity, battle_map, distance_ft=range_ft, mode=volume)
+                    nearby = audible_entities(entity, battle_map, distance_ft=range_ft, mode=volume, battle=battle)
             except Exception:
                 nearby = None
 
@@ -5201,15 +5212,24 @@ class EntityRAGHandler:
                 # UI would reveal hidden/invisible/unseen creatures even though they
                 # may still be able to hear the speaker.
                 try:
-                    if battle_map is not None and hasattr(battle_map, 'can_see'):
+                    if battle is not None:
+                        vis_key = (entity.entity_uid, nearby_entity.entity_uid)
+                        if vis_key in _visibility_cache:
+                            visible = _visibility_cache[vis_key]
+                        else:
+                            visible = battle.can_see(entity, nearby_entity)
+                            _visibility_cache[vis_key] = visible
+                    elif battle_map is not None and hasattr(battle_map, 'can_see'):
                         vis_key = (entity.entity_uid, nearby_entity.entity_uid)
                         if vis_key in _visibility_cache:
                             visible = _visibility_cache[vis_key]
                         else:
                             visible = battle_map.can_see(entity, nearby_entity)
                             _visibility_cache[vis_key] = visible
-                        if not visible:
-                            continue
+                    else:
+                        visible = True
+                    if not visible:
+                        continue
                 except Exception:
                     pass
                 response.append({

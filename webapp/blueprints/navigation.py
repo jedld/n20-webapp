@@ -25,7 +25,7 @@ from natural20.ai.path_compute import PathCompute
 from natural20.ai.pathfinding_cost_map import build_pathfinding_snapshot
 from natural20.player_character import PlayerCharacter
 from natural20.web.json_renderer import JsonRenderer
-from natural20.web.stack_renderer import build_stack_render_layers, stack_for_map
+from natural20.web.stack_renderer import build_stack_render_layers, stack_for_map, stack_floors_for_ui, annotate_base_tiles_with_stack_overlay_entities
 
 from .helpers.auth_utils import logged_in, user_role
 from .helpers.pvp import pvp_team_config
@@ -122,6 +122,11 @@ def _stack_underlay_mode(stack_layers):
     return _stack_composite_mode(stack_layers)
 
 
+def _stack_floors_for_user(session, battle_map):
+    stack = stack_for_map(session, battle_map)
+    return stack_floors_for_ui(stack)
+
+
 def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_entities, logger=None):
     """Return (stack_layers dict|None, tiles list for template)."""
     session = current_game.game_session
@@ -130,11 +135,22 @@ def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_en
         floor = stack.floor_for_map(battle_map.name)
         if floor is not None and floor.is_base:
             renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
-            return None, [renderer.render(entity_pov=pov_entities)]
+            tiles = renderer.render(entity_pov=pov_entities)
+            annotate_base_tiles_with_stack_overlay_entities(
+                stack, tiles, battle, pov_entities, battle_map,
+            )
+            stack_layers = {
+                'id': stack.id,
+                'floors': stack_floors_for_ui(stack),
+                'active_map': battle_map.name,
+                'composite_mode': False,
+            }
+            return stack_layers, [tiles]
         stack_layers = build_stack_render_layers(
             session, battle_map, battle, padding=map_padding, entity_pov=pov_entities,
         )
         if stack_layers and stack_layers.get('composite_mode'):
+            stack_layers['floors'] = stack_floors_for_ui(stack)
             base_layer = stack_layers['layers'][0]
             return stack_layers, [base_layer['tiles']]
     renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
@@ -275,6 +291,7 @@ def index():
     display_map = _stack_display_map(current_game, battle_map)
     stack_underlay_mode = _stack_underlay_mode(stack_layers)
     stack_composite = _stack_composite_mode(stack_layers)
+    stack_floors = _stack_floors_for_user(current_game.game_session, battle_map)
     map_width, map_height = display_map.size
     left_offset_px, top_offset_px = display_map.image_offset_px
     background = _background_for_stack_view(
@@ -310,6 +327,7 @@ def index():
         tiles=my_2d_array,
         stack_layers=stack_layers,
         stack_underlay_mode=stack_underlay_mode,
+        stack_floors=stack_floors,
         tile_size_px=tile_px,
         pov_entity=current_pov_entity,
         background_path=f"assets/{background}",
@@ -495,6 +513,9 @@ def compute_path():
     entity_x = int(source['x'])
     entity_y = int(source['y'])
 
+    allow_stack_descent = request.args.get('allow_stack_descent') in ('1', 'true', 'True')
+    dest_map_name = request.args.get('to_map') or request.args.get('dest_map')
+
     accumulated_path = request.args.get('accumulatedPath')
     if accumulated_path:
         accumulated_path = json.loads(accumulated_path)
@@ -519,6 +540,8 @@ def compute_path():
         int(source['x']), int(source['y']),
         dest[0], dest[1],
         tuple(accumulated_path),
+        bool(allow_stack_descent),
+        dest_map_name or '',
     )
     user_key = session.get('username') or 'anonymous'
     proc_cache = _PATH_RESPONSE_CACHE.setdefault(user_key, OrderedDict())
@@ -533,6 +556,41 @@ def compute_path():
         available_movement = None
 
     path_compute = PathCompute(battle, battle_map, entity)
+
+    target_map = battle_map
+    if dest_map_name and dest_map_name != battle_map.name:
+        target_map = current_game.session.maps.get(dest_map_name)
+    elif allow_stack_descent:
+        stack = getattr(battle_map, 'map_stack', None)
+        if stack is not None:
+            base_floor = next((f for f in stack.floors if f.is_base), None)
+            if base_floor and base_floor.map_name != battle_map.name:
+                blx, bly = stack.world_to_local(dest[0], dest[1], base_floor.map_name)
+                if blx is not None and base_floor.map.passable(entity, blx, bly, battle, True):
+                    target_map = base_floor.map
+
+    if allow_stack_descent and target_map is not battle_map:
+        from natural20.map_stack_descent import plan_voluntary_stack_route
+        stack_plan = plan_voluntary_stack_route(
+            path_compute,
+            current_game.session,
+            battle,
+            entity,
+            battle_map,
+            int(source['x']),
+            int(source['y']),
+            target_map,
+            dest[0],
+            dest[1],
+            available_movement_cost=available_movement,
+            accumulated_path=accumulated_path,
+        )
+        if stack_plan:
+            proc_cache[cache_key] = stack_plan
+            if len(proc_cache) > _PATH_RESPONSE_CACHE_LIMIT:
+                proc_cache.popitem(last=False)
+            return jsonify(stack_plan)
+
     path = path_compute.compute_path(
         int(source['x']),
         int(source['y']),
@@ -728,6 +786,7 @@ def update():
         current_game, battle_map, battle, map_padding, _pov_entities, logger=logger,
     )
     stack_underlay_mode = _stack_underlay_mode(stack_layers)
+    stack_floors = _stack_floors_for_user(current_game.game_session, battle_map)
     _t_after_render = time.perf_counter()
     response = render_template(
         'map.html',
@@ -735,6 +794,7 @@ def update():
         tiles=my_2d_array,
         stack_layers=stack_layers,
         stack_underlay_mode=stack_underlay_mode,
+        stack_floors=stack_floors,
         tile_size_px=tile_px,
         random=random,
         is_setup=is_setup,

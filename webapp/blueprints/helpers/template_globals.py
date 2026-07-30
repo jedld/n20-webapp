@@ -54,12 +54,29 @@ def within_talking_distance(entity_uid):
     current_game = get_current_game()
     current_map = current_game.get_map_for_user(session['username'])
     pov_entity = current_game.get_pov_entity_for_user(session['username'])
-    if not pov_entity or not current_map:
+    if not pov_entity:
+        return False
+    target = current_game.get_entity_by_uid(entity_uid)
+    if target is None:
         return False
     try:
-        if current_map.entity_by_uid(entity_uid) is None:
+        pov_map = current_game.get_map_for_entity(pov_entity) or current_map
+        target_map = current_game.get_map_for_entity(target)
+        battle = current_game.get_current_battle()
+
+        if pov_map and target_map and pov_map is not target_map and battle is not None:
+            from natural20.utils.conversation import _shared_stack
+            from natural20.map_stack_targeting import stack_entity_distance_squares
+            stack = _shared_stack(pov_map, target_map)
+            if stack is not None and battle.can_see(pov_entity, target):
+                dist_sq = stack_entity_distance_squares(
+                    stack, pov_entity, pov_map, target, target_map,
+                )
+                return dist_sq <= 2
+
+        if not current_map or pov_entity not in current_map.entities:
             return False
-        if pov_entity not in current_map.entities:
+        if current_map.entity_by_uid(entity_uid) is None:
             return False
         return (
             current_map.distance(pov_entity.entity_uid, entity_uid) <= 2

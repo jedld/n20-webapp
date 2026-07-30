@@ -75,3 +75,55 @@ def test_update_conversation_history_can_emit_consecutive_npc_lines():
 
     roles = [msg['role'] for msg in controller.conversations['mara_bartender']['messages']]
     assert roles == ['user', 'assistant', 'assistant']
+
+
+def test_update_conversation_history_treats_explicit_direct_target_as_user_prompt():
+    controller = _controller()
+    controller.create_conversation('mara_bartender', 'system prompt')
+    npc = type('E', (), {'entity_uid': 'mara_bartender', 'label': lambda self: 'Mara'})()
+    player = type('E', (), {'entity_uid': 'mira', 'label': lambda self: 'Mira'})()
+    controller.update_conversation_history('mara_bartender', [{
+        'source': player,
+        'target': npc,
+        'message': 'do you have a room available?',
+        'language': 'common',
+        'directed_to': [player],
+    }])
+
+    messages = controller.conversations['mara_bartender']['messages']
+    assert len(messages) == 1
+    assert messages[0]['role'] == 'user'
+    assert 'room available' in messages[0]['content']
+
+
+def test_update_conversation_history_keeps_multiple_player_lines():
+    controller = _controller()
+    controller.create_conversation('mara_bartender', 'system prompt')
+    npc = type('E', (), {'entity_uid': 'mara_bartender', 'label': lambda self: 'Mara'})()
+    player = type('E', (), {'entity_uid': 'mira', 'label': lambda self: 'Mira'})()
+    controller.update_conversation_history('mara_bartender', [
+        {
+            'source': player,
+            'target': npc,
+            'message': 'hi there!',
+            'language': 'common',
+            'directed_to': [npc],
+        },
+        {
+            'source': npc,
+            'message': 'Welcome.',
+            'language': 'common',
+            'directed_to': [player],
+        },
+        {
+            'source': player,
+            'target': npc,
+            'message': 'do you have a room available?',
+            'language': 'common',
+            'directed_to': [npc],
+        },
+    ])
+
+    roles = [msg['role'] for msg in controller.conversations['mara_bartender']['messages']]
+    assert roles == ['user', 'assistant', 'user']
+    assert 'room available' in controller.conversations['mara_bartender']['messages'][-1]['content']

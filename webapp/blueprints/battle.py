@@ -272,9 +272,10 @@ def get_target():
     choice = opts.get('choice')
     entity = get_current_game().get_entity_by_uid(entity_id)
     battle_map = get_current_game().get_map_for_entity(entity)
-    target_entity = battle_map.entity_at(x, y)
-    if not target_entity:
-        target_position = [x, y]
+    stack = getattr(battle_map, 'map_stack', None)
+    from natural20.map_stack_targeting import entity_at_stack_position
+    target_position = [x, y]
+    target_entity, target_map, tx, ty = entity_at_stack_position(stack, battle_map, x, y)
 
     if entity and target_entity and action_info in ['AttackAction', 'LinkedAttackAction']:
         action = AttackAction(get_game_session(), entity, 'attack')
@@ -602,26 +603,35 @@ def action():
                     target.append(battle_map.entity_by_uid(entity_uids))
             elif isinstance(target_coords, str):
                 # Target is an entity UID
-                target = battle_map.entity_by_uid(target_coords)
+                target = get_current_game().get_entity_by_uid(target_coords)
+                if target is None:
+                    target = battle_map.entity_by_uid(target_coords)
             else:
                 # Target is coordinates
                 tx, ty = int(target_coords['x']), int(target_coords['y'])
-                targets = battle_map.entities_at(tx, ty)
-                if len(targets) == 1:
-                    target = targets[0]
-                elif len(targets) == 0:
-                    # ``entities_at`` filters out hidden / non-targetable
-                    # tokens; fall back to the raw token at that square so
-                    # entity-required actions (spell attacks, attacks) can
-                    # still resolve when the caster legitimately can see
-                    # them. If still nothing, surface as a coordinate
-                    # target for AoE actions (cone/cube/grease/etc.).
-                    fallback = battle_map.entity_at(tx, ty)
-                    target = fallback if fallback is not None else [tx, ty]
+                stack = getattr(battle_map, 'map_stack', None)
+                from natural20.map_stack_targeting import entity_at_stack_position
+                resolved_entity, _target_map, _tx, _ty = entity_at_stack_position(stack, battle_map, tx, ty)
+                if resolved_entity is not None:
+                    target = resolved_entity
                 else:
-                    target_list = [[target.label(), target.entity_uid] for target in targets]
-                    return jsonify(status='multiple_targets', message=f"Multiple entities at {target_coords['x']}, {target_coords['y']}",
-                                   entities=target_list)
+                    targets = battle_map.entities_at(tx, ty)
+                    if len(targets) == 1:
+                        target = targets[0]
+                    elif len(targets) == 0:
+                        if stack is not None:
+                            from natural20.map_stack_targeting import things_at_stack_position
+                            for _map, _lx, _ly, thing in things_at_stack_position(stack, tx, ty):
+                                if _map.entity_at(_lx, _ly) is thing:
+                                    target = thing
+                                    break
+                        if target is None:
+                            fallback = battle_map.entity_at(tx, ty)
+                            target = fallback if fallback is not None else [tx, ty]
+                    else:
+                        target_list = [[target.label(), target.entity_uid] for target in targets]
+                        return jsonify(status='multiple_targets', message=f"Multiple entities at {target_coords['x']}, {target_coords['y']}",
+                                       entities=target_list)
 
     try:
         if action_type == 'MoveAction':
@@ -632,6 +642,9 @@ def action():
                 move_path = sorted([(int(index), [int(coord[0]), int(coord[1])]) for index, coord in enumerate(path)])
                 move_path = [coords for _, coords in move_path]
                 action.move_path = move_path
+                stack_descent = action_request.get('stack_descent')
+                if stack_descent:
+                    action.stack_descent = stack_descent
                 # When this PC isn't a combatant in an active battle, treat
                 # the move as exploration and allow paths longer than the
                 # entity's standard speed so the user can traverse the map.
@@ -745,8 +758,14 @@ def action():
             action.npc_action = opts.get('npc_action', None)
             action.thrown = opts.get('thrown', False)
 
-            valid_targets = battle_map.valid_targets_for(entity, action, include_objects=True)
-            valid_targets = { target.entity_uid: battle_map.entity_or_object_pos(target) for target in valid_targets}
+            stack = getattr(battle_map, 'map_stack', None)
+            if battle:
+                from natural20.map_stack_targeting import valid_target_positions
+                target_list = battle.valid_targets_for(entity, action, include_objects=True)
+                valid_targets = valid_target_positions(stack, battle_map, target_list, battle=battle)
+            else:
+                target_list = battle_map.valid_targets_for(entity, action, include_objects=True)
+                valid_targets = {target.entity_uid: battle_map.entity_or_object_pos(target) for target in target_list}
 
             if action.npc_action:
                 weapon_details = action.npc_action
@@ -760,7 +779,12 @@ def action():
                 if target is None or isinstance(target, list):
                     return jsonify(status='error', message=f"Invalid Target {target_coords}")
 
-                if valid_targets.get(target.entity_uid):
+                if battle:
+                    allowed = battle.valid_targets_for(entity, action, include_objects=True)
+                    target_ok = target in allowed
+                else:
+                    target_ok = bool(valid_targets.get(target.entity_uid))
+                if target_ok:
                     action.target = target
                     return jsonify(get_current_game().commit_and_update(session['username'], action, pov_entities))
                 else:
@@ -894,8 +918,17 @@ def action():
                         action = action['next']([entity_x, entity_y])
                         continue
                     elif param_details['type'] == 'select_target':
-                        valid_targets = battle_map.valid_targets_for(entity, param_details)
-                        valid_targets = {target.entity_uid: battle_map.entity_or_object_pos(target) for target in valid_targets}
+                        stack = getattr(battle_map, 'map_stack', None)
+                        if battle:
+                            from natural20.map_stack_targeting import valid_target_positions
+                            acquired = acquire_targets(param_details, entity, battle, battle_map)
+                            valid_targets = valid_target_positions(stack, battle_map, acquired, battle=battle)
+                        else:
+                            acquired = battle_map.valid_targets_for(entity, param_details)
+                            valid_targets = {
+                                target.entity_uid: battle_map.entity_or_object_pos(target)
+                                for target in acquired
+                            }
                         if target:
                             # ``select_target`` requires an actual Entity (or a
                             # list of entities for multi-target spells). If
@@ -1288,9 +1321,18 @@ def get_targets_at_position():
         
         battle_map = get_current_game().get_map_for_entity(entity)
         battle = get_current_game().get_current_battle()
-        
-        # Get all things at the position
+        stack = getattr(battle_map, 'map_stack', None)
+        from natural20.map_stack_targeting import things_at_stack_position
+
         things_at_position = battle_map.thing_at(x, y)
+        if stack is not None:
+            stack_hits = things_at_stack_position(stack, x, y)
+            seen = {getattr(t, 'entity_uid', id(t)) for t in things_at_position}
+            for _map, _lx, _ly, thing in stack_hits:
+                uid = getattr(thing, 'entity_uid', id(thing))
+                if uid not in seen:
+                    things_at_position.append(thing)
+                    seen.add(uid)
         
         # Filter to only valid targets based on the action
         valid_targets = []

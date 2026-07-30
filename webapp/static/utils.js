@@ -854,6 +854,33 @@ const Utils = {
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(String(available_cost) + 'ft', end.x, end.y + half);
+
+      if (options && options.stackDescent) {
+        const sd = options.stackDescent;
+        ctx.font = 'bold 14px Arial';
+        ctx.fillStyle = '#cc5500';
+        const label = sd.label || 'Jump to lower level';
+        ctx.fillText(label, end.x + 6, end.y - tile_size * 0.6);
+        if (options.basePath && options.basePath.length > 1) {
+          ctx.strokeStyle = '#cc8800';
+          ctx.lineWidth = 4;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          for (let bi = 1; bi < options.basePath.length; bi++) {
+            const c0 = options.basePath[bi - 1];
+            const c1 = options.basePath[bi];
+            const p0x = grid.ox + c0[0] * tile_size + half;
+            const p0y = grid.oy + c0[1] * tile_size + half;
+            const p1x = grid.ox + c1[0] * tile_size + half;
+            const p1y = grid.oy + c1[1] * tile_size + half;
+            if (bi === 1) {
+              ctx.moveTo(p0x, p0y);
+            }
+            ctx.lineTo(p1x, p1y);
+          }
+          ctx.stroke();
+        }
+      }
     }
 
     ctx.setLineDash([]);

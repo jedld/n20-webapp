@@ -1121,10 +1121,25 @@ class ConversationService:
                 listener_map = None
 
             if listener_map is not None and listener_map != battle_map:
-                continue
+                cross_battle = None
+                try:
+                    cross_battle = self.current_game.get_current_battle()
+                except Exception:
+                    cross_battle = None
+                from natural20.utils.conversation import _shared_stack
+                if not (cross_battle and _shared_stack(battle_map, listener_map) and cross_battle.can_see(listener, source_entity)):
+                    continue
 
             try:
-                if battle_map.can_see(listener, source_entity):
+                visibility_battle = None
+                try:
+                    visibility_battle = self.current_game.get_current_battle()
+                except Exception:
+                    visibility_battle = None
+                if visibility_battle is not None:
+                    if visibility_battle.can_see(listener, source_entity):
+                        visible_usernames.add(username)
+                elif battle_map.can_see(listener, source_entity):
                     visible_usernames.add(username)
             except Exception:
                 continue
@@ -1376,18 +1391,27 @@ class ConversationService:
             listener_map = self.current_game.get_map_for_entity(listener)
         except Exception:
             listener_map = None
+
+        battle = None
+        try:
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
+
         if listener_map is not None and listener_map != battle_map:
-            return {
-                'reachable_now': False,
-                'distance_ft': None,
-                'adjusted_distance_ft': None,
-                'effective_distance_ft': 0,
-                'status': 'too_far',
-            }
+            from natural20.utils.conversation import _shared_stack
+            if not (battle and _shared_stack(battle_map, listener_map) and battle.can_see(source_entity, listener)):
+                return {
+                    'reachable_now': False,
+                    'distance_ft': None,
+                    'adjusted_distance_ft': None,
+                    'effective_distance_ft': 0,
+                    'status': 'too_far',
+                }
 
         listener_uid = getattr(listener, 'entity_uid', None)
         try:
-            entries = conversation_reachability(source_entity, battle_map, mode=volume)
+            entries = conversation_reachability(source_entity, battle_map, mode=volume, battle=battle)
         except Exception:
             return None
         for entry in entries:
@@ -2130,6 +2154,44 @@ class ConversationService:
         )
         return system_prompt
 
+    def _ensure_latest_player_turn_in_llm_history(
+        self,
+        llm_conversation_handler,
+        receiver,
+        speaker,
+        spoken_message,
+        *,
+        language='common',
+    ):
+        """Guarantee the current PC line is the latest user turn for NPC LLM replies."""
+        spoken = str(spoken_message or '').strip()
+        if not spoken or speaker is None or receiver is None or llm_conversation_handler is None:
+            return
+
+        conversation_id = receiver.entity_uid
+        conv = llm_conversation_handler.conversations.get(conversation_id) or {}
+        messages = conv.get('messages') or []
+        last_user = ''
+        for entry in reversed(messages):
+            if entry.get('role') == 'user':
+                last_user = str(entry.get('content') or '')
+                break
+
+        if spoken in last_user:
+            return
+
+        formatted = llm_conversation_handler._format_incoming_player_turn({
+            'source': speaker,
+            'message': spoken,
+            'language': language,
+            'actions': [],
+        })
+        if not formatted:
+            return
+        if formatted.strip() == last_user.strip():
+            return
+        llm_conversation_handler.add_message(conversation_id, 'user', formatted)
+
     def _run_single_npc_reply_turn(
         self,
         receiver,
@@ -2148,6 +2210,7 @@ class ConversationService:
         open_dialog: bool = False,
         local_chat_only: bool = False,
         player_speaker=None,
+        player_language: str = 'common',
     ):
         if llm_conversation_handler is None:
             llm_conversation_handler = self.llm_conversation_handler
@@ -2168,6 +2231,13 @@ class ConversationService:
         except Exception:
             pass
         llm_conversation_handler.update_conversation_history(receiver.entity_uid, receiver.conversation_buffer)
+        self._ensure_latest_player_turn_in_llm_history(
+            llm_conversation_handler,
+            receiver,
+            speaker,
+            original_player_message,
+            language=player_language,
+        )
         for note in inject_system_messages or []:
             text = str(note or '').strip()
             if text:
@@ -4737,6 +4807,7 @@ class ConversationService:
                 nudge_on_no_response=receiver in delivered_targets,
                 original_player_message=message,
                 inject_system_messages=inject_notes,
+                player_language=language,
             )
             if turn_result is None:
                 continue

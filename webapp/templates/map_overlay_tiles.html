@@ -11,6 +11,8 @@
              data-coords-y="{{ tile['y'] }}"
              data-world-x="{{ tile.get('world_x', tile['x']) }}"
              data-world-y="{{ tile.get('world_y', tile['y']) }}"
+             {% if tile.get('descent_target_x') is not none %}data-descent-target-x="{{ tile['descent_target_x'] }}"{% endif %}
+             {% if tile.get('descent_target_y') is not none %}data-descent-target-y="{{ tile['descent_target_y'] }}"{% endif %}
              {% if tile.get('id') %}data-coords-id="{{ tile['id'] }}"{% endif %}
              data-difficult="{{ tile.get('difficult', False) }}"
              data-blocked="{{ tile.get('blocked', False) }}"

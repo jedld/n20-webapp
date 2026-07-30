@@ -21,6 +21,23 @@
               </div>
             {% endfor %}
           {% endif %}
+          {% if tile.get('id') and tile.get('entity') %}
+            <div class="entity" data-id="{{ tile['id'] }}" data-label="{{ tile.get('label', '')|e }}">
+              {% set entity_size = tile.get('entity_size', 'medium') %}
+              {% set multiplier = 2 if entity_size == 'large' else 1 %}
+              {% set image_size_px = tile_size_px * multiplier %}
+              <img class="npc"
+                   src="{{ url_for('static', filename='assets/' ~ tile['entity']) }}"
+                   style="width: {{ image_size_px }}px;
+                          height: {{ image_size_px }}px;
+                          opacity: {{ opacity_for(tile) }};
+                          filter: {{ filter_for(tile) }};
+                          transform: {{ transform_for(tile) }};" />
+              {% if tile.get('label') %}
+                <div class="nameplate">{{ tile['label'] }}</div>
+              {% endif %}
+            </div>
+          {% endif %}
           <div class="brightness-overlay" style="opacity: {{ tile.get('opacity', 1) }};"></div>
         </div>
       {% endif %}

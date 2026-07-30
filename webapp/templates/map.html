@@ -1,5 +1,5 @@
 <!-- Map identifier for tile optimization -->
-<div class="map-metadata" data-map-name="{{ current_map_name }}"{% if stack_layers %} data-stack-id="{{ stack_layers.id }}"{% if stack_layers.get('composite_mode') %} data-stack-composite="1" data-stack-active-map="{{ stack_layers.get('active_layer_map', current_map_name) }}" data-stack-anchor-x="{{ stack_layers.anchor[0] }}" data-stack-anchor-y="{{ stack_layers.anchor[1] }}"{% endif %}{% endif %} style="display: none;"></div>
+<div class="map-metadata" data-map-name="{{ current_map_name }}"{% if stack_layers %} data-stack-id="{{ stack_layers.id }}"{% if stack_layers.get('composite_mode') %} data-stack-composite="1" data-stack-active-map="{{ stack_layers.get('active_layer_map', current_map_name) }}" data-stack-base-map="{{ stack_layers.layers[0].name if stack_layers.layers else '' }}" data-stack-anchor-x="{{ stack_layers.anchor[0] }}" data-stack-anchor-y="{{ stack_layers.anchor[1] }}"{% endif %}{% endif %} style="display: none;"></div>
 
 {% set stack_composite = stack_layers and stack_layers.get('composite_mode') %}
 
@@ -53,6 +53,10 @@
              data-tooltip="{{ tile.get('terrain_tooltip', '')|safe }}"
              data-coords-x="{{ tile['x'] }}"
              data-coords-y="{{ tile['y'] }}"
+             {% if tile.get('world_x') is not none %}data-world-x="{{ tile['world_x'] }}"{% endif %}
+             {% if tile.get('world_y') is not none %}data-world-y="{{ tile['world_y'] }}"{% endif %}
+             {% if tile.get('stack_layer_map') %}data-stack-layer-map="{{ tile['stack_layer_map'] }}"{% endif %}
+             {% if tile.get('stack_overlay_entity') %}data-stack-overlay-entity="1"{% endif %}
              data-coords-id="{{ tile['id'] }}"
              data-difficult="{{ tile['difficult'] }}"
              data-blocked="{{ tile.get('blocked', False) }}"
@@ -238,7 +242,7 @@
             </div>
           {% endif %}
           
-            <div class="entity" data-id="{{ tile.id }}" data-label="{{ tile['label']|default('')|e }}">
+            <div class="entity{% if tile.get('stack_overlay_entity') %} stack-overlay-entity{% endif %}" data-id="{{ tile.id }}" data-label="{{ tile['label']|default('')|e }}">
               {% set entity_size = tile.entity_size %}
               {% set multiplier = 1 %}
               {% if entity_size == 'large' %}
@@ -273,6 +277,9 @@
                      style="position: absolute; top: 4px; left: 4px; min-width: 22px; height: 22px; padding: 0 6px; background: {{ tile['team_border_tint'] or '#333333' }}; color: white; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; box-shadow: 0 2px 6px rgba(0,0,0,0.45); z-index: 4; text-transform: uppercase;">
                   {{ tile['team_group'] }}
                 </div>
+              {% endif %}
+              {% if tile.get('stack_elevation_ft') is not none %}
+                <div class="stack-elevation-badge" title="On upper floor">{{ tile.stack_elevation_ft|int }} ft</div>
               {% endif %}
               
               {% if is_setup and not tile.in_battle %}

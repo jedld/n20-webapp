@@ -678,6 +678,51 @@
           border: 2px solid #fff;
           box-shadow: 0 0 4px rgba(231, 76, 60, 0.9);
         }
+
+        #stack-layer-focus {
+          position: fixed;
+          top: 0;
+          right: 120px;
+          z-index: 1200;
+          background: rgba(255, 255, 255, 0.95);
+          border: 1px solid #ccc;
+          border-radius: 4px;
+          padding: 6px 10px;
+          font-size: 12px;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        #stack-layer-focus label {
+          margin: 0;
+          font-weight: 600;
+          white-space: nowrap;
+        }
+
+        #stack-layer-select {
+          max-width: 180px;
+          height: 28px;
+          font-size: 12px;
+        }
+
+        .stack-overlay-entity .npc {
+          box-shadow: 0 0 0 2px rgba(100, 149, 237, 0.85), 0 2px 8px rgba(0, 0, 0, 0.35);
+        }
+
+        .stack-elevation-badge {
+          position: absolute;
+          bottom: 2px;
+          right: 2px;
+          z-index: 5;
+          font-size: 9px;
+          line-height: 1;
+          padding: 2px 4px;
+          border-radius: 3px;
+          background: rgba(30, 30, 30, 0.82);
+          color: #fff;
+          pointer-events: none;
+        }
     </style>
 </head>
 <body class="{% if highlight_doors %}highlight-doors{% endif %}" data-soundtrack-id="{{ soundtrack.name }}" data-soundtrack-url="{{soundtrack.file}}" data-soundtrack-time="{{soundtrack.time}}" data-soundtrack-volume="{{ soundtrack.volume }}" data-battle_in_progress="{{ 'true' if battle else 'false' }}"
@@ -1072,6 +1117,16 @@
       })();
     </script>
     <div id="coords-box" style="position: fixed; top: 0; right: 0; background-color: white; padding: 10px; border: 1px solid black;"></div>
+    {% if stack_floors and stack_floors|length > 1 %}
+    <div id="stack-layer-focus" title="Switch which floor you are viewing in this building">
+      <label for="stack-layer-select">Floor</label>
+      <select id="stack-layer-select" class="form-control input-sm">
+        {% for floor in stack_floors %}
+        <option value="{{ floor.map_name }}" {% if floor.map_name == current_map %}selected{% endif %}>{{ floor.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
     
     <!-- Zoom Controls (Roll20-style) -->
     <div id="zoom-controls">
