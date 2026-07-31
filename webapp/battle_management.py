@@ -28,6 +28,22 @@ def _resolve_entity(game, entity_uid: str):
     return ent
 
 
+def _resolve_combatant_group(game, ent) -> str:
+    """Resolve combat group from entity/map metadata, with PC/NPC fallback."""
+    group = getattr(ent, 'group', None)
+    if group is None and isinstance(getattr(ent, 'properties', None), dict):
+        group = ent.properties.get('group')
+    if group is None:
+        try:
+            group = game._entity_group(ent)
+        except Exception:
+            group = None
+    if group:
+        return str(group)
+    is_npc = bool(getattr(ent, 'is_npc', lambda: False)())
+    return 'a' if not is_npc else 'b'
+
+
 def _resolve_map(game, map_name: Optional[str] = None):
     if map_name:
         battle_map = (getattr(game, 'maps', None) or {}).get(map_name)
@@ -93,17 +109,21 @@ def start_battle(
     if combatant_uids:
         for uid in combatant_uids:
             ent = _resolve_entity(game, uid)
-            group = 'a' if not bool(getattr(ent, 'is_npc', lambda: False)()) else 'b'
-            battle.add(ent, group)
+            battle.add(ent, _resolve_combatant_group(game, ent))
             added += 1
     else:
         for ent in (getattr(battle_map, 'entities', {}) or {}).keys():
-            group = 'b' if bool(getattr(ent, 'is_npc', lambda: False)()) else 'a'
-            battle.add(ent, group)
+            battle.add(ent, _resolve_combatant_group(game, ent))
             added += 1
 
     battle.start()
     game.set_current_battle(battle)
+    logger.info(
+        "Battle started via battle_management: map=%s combatants=%s explicit_uids=%s",
+        getattr(battle_map, 'name', None),
+        added,
+        bool(combatant_uids),
+    )
     try:
         game.play_battle_music(battle)
     except Exception:
@@ -207,7 +227,7 @@ def battle_admin(
             controller_obj.register_handlers_on(ent)
         except Exception:
             pass
-        default_group = group or ('a' if isinstance(ent, PlayerCharacter) else 'b')
+        default_group = group or _resolve_combatant_group(game, ent)
         battle.add(ent, default_group, controller=controller_obj)
         state = battle.entities.get(ent)
         if state is not None:

@@ -3,6 +3,7 @@ import logging
 import re
 import time
 
+from webapp.llm_context_budget import maybe_compact_messages
 from webapp.llm_handler import (
     LLMHandler,
     format_llm_context_log,
@@ -275,19 +276,28 @@ class LLMConversationController:
         
         # Add conversation history
         messages.extend(conversation["messages"])
-        
+
         try:
             started = time.monotonic()
             history_count = len(conversation.get('messages', []))
             provider = getattr(self.llm_hander, 'npc_provider', None) or getattr(self.llm_hander, 'current_provider', None)
+            messages, budget_report = maybe_compact_messages(
+                messages,
+                provider=provider,
+                role='npc',
+            )
+            if budget_report.get('compacted'):
+                protected_count = int(budget_report.get('protected_system_messages') or 1)
+                conversation['messages'] = messages[protected_count:]
             context_summary = summarize_llm_messages(
                 messages,
-                context_limit=getattr(provider, 'context_window', None),
+                context_limit=budget_report.get('context_limit'),
             )
             logger.info(
-                "[LLMConversation] generating NPC reply conversation_id=%s history_messages=%s %s",
+                "[LLMConversation] generating NPC reply conversation_id=%s history_messages=%s compacted=%s %s",
                 conversation_id,
                 history_count,
+                budget_report.get('compacted'),
                 format_llm_context_log(context_summary),
             )
             response_content = self._effective_send_message(

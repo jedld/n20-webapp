@@ -8,6 +8,8 @@ context functions and the MCP bridge.
 import logging
 import os
 
+from webapp.llm_context_budget import apply_context_limit_to_provider
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,6 +71,7 @@ def configure_llm_handler_from_environment(handler):
         config = {'base_url': base_url, 'model': model}
         success = handler.initialize_provider('ollama', config)
         if success:
+            apply_context_limit_to_provider(handler.current_provider, role='dm')
             logger.info(f"Initialized Ollama provider with model: {model} at {base_url}")
         else:
             logger.error(f"Failed to initialize Ollama provider: {config}")
@@ -85,6 +88,7 @@ def configure_llm_handler_from_environment(handler):
 
         success = handler.initialize_provider('llama_cpp', config)
         if success:
+            apply_context_limit_to_provider(handler.current_provider, role='dm')
             logger.info(
                 f"Initialized llama.cpp provider with model: "
                 f"{getattr(handler.current_provider, 'current_model', model)} at {base_url}"
@@ -176,7 +180,13 @@ def configure_npc_provider_from_environment(handler):
             'model': model or 'gemma3:27b',
             'timeout': npc_llm_request_timeout('ollama'),
         }
-        return handler.initialize_npc_provider('ollama', config)
+        npc_context = os.environ.get('NPC_LLM_CONTEXT_SIZE') or os.environ.get('N20_NPC_CONTEXT_SIZE')
+        if npc_context and str(npc_context).strip():
+            config['context_window'] = int(npc_context)
+        initialized = handler.initialize_npc_provider('ollama', config)
+        if initialized and handler.npc_provider is not None:
+            apply_context_limit_to_provider(handler.npc_provider, role='npc')
+        return initialized
 
     if llm_provider in ('llama_cpp', 'llama.cpp', 'llamacpp'):
         config = {
@@ -189,9 +199,15 @@ def configure_npc_provider_from_environment(handler):
             config['max_tokens'] = int(npc_max_tokens)
         else:
             config['max_tokens'] = 320
+        npc_context = os.environ.get('NPC_LLM_CONTEXT_SIZE') or os.environ.get('N20_NPC_CONTEXT_SIZE')
+        if npc_context and str(npc_context).strip():
+            config['context_window'] = int(npc_context)
         if model:
             config['model'] = model
-        return handler.initialize_npc_provider('llama_cpp', config)
+        initialized = handler.initialize_npc_provider('llama_cpp', config)
+        if initialized and handler.npc_provider is not None:
+            apply_context_limit_to_provider(handler.npc_provider, role='npc')
+        return initialized
 
     logger.warning("[NPC LLM] Unknown NPC_LLM_PROVIDER=%s, using mock", llm_provider)
     return handler.initialize_npc_provider('mock', {})

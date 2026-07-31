@@ -2155,6 +2155,7 @@ class ConversationService:
         summoned: bool = False,
         relay_instruction: bool = False,
         npc_initiated: bool = False,
+        player_message: str = '',
     ) -> str:
         """Format the standard NPC identity + conversation rules system prompt."""
         system_prompt = self.build_npc_identity_prompt(receiver, conversation_system_prompt)
@@ -2170,6 +2171,7 @@ class ConversationService:
             summoned=summoned,
             relay_instruction=relay_instruction,
             npc_initiated=npc_initiated,
+            player_message=player_message,
         )
         return system_prompt
 
@@ -2243,6 +2245,7 @@ class ConversationService:
             summoned=summoned,
             relay_instruction=relay_instruction,
             npc_initiated=npc_initiated,
+            player_message=original_player_message,
         )
         llm_conversation_handler.create_conversation(receiver.entity_uid, system_prompt)
         try:
@@ -2380,6 +2383,7 @@ class ConversationService:
             receiver,
             speaker=speaker,
             only=pre_speech_movement,
+            kick_movement=True,
         )
 
         reply_plan = self.expand_reply_targets_from_message(receiver, reply_plan)
@@ -2501,6 +2505,7 @@ class ConversationService:
             receiver,
             speaker=speaker,
             skip=post_speech_skip,
+            player_message=original_player_message,
         )
         try:
             forced_manager = getattr(self.current_game, 'forced_conversation_manager', None)
@@ -2560,6 +2565,7 @@ class ConversationService:
         summoned: bool = False,
         relay_instruction: bool = False,
         npc_initiated: bool = False,
+        player_message: str = '',
     ):
         target_entities = self.entity_rag_handler.get_conversation_targets(receiver, speaker=speaker)
         perceivable_entries = self.entity_rag_handler.collect_perceivable_targets(
@@ -2722,7 +2728,10 @@ class ConversationService:
             "- You may organize your backpack with "
             "[RETRIEVE: item=<slug>, target=backpack, qty=1] and "
             "[STORE: item=<slug>, target=backpack, qty=1] (or [STOW: ...]).\n"
-            "- You may offer an item with [OFFER_ITEM: item=<item_slug>, target=speaker|@handle]. This creates an Accept Item Yes/No prompt for the target. You may offer from your inventory or from an open container within reach (for example the bar).\n"
+            "- You may offer an item with [OFFER_ITEM: item=<item_slug>, target=speaker|@handle]. "
+            "This creates an Accept Item Yes/No prompt for the target. You may offer from your inventory or from an open container within reach (for example the bar). "
+            "Never use [OFFER_ITEM] in the same reply where you list multiple options and ask which they want — wait for their next message. "
+            "Only offer after they clearly name the specific item they want.\n"
             "- You may pick up a ground item within reach with [PICKUP: item=<item_slug>] or [PICKUP: item=<item_slug>, qty=2].\n"
             "- You may inspect container stock with [LIST_CONTAINER: target=@handle] or [LIST_CONTAINER] for all nearby containers.\n"
             "- You may read staff-only object markings with [ANNOTATIONS: target=@handle] or [ANNOTATIONS] for nearby objects. These annotations are invisible to player characters.\n"
@@ -2737,7 +2746,7 @@ class ConversationService:
             f"{inventory_containers_block}"
             f"{perceivable_targets_block}"
             f"{interactables_block}"
-            f"{self.entity_rag_handler.offer_item_guidance_for_conversation(receiver, speaker, player_speaker)}\n"
+            f"{self.entity_rag_handler.offer_item_guidance_for_conversation(receiver, speaker, player_speaker, player_message=player_message)}\n"
             f"{animal_comm_block}"
             f"{setting_block}"
             f"{landmarks_block}"

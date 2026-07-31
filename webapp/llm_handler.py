@@ -27,6 +27,36 @@ from natural20.concurrency import run_blocking
 logger = logging.getLogger('werkzeug')
 logger.setLevel(logging.INFO)
 
+_END_BATTLE_PATTERNS = (
+    'end battle', 'end combat', 'end the battle', 'end the combat', 'end the fight',
+    'stop battle', 'stop combat', 'finish combat', 'wrap up combat', 'wrap up the fight',
+)
+
+_START_BATTLE_PATTERNS = (
+    'start battle', 'start a battle', 'start combat', 'begin combat', 'begin battle',
+    'start a fight', 'start the fight', 'initiate combat', 'initiate a battle',
+    'roll initiative',
+)
+
+_MANAGE_BATTLE_PATTERNS = (
+    'next turn', 'advance turn', 'add to initiative', 'add to combat',
+    'remove from battle', 'reorder initiative', 'set initiative',
+)
+
+_BATTLE_MUTATION_FUNCS = frozenset({
+    'start_battle', 'end_battle', 'manage_battle',
+})
+
+_BATTLE_MUTATION_MCP_TOOLS = frozenset({
+    'actions.start_battle', 'actions.end_battle', 'dm.battle_admin',
+})
+
+_WHOLE_MAP_BATTLE_PATTERNS = (
+    'everyone on the map', 'everyone on this map', 'everyone on the',
+    'all entities on the map', 'all entities on this map', 'whole map',
+    'entire map', 'all combatants', 'all npcs on the map', 'fight everyone',
+)
+
 _PROMPTS_DIR = Path(__file__).resolve().parent / 'prompts'
 _PROMPT_CACHE: Dict[str, str] = {}
 
@@ -641,6 +671,8 @@ class OllamaProvider(LLMProvider):
                 self.request_timeout = int(config['timeout'])
             else:
                 self.request_timeout = int(os.environ.get('OLLAMA_TIMEOUT', '60'))
+            if config.get('context_window') is not None:
+                self.context_window = int(config['context_window'])
             # Test connection
             logger.info(f"[OllamaProvider] Initializing Ollama provider with base URL: {self.base_url}")
             response = requests.get(f"{self.base_url}/api/tags", timeout=10)
@@ -821,6 +853,8 @@ class LlamaCppProvider(LLMProvider):
         self.api_key = opts.get('api_key', 'llama-cpp')
         self.current_model = opts.get('model')
         self.request_timeout = int(os.environ.get('LLAMA_CPP_TIMEOUT', '60'))
+        self.max_tokens = int(opts.get('max_tokens') or os.environ.get('LLAMA_CPP_MAX_TOKENS', '1000') or 1000)
+        self.context_window = opts.get('context_window')
         self.conversation_history = []
 
     @staticmethod
@@ -888,6 +922,8 @@ class LlamaCppProvider(LLMProvider):
                 self.request_timeout = int(os.environ.get('LLAMA_CPP_TIMEOUT', '60'))
             if config.get('max_tokens') is not None:
                 self.max_tokens = int(config['max_tokens'])
+            if config.get('context_window') is not None:
+                self.context_window = int(config['context_window'])
             requested_model = config.get('model')
 
             models = self.get_available_models()
@@ -906,7 +942,10 @@ class LlamaCppProvider(LLMProvider):
         if not self.current_model:
             return "llama.cpp provider not initialized or no model selected"
 
-        context_summary = summarize_llm_messages(messages)
+        context_summary = summarize_llm_messages(
+            messages,
+            context_limit=int(self.context_window) if self.context_window else None,
+        )
         max_tokens = int(getattr(self, 'max_tokens', None) or 1000)
         payload = {
             'model': self.current_model,
@@ -1028,6 +1067,16 @@ class LlamaCppProvider(LLMProvider):
             self.current_model = model_name
             return True
         return False
+
+    def set_context_window(self, context_window: int) -> bool:
+        if context_window > 0:
+            self.context_window = int(context_window)
+            logger.info("[LlamaCppProvider] Context window set to %s", self.context_window)
+            return True
+        return False
+
+    def get_context_window(self) -> Optional[int]:
+        return int(self.context_window) if self.context_window else None
 
 
 class LLMHandler:
@@ -1358,34 +1407,120 @@ class LLMHandler:
         has_function_calls = "[FUNCTION_CALL:" in cleaned_response
 
         if has_function_calls and not is_npc_conversation:
-            logger.info("[LLMHandler] Found function calls, processing...")
-            logger.info(f"[LLMHandler] Function calls found in: {cleaned_response}")
-            function_calls = self._process_function_calls(cleaned_response, context)
-            
-            # Check if any function calls were actually processed
-            if function_calls:
-                mutation_fallback = self._maybe_execute_entity_mutation_from_context(message, function_calls)
+            max_tool_rounds = int(os.environ.get('N20_DM_TOOL_ROUNDS', '5'))
+            all_function_calls: List[Dict[str, str]] = []
+            current_response = cleaned_response
+
+            for tool_round in range(max_tool_rounds):
+                if '[FUNCTION_CALL:' not in current_response:
+                    if tool_round > 0 and (current_response or '').strip():
+                        self.conversation_history.append(
+                            {'role': 'assistant', 'content': current_response}
+                        )
+                        self.session_logger.log_response(
+                            current_response, provider_info, partial=False
+                        )
+                        return current_response
+                    break
+
+                logger.info(
+                    '[LLMHandler] DM tool round %s processing: %s',
+                    tool_round + 1,
+                    (current_response or '')[:240],
+                )
+                function_calls = self._process_function_calls(
+                    current_response, context, message
+                )
+                if not function_calls:
+                    break
+
+                mutation_fallback = self._maybe_execute_entity_mutation_from_context(
+                    message, function_calls
+                )
                 if mutation_fallback:
                     function_calls.append(mutation_fallback)
-                item_fallback = self._maybe_execute_dm_add_item_from_context(message, function_calls)
+                item_fallback = self._maybe_execute_dm_add_item_from_context(
+                    message, function_calls
+                )
                 if item_fallback:
                     function_calls.append(item_fallback)
+
+                all_function_calls.extend(function_calls)
                 self.conversation_history.extend(function_calls)
-                count_reply = self._try_count_query_reply(message, function_calls)
+
+                action_reply = self._try_action_reply_from_results(
+                    message, all_function_calls
+                )
+                if action_reply:
+                    self.conversation_history.append(
+                        {'role': 'assistant', 'content': action_reply}
+                    )
+                    self.session_logger.log_response(
+                        action_reply, provider_info, partial=False
+                    )
+                    return action_reply
+
+                if tool_round >= max_tool_rounds - 1:
+                    break
+
+                follow_up_messages = [
+                    {'role': 'system', 'content': self._build_system_prompt(context)}
+                ]
+                follow_up_messages.extend(self.conversation_history)
+                follow_up_messages.append({
+                    'role': 'user',
+                    'content': (
+                        'Continue the DM task from my original request. '
+                        'If more tools are required, respond with [FUNCTION_CALL: ...] lines only. '
+                        'When the task is complete, reply in one or two plain sentences '
+                        '(no function calls).'
+                    ),
+                })
+                raw_follow_up = active_provider.send_message(follow_up_messages)
+                current_response = self._clean_response(
+                    raw_follow_up, response_mode=response_mode
+                )
+                logger.info(
+                    '[LLMHandler] DM tool round %s follow-up: %s',
+                    tool_round + 2,
+                    (current_response or '')[:240],
+                )
+
+            if (current_response or '').strip() and '[FUNCTION_CALL:' not in current_response:
+                self.conversation_history.append(
+                    {'role': 'assistant', 'content': current_response}
+                )
+                self.session_logger.log_response(
+                    current_response, provider_info, partial=False
+                )
+                return current_response
+
+            if all_function_calls:
+                count_reply = self._try_count_query_reply(message, all_function_calls)
                 if count_reply:
-                    self.conversation_history.append({"role": "assistant", "content": count_reply})
+                    self.conversation_history.append(
+                        {'role': 'assistant', 'content': count_reply}
+                    )
                     return count_reply
-                # Format the function results into a user-friendly response
-                formatted_response = self._format_function_results(function_calls, context, message)
-                self.conversation_history.append({"role": "assistant", "content": formatted_response})
+                formatted_response = self._format_function_results(
+                    all_function_calls, context, message
+                )
+                self.conversation_history.append(
+                    {'role': 'assistant', 'content': formatted_response}
+                )
                 return formatted_response
-            else:
-                # Function calls were found but none were processed (e.g., unknown functions)
-                logger.info("[LLMHandler] No valid function calls processed, returning original response")
-                if not is_npc_conversation:
-                    self.conversation_history.append({"role": "assistant", "content": cleaned_response})
-                    self.session_logger.log_response(cleaned_response, provider_info, partial=False)
-                return cleaned_response
+
+            logger.info(
+                "[LLMHandler] No valid function calls processed, returning original response"
+            )
+            if not is_npc_conversation:
+                self.conversation_history.append(
+                    {'role': 'assistant', 'content': cleaned_response}
+                )
+                self.session_logger.log_response(
+                    cleaned_response, provider_info, partial=False
+                )
+            return cleaned_response
         else:
             # No function calls, return the cleaned response directly
             if not is_npc_conversation:
@@ -1430,6 +1565,12 @@ class LLMHandler:
         function_results_block = "\n".join(
             str(msg.get('content', '')) for msg in processed_response
         )
+        max_block = int(os.environ.get('N20_DM_FORMAT_RESULT_MAX_CHARS', '16000'))
+        if len(function_results_block) > max_block:
+            function_results_block = (
+                function_results_block[:max_block]
+                + f"\n... [truncated {len(function_results_block) - max_block} chars for formatting]"
+            )
         messages.append({
             "role": "user",
             "content": "Function results:\n" + function_results_block,
@@ -1695,7 +1836,117 @@ class LLMHandler:
                 args.append(_coerce(part))
         return args, kwargs
 
-    def _process_function_calls(self, response: str, context: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
+    def _user_requested_battle_control(self, message: Optional[str]) -> bool:
+        if not message:
+            return False
+        lower = str(message).lower()
+        return any(
+            pattern in lower
+            for pattern in (_END_BATTLE_PATTERNS + _START_BATTLE_PATTERNS + _MANAGE_BATTLE_PATTERNS)
+        )
+
+    def _battle_mutation_allowed(
+        self,
+        original_message: Optional[str],
+        execute_name: str,
+        execute_args: List[Any],
+    ) -> bool:
+        if not original_message:
+            return False
+        lower = str(original_message).lower()
+        if execute_name == 'end_battle' or (
+            execute_name == 'mcp' and execute_args and str(execute_args[0]) == 'actions.end_battle'
+        ):
+            return any(pattern in lower for pattern in _END_BATTLE_PATTERNS)
+        if execute_name == 'start_battle' or (
+            execute_name == 'mcp' and execute_args and str(execute_args[0]) == 'actions.start_battle'
+        ):
+            return any(pattern in lower for pattern in _START_BATTLE_PATTERNS)
+        if execute_name == 'manage_battle' or (
+            execute_name == 'mcp' and execute_args and str(execute_args[0]) == 'dm.battle_admin'
+        ):
+            return any(pattern in lower for pattern in _MANAGE_BATTLE_PATTERNS)
+        return self._user_requested_battle_control(original_message)
+
+    def _is_implicit_battle_mutation(self, execute_name: str, execute_args: List[Any]) -> bool:
+        if execute_name in _BATTLE_MUTATION_FUNCS:
+            return True
+        if execute_name == 'mcp' and execute_args:
+            tool_name = str(execute_args[0])
+            if tool_name in _BATTLE_MUTATION_MCP_TOOLS:
+                return True
+        return False
+
+    def _start_battle_has_combatants(
+        self,
+        execute_name: str,
+        execute_args: List[Any],
+        execute_kwargs: Dict[str, Any],
+    ) -> bool:
+        if execute_name == 'start_battle':
+            uids = execute_kwargs.get('combatant_uids')
+            if uids:
+                return bool(uids)
+            if execute_args:
+                first = execute_args[0]
+                if isinstance(first, (list, tuple)):
+                    return bool(first)
+            return False
+        if execute_name == 'mcp' and len(execute_args) >= 2:
+            tool_name = str(execute_args[0])
+            if tool_name == 'actions.start_battle':
+                mcp_args = execute_args[1]
+                if isinstance(mcp_args, dict):
+                    return bool(mcp_args.get('combatant_uids'))
+        return True
+
+    def _battle_mutation_skip_reason(
+        self,
+        original_message: Optional[str],
+        execute_name: str,
+        execute_args: List[Any],
+        execute_kwargs: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        if not self._is_implicit_battle_mutation(execute_name, execute_args):
+            return None
+        if (context or {}).get('dm_assistant') and not self._battle_mutation_allowed(
+            original_message, execute_name, execute_args
+        ):
+            return (
+                "DM assistant battle control is disabled for this message; use the "
+                "battle UI or say explicitly e.g. 'end combat' / 'start battle with <uids>'."
+            )
+        if not original_message or not self._user_requested_battle_control(original_message):
+            return (
+                "battle control requires an explicit request in the user's message "
+                "(e.g. 'end combat' or 'start battle with Guz')."
+            )
+        is_start = (
+            execute_name == 'start_battle'
+            or (
+                execute_name == 'mcp'
+                and execute_args
+                and str(execute_args[0]) == 'actions.start_battle'
+            )
+        )
+        if is_start and not self._start_battle_has_combatants(
+            execute_name, execute_args, execute_kwargs
+        ):
+            lower = str(original_message).lower()
+            if not any(pattern in lower for pattern in _WHOLE_MAP_BATTLE_PATTERNS):
+                return (
+                    "start_battle requires combatant_uids; never call start_battle() "
+                    "with no arguments unless the user asked to fight everyone on the map."
+                )
+        return None
+
+    def _process_function_calls(
+        self,
+        response: str,
+        context: Optional[Dict[str, Any]] = None,
+        original_message: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
         """Process function calls in the LLM response."""
         function_results_list = []
         logger.info(f"[LLMHandler] _process_function_calls called with: {response}")
@@ -1747,6 +1998,18 @@ class LLMHandler:
                     execute_name = 'mcp'
                     execute_args = [func_name, mcp_args]
 
+                skip_reason = self._battle_mutation_skip_reason(
+                    original_message, execute_name, execute_args, execute_kwargs, context
+                )
+                if skip_reason:
+                    skip_msg = f"Skipped {func_name}: {skip_reason}"
+                    logger.info("[LLMHandler] %s", skip_msg)
+                    function_results[call_key] = {
+                        'text': skip_msg,
+                        'payload': None,
+                    }
+                    continue
+
                 if execute_name in self.game_context_functions:
                     logger.info(f"[LLMHandler] Calling function {execute_name} with args: {execute_args} kwargs: {execute_kwargs}")
                     # Execute the function
@@ -1789,13 +2052,56 @@ class LLMHandler:
         return function_results_list
 
     @staticmethod
-    def _serialize_function_result(result: Any) -> str:
-        if isinstance(result, (dict, list)):
+    def _compact_function_result_payload(result: Any) -> Any:
+        """Shrink large MCP payloads before they are fed back to the DM model."""
+        if isinstance(result, dict):
+            out = dict(result)
+            max_items = int(os.environ.get('N20_DM_FUNCTION_RESULT_MAX_ENTITIES', '40'))
+            entity_keys = (
+                'entity_uid', 'name', 'kind', 'type', 'npc_type',
+                'position', 'hp', 'max_hp', 'group', 'map',
+            )
+            for key in ('entities', 'objects'):
+                items = out.get(key)
+                if not isinstance(items, list):
+                    continue
+                slim = []
+                for item in items[:max_items]:
+                    if isinstance(item, dict):
+                        slim.append({k: item[k] for k in entity_keys if k in item})
+                    else:
+                        slim.append(item)
+                out[key] = slim
+                if len(items) > max_items:
+                    out[f'{key}_count'] = len(items)
+                    out[f'{key}_truncated'] = len(items) - max_items
+            return out
+        if isinstance(result, list):
+            max_items = int(os.environ.get('N20_DM_FUNCTION_RESULT_MAX_ENTITIES', '40'))
+            if len(result) > max_items:
+                return {
+                    'items': result[:max_items],
+                    'items_count': len(result),
+                    'items_truncated': len(result) - max_items,
+                }
+        return result
+
+    def _serialize_function_result(self, result: Any) -> str:
+        compact = self._compact_function_result_payload(result)
+        if isinstance(compact, (dict, list)):
             try:
-                return json.dumps(result, ensure_ascii=False, default=str)
+                text = json.dumps(compact, ensure_ascii=False, default=str)
             except Exception:
-                pass
-        return repr(result)
+                text = repr(compact)
+        else:
+            text = repr(compact)
+        max_chars = int(os.environ.get('N20_DM_FUNCTION_RESULT_MAX_CHARS', '12000'))
+        if len(text) > max_chars:
+            text = (
+                text[:max_chars]
+                + f'... [truncated at {max_chars} chars]'
+            )
+        return text
 
     def _parse_payloads_from_function_results(
         self, processed_response: List[Dict[str, str]]
@@ -1873,6 +2179,48 @@ class LLMHandler:
             logger.info('[LLMHandler] Count-query short-circuit: %s', reply)
             return reply
         return None
+
+    def _try_action_reply_from_results(
+        self,
+        original_message: Optional[str],
+        processed_response: List[Dict[str, str]],
+    ) -> Optional[str]:
+        """Skip the format LLM pass when a spawn/summon mutation clearly succeeded."""
+        if not original_message:
+            return None
+        lowered = original_message.lower()
+        if not any(tok in lowered for tok in ('spawn', 'summon', 'place', 'add hostile', 'add enemy')):
+            return None
+
+        spawned: List[Dict[str, Any]] = []
+        for payload in self._parse_payloads_from_function_results(processed_response):
+            if not isinstance(payload, dict):
+                continue
+            if payload.get('entity_uid') and (
+                payload.get('npc_type') or payload.get('position')
+            ):
+                spawned.append(payload)
+
+        if not spawned:
+            return None
+
+        lines = []
+        for item in spawned:
+            npc_type = item.get('npc_type') or 'npc'
+            uid = item.get('entity_uid')
+            pos = item.get('position')
+            map_name = item.get('map') or ''
+            if pos:
+                lines.append(
+                    f"Spawned {npc_type} at {pos}"
+                    + (f" on {map_name}" if map_name else '')
+                    + f" (uid {uid})."
+                )
+            else:
+                lines.append(f"Spawned {npc_type} (uid {uid}).")
+        reply = ' '.join(lines)
+        logger.info('[LLMHandler] Spawn action short-circuit: %s', reply)
+        return reply
 
     def _maybe_execute_entity_mutation_from_context(self, original_message: str,
                                                     function_results_list: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
@@ -2219,6 +2567,16 @@ class LLMHandler:
         else:
             logger.warning(f"[LLMHandler] Provider {type(self.current_provider).__name__} does not support context window setting")
             return False
+
+    def set_npc_context_window(self, context_window: int) -> bool:
+        """Set the context window size for the dedicated NPC provider."""
+        provider = self.npc_provider
+        if provider is None:
+            return False
+        if hasattr(provider, 'set_context_window'):
+            return provider.set_context_window(context_window)
+        provider.context_window = int(context_window)
+        return True
     
     def get_context_window(self) -> Optional[int]:
         """Get the current context window size for the current provider (Ollama only)."""
@@ -2268,6 +2626,24 @@ class LLMHandler:
             info['current_model'] = provider.current_model
         if hasattr(provider, 'base_url'):
             info['base_url'] = provider.base_url
+        if hasattr(provider, 'get_context_window'):
+            context_window = provider.get_context_window()
+            if context_window:
+                info['context_window'] = context_window
+        elif getattr(provider, 'context_window', None):
+            info['context_window'] = provider.context_window
+        try:
+            from webapp.llm_context_budget import (
+                max_output_tokens_for_provider,
+                resolve_provider_context_limit,
+            )
+
+            limit, source = resolve_provider_context_limit(provider, role='npc')
+            info['resolved_context_limit'] = limit
+            info['context_limit_source'] = source
+            info['max_output_tokens'] = max_output_tokens_for_provider(provider, role='npc')
+        except Exception:
+            pass
         return info
     
     def clear_history(self):

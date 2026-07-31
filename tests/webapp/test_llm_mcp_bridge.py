@@ -390,3 +390,79 @@ def test_normalize_messages_merges_leading_system_blocks():
     assert [m['role'] for m in msgs] == ['system', 'user']
     assert 'base' in msgs[0]['content']
     assert 'extra' in msgs[0]['content']
+
+
+def test_compact_function_result_payload_truncates_large_entity_lists(handler):
+    payload = {
+        'map': 'town_market',
+        'entities': [
+            {'entity_uid': f'uid-{i}', 'name': f'npc-{i}', 'position': [i, i]}
+            for i in range(60)
+        ],
+    }
+    compact = handler._compact_function_result_payload(payload)
+    assert len(compact['entities']) == 40
+    assert compact['entities_count'] == 60
+    assert compact['entities_truncated'] == 20
+
+
+def test_serialize_function_result_caps_json_length(handler, monkeypatch):
+    monkeypatch.setenv('N20_DM_FUNCTION_RESULT_MAX_CHARS', '200')
+    huge = {'entities': [{'entity_uid': 'x' * 500}]}
+    text = handler._serialize_function_result(huge)
+    assert len(text) <= 250
+    assert 'truncated' in text
+
+
+def test_try_action_reply_from_results_spawn_short_circuit(handler):
+    processed = [{
+        'role': 'user',
+        'content': 'ignored',
+        '_payload': {
+            'entity_uid': 'gob-1',
+            'npc_type': 'goblin',
+            'map': 'tavern',
+            'position': [9, 18],
+        },
+    }]
+    reply = handler._try_action_reply_from_results(
+        'spawn hostile goblins in the tavern',
+        processed,
+    )
+    assert reply is not None
+    assert 'goblin' in reply
+    assert 'gob-1' in reply
+
+
+def test_process_function_calls_skips_start_battle_without_user_request(handler):
+    called = []
+
+    def fake_start_battle(*_args, **_kwargs):
+        called.append(True)
+        return {'started': True}
+
+    handler.register_game_context_function('start_battle', fake_start_battle, 'fake')
+    processed = handler._process_function_calls(
+        '[FUNCTION_CALL: start_battle()]',
+        None,
+        'How many NPCs are on the map?',
+    )
+    assert not called
+    assert 'Skipped start_battle' in processed[0]['content']
+
+
+def test_process_function_calls_skips_bare_start_battle_even_when_user_asks(handler):
+    called = []
+
+    def fake_start_battle(*_args, **_kwargs):
+        called.append(True)
+        return {'started': True}
+
+    handler.register_game_context_function('start_battle', fake_start_battle, 'fake')
+    processed = handler._process_function_calls(
+        '[FUNCTION_CALL: start_battle()]',
+        None,
+        'Start a battle with the goblins on this map',
+    )
+    assert not called
+    assert 'combatant_uids' in processed[0]['content']

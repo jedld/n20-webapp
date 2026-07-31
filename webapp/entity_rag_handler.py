@@ -3430,6 +3430,25 @@ class EntityRAGHandler:
             return False
         return True
 
+    def _exploration_movement_blocked(self, actor: Entity) -> bool:
+        movement_manager = getattr(self.current_game, 'movement_manager', None)
+        if movement_manager is not None and hasattr(movement_manager, 'exploration_movement_blocked'):
+            try:
+                blocked = movement_manager.exploration_movement_blocked(actor)
+                if isinstance(blocked, bool):
+                    return blocked
+            except Exception:
+                pass
+        battle = self.current_game.get_current_battle()
+        if battle is None:
+            return False
+        if actor is None:
+            return True
+        try:
+            return actor in battle.entities
+        except Exception:
+            return True
+
     def _ui_updates_suppressed(self) -> bool:
         try:
             return bool(self.current_game.realtime_ui_suppressed())
@@ -3831,7 +3850,7 @@ class EntityRAGHandler:
         distance_ft: int = SOCIAL_APPROACH_MAX_FT,
         kick_movement: bool = False,
     ) -> bool:
-        if actor is None or not target_info or self.current_game.get_current_battle() is not None:
+        if actor is None or not target_info or self._exploration_movement_blocked(actor):
             return False
 
         approach_distance_ft = min(
@@ -3889,7 +3908,7 @@ class EntityRAGHandler:
         skip: Optional[set] = None,
         kick_movement: bool = False,
     ) -> None:
-        if self.current_game.get_current_battle() is not None:
+        if self._exploration_movement_blocked(actor):
             return
 
         approach_directive = plan.get('approach')
@@ -3915,17 +3934,36 @@ class EntityRAGHandler:
                 )
 
         move_directive = plan.get('move_to')
-        if move_directive and move_directive.get('target_info') and self._directive_enabled('move_to', only, skip):
-            result['scheduled_movement'] = self.current_game.schedule_npc_move_to(
-                actor,
-                move_directive['target_info'],
-                distance_ft=move_directive.get('distance_ft', 5),
-                speaker=speaker,
-            )
-            if result['scheduled_movement'] is not None:
-                result['executed_actions'].append('move_to')
-                if kick_movement:
-                    self._trigger_immediate_npc_movement(actor)
+        if move_directive and self._directive_enabled('move_to', only, skip):
+            target_info = move_directive.get('target_info')
+            if not target_info:
+                self._log_conversation_plan(
+                    actor,
+                    'move_to skipped (unresolved target)',
+                )
+            elif self._exploration_movement_blocked(actor):
+                self._log_conversation_plan(
+                    actor,
+                    'move_to skipped (actor is in combat)',
+                )
+            else:
+                result['scheduled_movement'] = self.current_game.schedule_npc_move_to(
+                    actor,
+                    target_info,
+                    distance_ft=move_directive.get('distance_ft', 5),
+                    speaker=speaker,
+                )
+                if result['scheduled_movement'] is not None:
+                    result['executed_actions'].append('move_to')
+                    self._log_conversation_plan(
+                        actor,
+                        (
+                            f"scheduled move_to {self.movement_helper.describe_target(target_info)} "
+                            f"distance_ft={move_directive.get('distance_ft', 5)}"
+                        ),
+                    )
+                    if kick_movement:
+                        self._trigger_immediate_npc_movement(actor)
 
         follow_directive = plan.get('follow')
         if follow_directive and follow_directive.get('target') is not None and self._directive_enabled('follow', only, skip):
@@ -3950,6 +3988,7 @@ class EntityRAGHandler:
         only: Optional[set] = None,
         skip: Optional[set] = None,
         kick_movement: bool = False,
+        player_message: str = '',
     ) -> Dict[str, Any]:
         result = {
             'scheduled_goal': None,
@@ -4026,6 +4065,7 @@ class EntityRAGHandler:
             only=only,
             skip=skip,
             kick_movement=kick_movement,
+            player_message=player_message,
         )
 
         trade_directive = plan.get('trade')
@@ -4121,7 +4161,16 @@ class EntityRAGHandler:
             return True
         if self._find_offerable_map_object(actor, item_slug) is not None:
             return True
-        return find_container_with_item(self.current_game, actor, item_slug) is not None
+        if find_container_with_item(self.current_game, actor, item_slug) is not None:
+            return True
+        try:
+            from natural20.utils.key_utils import entity_has_key
+
+            if entity_has_key(actor, item_slug):
+                return True
+        except Exception:
+            pass
+        return False
 
     def _item_exchange_action_sequence(self, plan: Dict[str, Any]) -> List[Dict[str, Any]]:
         sequence = list(plan.get('action_sequence') or [])
@@ -4309,6 +4358,7 @@ class EntityRAGHandler:
         only: Optional[set] = None,
         skip: Optional[set] = None,
         kick_movement: bool = False,
+        player_message: str = '',
     ) -> None:
         sequence = self._item_exchange_action_sequence(plan)
         for idx, entry in enumerate(sequence):
@@ -4452,12 +4502,14 @@ class EntityRAGHandler:
                         actor,
                         offer_target,
                         entry['item'],
+                        player_message=player_message,
                     )
                     if can_offer and self._offer_item_with_prompt(
                         actor,
                         offer_target,
                         entry['item'],
                         auto_use=bool(entry.get('auto_use')),
+                        player_message=player_message,
                     ):
                         result['executed_actions'].append('offer_item')
                     elif not can_offer:
@@ -4468,8 +4520,21 @@ class EntityRAGHandler:
                             entry['item'],
                             block_reason,
                         )
+                        self._notify_item_offer_suppression(
+                            actor,
+                            offer_target,
+                            entry['item'],
+                            block_reason,
+                        )
 
-    def _can_offer_item(self, actor: Entity, target: Entity, item_slug: str) -> Tuple[bool, str]:
+    def _can_offer_item(
+        self,
+        actor: Entity,
+        target: Entity,
+        item_slug: str,
+        *,
+        player_message: str = '',
+    ) -> Tuple[bool, str]:
         return evaluate_offer_block(
             self.game_session,
             actor,
@@ -4477,6 +4542,7 @@ class EntityRAGHandler:
             item_slug,
             game_properties=self._game_properties(),
             actor_has_map_item=self._actor_has_offer_source(actor, item_slug),
+            player_message=player_message,
         )
 
     def offer_item_guidance_for_conversation(
@@ -4484,6 +4550,8 @@ class EntityRAGHandler:
         actor: Entity,
         speaker: Entity = None,
         player_speaker: Entity = None,
+        *,
+        player_message: str = '',
     ) -> str:
         """Prompt lines from campaign ``conversation_item_offers`` (and optional NPC overrides)."""
         lines = offer_guidance_lines(
@@ -4493,6 +4561,7 @@ class EntityRAGHandler:
             player_speaker=player_speaker,
             game_properties=self._game_properties(),
             actor_has_map_item_fn=lambda entity, slug: self._actor_has_offer_source(entity, slug),
+            player_message=player_message,
         )
         return '\n'.join(lines)
 
@@ -4633,6 +4702,39 @@ class EntityRAGHandler:
                 exc_info=True,
             )
 
+    def _notify_item_offer_suppression(
+        self,
+        actor: Entity,
+        target: Entity,
+        item_slug: str,
+        block_reason: str,
+    ) -> None:
+        try:
+            from natural20.utils.conversation_offers import item_offer_suppression_note
+            from webapp.blueprints.helpers.runtime_state import get_conversation_service
+
+            note = item_offer_suppression_note(
+                actor,
+                target,
+                item_slug,
+                block_reason,
+                game_properties=self._game_properties(),
+                actor_has_map_item_fn=lambda entity, slug: self._actor_has_offer_source(entity, slug),
+            )
+            if not note:
+                return
+            service = get_conversation_service()
+            if service is None:
+                return
+            service.inject_npc_llm_system_note(getattr(actor, 'entity_uid', None), note)
+        except Exception:
+            logger.warning(
+                'Failed to notify NPC %s of suppressed item offer for %s',
+                entity_label(actor),
+                item_slug,
+                exc_info=True,
+            )
+
     def _apply_offer_accept_effect(self, actor: Entity, target: Entity, item_slug: str) -> Optional[str]:
         game_properties = self._game_properties()
         if not (on_accept_auto_use(item_slug, game_properties=game_properties, actor=actor)):
@@ -4674,20 +4776,41 @@ class EntityRAGHandler:
             '1',
         }
 
-    def _offer_item_with_prompt(self, actor: Entity, target: Entity, item_slug: str, auto_use: bool = False) -> bool:
-        can_offer, _reason = self._can_offer_item(actor, target, item_slug)
+    def _offer_item_with_prompt(
+        self,
+        actor: Entity,
+        target: Entity,
+        item_slug: str,
+        auto_use: bool = False,
+        *,
+        player_message: str = '',
+    ) -> bool:
+        can_offer, _reason = self._can_offer_item(
+            actor,
+            target,
+            item_slug,
+            player_message=player_message,
+        )
         if not can_offer:
             return False
 
         source_qty = self._inventory_qty(actor, item_slug)
         map_object = None
         container_source = None
+        master_key_issue = False
         if source_qty <= 0:
             container_source = find_container_with_item(self.current_game, actor, item_slug)
             if container_source is None:
                 map_object = self._find_offerable_map_object(actor, item_slug)
                 if map_object is None:
-                    return False
+                    try:
+                        from natural20.utils.key_utils import entity_has_key
+
+                        master_key_issue = entity_has_key(actor, item_slug)
+                    except Exception:
+                        master_key_issue = False
+                    if not master_key_issue:
+                        return False
 
         target_owners = human_controlled_usernames(self.current_game, target)
         if not target_owners:
@@ -4745,6 +4868,9 @@ class EntityRAGHandler:
                     self._emit_refresh_map_if_allowed()
                 except Exception:
                     pass
+                target.add_item(item_slug, 1)
+                delivered = True
+            elif master_key_issue:
                 target.add_item(item_slug, 1)
                 delivered = True
 
@@ -5238,7 +5364,7 @@ class EntityRAGHandler:
         if task is None or task.get('status') != 'active':
             return None
 
-        if self.current_game.get_current_battle() is not None:
+        if self._exploration_movement_blocked(entity):
             return None
 
         requester = None

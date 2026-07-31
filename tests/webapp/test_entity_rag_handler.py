@@ -1483,6 +1483,82 @@ class TestEntityRAGHandler(unittest.TestCase):
         actor.deduct_item.assert_not_called()
         target.add_item.assert_not_called()
 
+    def test_master_key_allows_offer_source_for_guest_room_key(self):
+        from natural20.session import Session
+
+        session = Session(root_path='user_levels/wild_sheep_chase')
+        mara = session.maps['town_market'].entity_by_uid('mara_bartender')
+        target = Mock()
+        target.entity_uid = 'sable'
+        target.inventory = {}
+
+        handler = EntityRAGHandler(session, self.mock_current_game)
+        self.assertTrue(handler._actor_has_offer_source(mara, 'tavern_room_key_1'))
+        allowed, reason = handler._can_offer_item(mara, target, 'tavern_room_key_1')
+        self.assertTrue(allowed)
+        self.assertEqual(reason, 'ok')
+
+    def test_offer_item_prompt_transfers_carried_room_key(self):
+        from natural20.session import Session
+
+        session = Session(root_path='user_levels/wild_sheep_chase')
+        mara = session.maps['town_market'].entity_by_uid('mara_bartender')
+        target = Mock()
+        target.entity_uid = 'sable'
+        target.inventory = {}
+
+        self.mock_current_game.get_current_battle.return_value = None
+        self.mock_current_game.entity_owners.return_value = ['player1']
+        self.mock_current_game.prompt = Mock()
+        self.mock_current_game.socketio = Mock()
+
+        handler = EntityRAGHandler(session, self.mock_current_game)
+        plan = {
+            'set_goal': None,
+            'goal_complete': False,
+            'goal_give_up': False,
+            'approach': None,
+            'interact': None,
+            'request_check': None,
+            'offer_item': {'item': 'tavern_room_key_1', 'target': target, 'auto_use': False},
+        }
+
+        handler.apply_response_plan_directives(
+            plan,
+            mara,
+            speaker=target,
+            advance_time=False,
+            player_message='standard room 1 please',
+        )
+        self.mock_current_game.prompt.assert_called_once()
+        callback = self.mock_current_game.prompt.call_args.kwargs['callback']
+        callback({'response': 'Yes'})
+
+        target.add_item.assert_called_once()
+        self.assertEqual(target.add_item.call_args[0][0], 'tavern_room_key_1')
+        self.assertEqual(mara.item_count('tavern_room_key_1'), 0)
+        self.assertGreaterEqual(mara.item_count('tavern_skeleton_key'), 1)
+
+    def test_room_key_offer_blocked_when_guest_only_asks_availability(self):
+        from natural20.session import Session
+
+        session = Session(root_path='user_levels/wild_sheep_chase')
+        mara = session.maps['town_market'].entity_by_uid('mara_bartender')
+        target = Mock()
+        target.entity_uid = 'sable'
+        target.inventory = {}
+
+        self.mock_current_game.entity_owners.return_value = []
+        handler = EntityRAGHandler(session, self.mock_current_game)
+        allowed, reason = handler._can_offer_item(
+            mara,
+            target,
+            'tavern_room_key_1',
+            player_message='would you have any rooms to spare?',
+        )
+        self.assertFalse(allowed)
+        self.assertEqual(reason, 'listener_has_not_chosen')
+
     def test_sanitize_insight_reason_strips_dm_only_disclosures(self):
         fallback = 'fallback reason'
         cleaned = self.rag_handler._sanitize_insight_reason(

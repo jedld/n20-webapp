@@ -923,6 +923,18 @@ class NpcMovementManager:
     def __init__(self, manager):
         self.manager = manager
 
+    def exploration_movement_blocked(self, entity) -> bool:
+        """Return True when this entity must not take out-of-combat movement steps."""
+        battle = self.manager.get_current_battle()
+        if battle is None:
+            return False
+        if entity is None:
+            return True
+        try:
+            return entity in battle.entities
+        except Exception:
+            return True
+
     def _task_id(self, entity) -> str:
         return str(getattr(entity, 'entity_uid', '') or '')
 
@@ -1094,7 +1106,7 @@ class NpcMovementManager:
 
     def movement_worker(self):
         while not self.manager._movement_thread_stop.is_set():
-            if self.manager.get_current_battle() or not self.manager.npc_movements:
+            if not self.manager.npc_movements:
                 self.manager._movement_thread_stop.wait(self.manager.goal_poll_interval)
                 continue
             if getattr(self.manager, 'realtime_ui_suppressed', lambda: False)():
@@ -1108,6 +1120,9 @@ class NpcMovementManager:
                     if task.get('status') != 'active':
                         continue
                     if task.get('running'):
+                        continue
+                    entity = self.manager.get_entity_by_uid(task_id)
+                    if self.exploration_movement_blocked(entity):
                         continue
                     next_run_at = task.get('next_run_at')
                     if next_run_at is None or next_run_at > now:
@@ -1123,10 +1138,11 @@ class NpcMovementManager:
                     )
                     rag_handler = get_entity_rag_handler()
                     llm_handler = get_llm_conversation_handler()
-                    if rag_handler is not None and llm_handler is not None:
+                    if rag_handler is not None:
                         rag_handler.execute_scheduled_movement(
                             task_id,
                             llm_handler,
+                            allow_movement_llm=llm_handler is not None,
                         )
                 except Exception as exc:
                     self.manager.logger.error(
@@ -1155,7 +1171,7 @@ class NpcMovementManager:
             self.manager._movement_thread_stop.wait(self.manager.goal_poll_interval)
 
     def on_entity_moved(self, entity):
-        if entity is None or self.manager.get_current_battle():
+        if entity is None:
             return
 
         moved_uid = str(getattr(entity, 'entity_uid', '') or '')
@@ -1173,6 +1189,9 @@ class NpcMovementManager:
                     continue
                 if task.get('running'):
                     continue
+                follower = self.manager.get_entity_by_uid(task_id)
+                if self.exploration_movement_blocked(follower):
+                    continue
                 task['running'] = True
                 follower_ids.append(task_id)
 
@@ -1184,11 +1203,12 @@ class NpcMovementManager:
                 )
                 rag_handler = get_entity_rag_handler()
                 llm_handler = get_llm_conversation_handler()
-                if rag_handler is not None and llm_handler is not None:
+                if rag_handler is not None:
                     rag_handler.execute_scheduled_movement(
                         task_id,
                         llm_handler,
                         triggered_by_follow=True,
+                        allow_movement_llm=llm_handler is not None,
                     )
             except Exception as exc:
                 self.manager.logger.error(

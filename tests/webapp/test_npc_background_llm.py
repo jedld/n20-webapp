@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from webapp.npc_background_llm import (
+    npc_autonomous_loops_enabled,
     npc_background_llm_enabled,
     resolve_background_llm_enabled,
 )
@@ -8,6 +9,21 @@ from webapp.npc_background_llm import (
 
 def test_npc_background_llm_enabled_defaults_true():
     assert npc_background_llm_enabled() is True
+
+
+def test_npc_autonomous_loops_enabled_defaults_true():
+    assert npc_autonomous_loops_enabled() is True
+
+
+def test_npc_autonomous_loops_enabled_respects_env(monkeypatch):
+    monkeypatch.setenv('N20_NPC_LOOPS', '0')
+    assert npc_autonomous_loops_enabled() is False
+    assert npc_background_llm_enabled() is False
+
+
+def test_npc_autonomous_loops_enabled_respects_game_yml():
+    session = SimpleNamespace(game_properties={'npc_autonomous_loops': {'enabled': False}})
+    assert npc_autonomous_loops_enabled(session) is False
 
 
 def test_npc_background_llm_enabled_respects_env(monkeypatch):

@@ -116,6 +116,16 @@ def test_run_npc_environment_ticks_skips_during_battle():
     assert result['reason'] == 'battle_active'
 
 
+def test_schedule_npc_environment_ticks_skips_when_master_switch_off(monkeypatch):
+    monkeypatch.setenv('N20_NPC_LOOPS', '0')
+    game = SimpleNamespace(
+        game_session=SimpleNamespace(game_properties={}),
+        get_current_battle=lambda: None,
+        realtime_ui_suppressed=lambda: False,
+    )
+    assert schedule_npc_environment_ticks(game) is False
+
+
 @patch('webapp.npc_environment_ticks.run_npc_environment_ticks')
 def test_schedule_npc_environment_ticks_queues_background(mock_run):
     game = MagicMock()

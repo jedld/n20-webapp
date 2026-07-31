@@ -13,6 +13,7 @@ from webapp.long_rest_npc_simulation import (
     iter_dialog_npcs,
     load_long_rest_sim_config,
     run_long_rest_npc_simulation,
+    schedule_long_rest_npc_simulation,
     summarize_conversation_buffer,
 )
 
@@ -186,6 +187,14 @@ def test_run_long_rest_npc_simulation_skips_when_background_llm_disabled(monkeyp
         llm_handler=MagicMock(),
     )
     assert result == {'skipped': True, 'reason': 'background_llm_disabled'}
+
+
+def test_schedule_long_rest_npc_simulation_skips_when_master_switch_off(monkeypatch):
+    monkeypatch.setenv('N20_NPC_LOOPS', '0')
+    game = MagicMock()
+    game.game_session = SimpleNamespace(game_properties={})
+    game.get_current_battle.return_value = None
+    assert schedule_long_rest_npc_simulation(game, force=True) is False
 
 
 @patch('webapp.long_rest_npc_simulation.iter_dialog_npcs', return_value=[])

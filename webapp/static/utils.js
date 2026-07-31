@@ -385,11 +385,17 @@ const Utils = {
     if (objects1 > 0) {
       const sig1 = $tile1.find('.object-container').map(function () {
         const $obj = $(this);
-        return String($obj.data('id') || '') + ':' + ($obj.find('img.object-image').attr('src') || '');
+        const qa = $obj.find('.object-quick-action').map(function () {
+          return String($(this).data('objectAction') || '');
+        }).get().sort().join('+');
+        return String($obj.data('id') || '') + ':' + ($obj.find('img.object-image').attr('src') || '') + ':' + qa;
       }).get().sort().join('|');
       const sig2 = $tile2.find('.object-container').map(function () {
         const $obj = $(this);
-        return String($obj.data('id') || '') + ':' + ($obj.find('img.object-image').attr('src') || '');
+        const qa = $obj.find('.object-quick-action').map(function () {
+          return String($(this).data('objectAction') || '');
+        }).get().sort().join('+');
+        return String($obj.data('id') || '') + ':' + ($obj.find('img.object-image').attr('src') || '') + ':' + qa;
       }).get().sort().join('|');
       if (sig1 !== sig2) {
         return false;
@@ -741,15 +747,13 @@ const Utils = {
     if (!$all.length) {
       return $(`.entity[data-id="${entityUid}"]`).closest('.tile');
     }
-    const stackOff = Utils.getStackCompositeOffset();
-    if (stackOff && stackOff.active) {
-      const $overlay = $all.filter(function () {
-        return $(this).closest('.map-stack-overlay').length > 0;
-      });
-      if ($overlay.length) {
-        return $overlay.first();
-      }
+    const $overlay = $all.filter(function () {
+      return $(this).closest('.map-stack-overlay').length > 0;
+    });
+    if ($overlay.length) {
+      return $overlay.first();
     }
+    const stackOff = Utils.getStackCompositeOffset();
     const $primary = $all.filter(function () {
       return $(this).attr('data-stack-overlay-entity') !== '1';
     });
@@ -787,10 +791,17 @@ const Utils = {
     let x = Number($tile.data('coords-x'));
     let y = Number($tile.data('coords-y'));
     if ($tile.closest('.map-stack-overlay').length) {
-      const stackOff = Utils.getStackCompositeOffset();
-      if (stackOff && stackOff.active) {
-        x += stackOff.x;
-        y += stackOff.y;
+      const worldX = $tile.data('world-x');
+      const worldY = $tile.data('world-y');
+      if (worldX !== undefined && worldY !== undefined) {
+        x = Number(worldX);
+        y = Number(worldY);
+      } else {
+        const stackOff = Utils.getStackCompositeOffset();
+        if (stackOff && stackOff.active) {
+          x += stackOff.x;
+          y += stackOff.y;
+        }
       }
     } else if ($tile.data('world-x') !== undefined && $tile.data('world-y') !== undefined) {
       x = Number($tile.data('world-x'));
@@ -1179,12 +1190,18 @@ const Utils = {
     var entry = narration.on_enter;
     if (!entry.text) return;
 
-    // "once" — skip if already shown for this map+title
-    if (entry.once) {
-      var key = 'narration_shown_' + (mapName || 'default') + '_' + (entry.title || '');
+    // Outcome overlays (TPK / victory) and "once" map narrations should never replay.
+    var dedupeKey = null;
+    var outcome = entry.outcome || (entry.tpk ? 'tpk' : '');
+    if (outcome === 'tpk' || outcome === 'victory' || entry.tpk) {
+      dedupeKey = 'narration_outcome_' + outcome + '_' + (entry.title || '');
+    } else if (entry.once) {
+      dedupeKey = 'narration_shown_' + (mapName || 'default') + '_' + (entry.title || '');
+    }
+    if (dedupeKey) {
       try {
-        if (localStorage.getItem(key)) return;
-        localStorage.setItem(key, '1');
+        if (localStorage.getItem(dedupeKey)) return;
+        localStorage.setItem(dedupeKey, '1');
       } catch (e) { /* private browsing / quota — show anyway */ }
     }
 

@@ -307,6 +307,21 @@ function isTypingIntoField(target) {
   );
 }
 
+function shouldSuppressSoundtrackOnClick(target) {
+  if (isTypingIntoField(target) || isTypingIntoField(document.activeElement)) {
+    return true;
+  }
+  const $target = $(target);
+  if (!$target.length) {
+    return false;
+  }
+  return $target.closest(
+    '#ai-chat-panel, #toggle-ai-chat, #console-container, .modal, ' +
+    '#jrpgDialogPanel, #narration-overlay, #command-form, .draggable-panel, ' +
+    '#local-conversation-panel, .chat-interface, .chat-transcript-actions'
+  ).length > 0;
+}
+
 function stackDescentModeActive() {
   return !!(jumpMode || ctrlHeldForDescent);
 }
@@ -395,6 +410,419 @@ function getEntityTile(entityUid) {
     return $tile.first();
   }
   return $(`.entity[data-id="${entityUid}"]`).closest('.tile');
+}
+
+let objectQuickInteractInFlight = false;
+let teleporterApproachInFlight = false;
+let talkApproachInFlight = false;
+
+function isBattleInProgress() {
+  return String($('body').attr('data-battle_in_progress') || '').toLowerCase() === 'true';
+}
+
+function neighborApproachCoords(objectX, objectY) {
+  return [
+    { x: objectX - 1, y: objectY },
+    { x: objectX + 1, y: objectY },
+    { x: objectX, y: objectY - 1 },
+    { x: objectX, y: objectY + 1 },
+  ];
+}
+
+function talkApproachCoords(npcX, npcY) {
+  const coords = [];
+  for (let dx = -2; dx <= 2; dx += 1) {
+    for (let dy = -2; dy <= 2; dy += 1) {
+      if (dx === 0 && dy === 0) {
+        continue;
+      }
+      const dist = Math.sqrt((dx * dx) + (dy * dy));
+      if (dist <= 2) {
+        coords.push({ x: npcX + dx, y: npcY + dy });
+      }
+    }
+  }
+  return coords;
+}
+
+function entityTileCoords(entityUid) {
+  const $tile = getEntityTile(entityUid);
+  if (!$tile.length) {
+    return null;
+  }
+  const x = Number($tile.data('coords-x'));
+  const y = Number($tile.data('coords-y'));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return null;
+  }
+  return { x, y };
+}
+
+function tileCoordsWithinTalkDistance(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+  const dist = Math.sqrt(((a.x - b.x) ** 2) + ((a.y - b.y) ** 2));
+  return dist <= 2;
+}
+
+function isWithinTalkTileDistance(povUid, npcUid) {
+  const povCoords = entityTileCoords(povUid);
+  const npcCoords = entityTileCoords(npcUid);
+  return tileCoordsWithinTalkDistance(povCoords, npcCoords);
+}
+
+function pathReachesTile(path, x, y) {
+  if (!Array.isArray(path) || !path.length) {
+    return false;
+  }
+  const last = path[path.length - 1];
+  return last[0] === x && last[1] === y;
+}
+
+function fetchPathToTile(from, to, callback) {
+  const localData = computeLocalPathResponse(from, to, []);
+  if (localData && localData.path && localData.placeable && pathReachesTile(localData.path, to.x, to.y)) {
+    callback(localData.path);
+    return;
+  }
+  $.ajax({
+    url: '/path',
+    type: 'GET',
+    data: Object.assign({
+      from,
+      to,
+      accumulatedPath: null,
+    }, stackPathRequestExtras(to.x, to.y)),
+    success: (data) => {
+      if (data && data.path && data.placeable !== false && pathReachesTile(data.path, to.x, to.y)) {
+        callback(data.path);
+      } else {
+        callback(null);
+      }
+    },
+    error: () => callback(null),
+  });
+}
+
+function findApproachPathToCoords(povUid, candidates, callback) {
+  const $povTile = getEntityTile(povUid);
+  if (!$povTile.length) {
+    callback(null);
+    return;
+  }
+  const from = Utils.pathCoordsFromTile
+    ? Utils.pathCoordsFromTile($povTile)
+    : { x: Number($povTile.data('coords-x')), y: Number($povTile.data('coords-y')) };
+  if (!Number.isFinite(from.x) || !Number.isFinite(from.y)) {
+    callback(null);
+    return;
+  }
+
+  let bestPath = null;
+  let pending = candidates.length;
+  if (!pending) {
+    callback(null);
+    return;
+  }
+
+  candidates.forEach((dest) => {
+    fetchPathToTile(from, dest, (path) => {
+      if (path && (!bestPath || path.length < bestPath.length)) {
+        bestPath = path;
+      }
+      pending -= 1;
+      if (pending === 0) {
+        callback(bestPath);
+      }
+    });
+  });
+}
+
+function findApproachPathForObject(povUid, objectX, objectY, callback) {
+  findApproachPathToCoords(povUid, neighborApproachCoords(objectX, objectY), callback);
+}
+
+function findApproachPathForTalk(povUid, npcX, npcY, callback) {
+  findApproachPathToCoords(povUid, talkApproachCoords(npcX, npcY), callback);
+}
+
+function findApproachPathForTeleporter(povUid, teleporterX, teleporterY, callback) {
+  findApproachPathToCoords(povUid, [{ x: teleporterX, y: teleporterY }], callback);
+}
+
+function runTeleporterApproach(povUid, tileX, tileY) {
+  if (!povUid || teleporterApproachInFlight || isBattleInProgress() || isInteractionLocked()) {
+    return;
+  }
+
+  const povCoords = entityTileCoords(povUid);
+  if (povCoords && povCoords.x === tileX && povCoords.y === tileY) {
+    return;
+  }
+
+  teleporterApproachInFlight = true;
+  const finish = () => {
+    teleporterApproachInFlight = false;
+  };
+
+  findApproachPathForTeleporter(povUid, tileX, tileY, (path) => {
+    if (!path || path.length <= 1) {
+      if (typeof Utils !== 'undefined' && Utils.showToast) {
+        Utils.showToast('Cannot reach that teleporter from here.');
+      }
+      finish();
+      return;
+    }
+    ajaxPost(
+      '/action',
+      {
+        id: povUid,
+        action: 'MoveAction',
+        opts: { action_type: 'move', source: povUid },
+        path,
+      },
+      (moveData) => {
+        if (moveData && moveData.status === 'ok') {
+          finish();
+          return;
+        }
+        if (typeof Utils !== 'undefined' && Utils.showToast) {
+          Utils.showToast('Could not move to teleporter.');
+        }
+        finish();
+      },
+      true,
+    );
+  });
+}
+
+function handleTeleporterMarkerActivate(event) {
+  const marker = event.target && event.target.closest
+    ? event.target.closest('.teleporter-marker')
+    : null;
+  if (!marker) {
+    return;
+  }
+  if (!marker.closest('.tiles-container, .map-stack-overlay-tiles')) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (typeof event.stopImmediatePropagation === 'function') {
+    event.stopImmediatePropagation();
+  }
+  const povUid = $('body').attr('data-pov-entity')
+    || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
+  if (!povUid || isBattleInProgress()) {
+    return;
+  }
+  const $tile = $(marker).closest('.tile');
+  const pathCoords = resolveStackPathCoords($tile);
+  runTeleporterApproach(povUid, pathCoords.x, pathCoords.y);
+}
+
+document.addEventListener('click', handleTeleporterMarkerActivate, true);
+
+function postObjectInteract(povUid, objectUid, objectAction, tileX, tileY, done) {
+  const opts = {
+    action_type: 'interact',
+    target: objectUid,
+    object_action: objectAction,
+  };
+  $.ajax({
+    url: '/action',
+    type: 'POST',
+    data: JSON.stringify({ id: povUid, action: 'InteractAction', opts }),
+    contentType: 'application/json',
+    success: (data) => {
+      if (data && data.status === 'ok') {
+        try { refreshTurn(); } catch (_) { }
+        try { scheduleRefreshMap(80); } catch (_) { }
+        if (typeof done === 'function') {
+          done();
+        }
+        return;
+      }
+      handleAction(povUid, 'InteractAction', opts, tileX, tileY, data);
+      if (typeof done === 'function') {
+        done();
+      }
+    },
+    error: () => {
+      if (typeof Utils !== 'undefined' && Utils.showToast) {
+        Utils.showToast('Could not interact with that object.');
+      }
+      if (typeof done === 'function') {
+        done();
+      }
+    },
+  });
+}
+
+function activateObjectQuickAction(btn) {
+  const $btn = $(btn);
+  if (!$btn.length || $btn.is(':disabled') || $btn.hasClass('is-disabled')) {
+    return;
+  }
+  const povUid = $('body').attr('data-pov-entity')
+    || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
+  if (!povUid) {
+    if (typeof Utils !== 'undefined' && Utils.showToast) {
+      Utils.showToast('Select a character first.');
+    }
+    return;
+  }
+  const objectUid = $btn.attr('data-object-id') || $btn.data('objectId');
+  const objectAction = $btn.attr('data-object-action') || $btn.data('objectAction');
+  const needsApproach = String($btn.attr('data-needs-approach') ?? $btn.data('needsApproach')) === '1';
+  const $tile = $btn.closest('.tile');
+  const pathCoords = resolveStackPathCoords($tile);
+  runObjectQuickInteract(
+    povUid,
+    objectUid,
+    objectAction,
+    needsApproach,
+    pathCoords.x,
+    pathCoords.y,
+  );
+}
+
+function handleObjectQuickActionActivate(event) {
+  const btn = event.target && event.target.closest
+    ? event.target.closest('.object-quick-action')
+    : null;
+  if (!btn) {
+    return;
+  }
+  if (!btn.closest('.tiles-container, .map-stack-overlay-tiles')) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (typeof event.stopImmediatePropagation === 'function') {
+    event.stopImmediatePropagation();
+  }
+  activateObjectQuickAction(btn);
+}
+
+document.addEventListener('click', handleObjectQuickActionActivate, true);
+
+function runObjectQuickInteract(povUid, objectUid, objectAction, needsApproach, tileX, tileY) {
+  if (!povUid || !objectUid || !objectAction || objectQuickInteractInFlight) {
+    return;
+  }
+  if (isInteractionLocked()) {
+    return;
+  }
+
+  const finish = () => {
+    objectQuickInteractInFlight = false;
+  };
+
+  const executeInteract = () => {
+    postObjectInteract(povUid, objectUid, objectAction, tileX, tileY, finish);
+  };
+
+  objectQuickInteractInFlight = true;
+
+  if (!needsApproach) {
+    executeInteract();
+    return;
+  }
+
+  findApproachPathForObject(povUid, tileX, tileY, (path) => {
+    if (!path || path.length <= 1) {
+      if (typeof Utils !== 'undefined' && Utils.showToast) {
+        Utils.showToast('Cannot reach that object from here.');
+      }
+      finish();
+      return;
+    }
+    ajaxPost(
+      '/action',
+      {
+        id: povUid,
+        action: 'MoveAction',
+        opts: { action_type: 'move', source: povUid },
+        path,
+      },
+      (moveData) => {
+        if (moveData && moveData.status === 'ok') {
+          executeInteract();
+          return;
+        }
+        if (typeof Utils !== 'undefined' && Utils.showToast) {
+          Utils.showToast('Could not move into range.');
+        }
+        finish();
+      },
+      true,
+    );
+  });
+}
+
+function runTalkWithApproach(povUid, npcUid, npcName, options) {
+  const opts = options || {};
+  if (!povUid || !npcUid || talkApproachInFlight) {
+    return;
+  }
+  if (isInteractionLocked() && !opts.forced && !opts.goalArrival) {
+    return;
+  }
+
+  const openDialog = () => {
+    if (typeof handleDialogBubbleClick === 'function') {
+      handleDialogBubbleClick(npcUid, npcName, opts);
+    }
+  };
+
+  if (opts.forced || opts.goalArrival || isBattleInProgress() || isWithinTalkTileDistance(povUid, npcUid)) {
+    openDialog();
+    return;
+  }
+
+  const npcCoords = entityTileCoords(npcUid);
+  if (!npcCoords) {
+    openDialog();
+    return;
+  }
+
+  talkApproachInFlight = true;
+  const finish = () => {
+    talkApproachInFlight = false;
+  };
+
+  findApproachPathForTalk(povUid, npcCoords.x, npcCoords.y, (path) => {
+    if (!path || path.length <= 1) {
+      if (typeof Utils !== 'undefined' && Utils.showToast) {
+        Utils.showToast('Cannot reach that character from here.');
+      }
+      finish();
+      return;
+    }
+    ajaxPost(
+      '/action',
+      {
+        id: povUid,
+        action: 'MoveAction',
+        opts: { action_type: 'move', source: povUid },
+        path,
+      },
+      (moveData) => {
+        if (moveData && moveData.status === 'ok') {
+          openDialog();
+          finish();
+          return;
+        }
+        if (typeof Utils !== 'undefined' && Utils.showToast) {
+          Utils.showToast('Could not move into range.');
+        }
+        finish();
+      },
+      true,
+    );
+  });
 }
 
 function setStackTargetPointerEvents(active) {
@@ -969,6 +1397,12 @@ function scheduleRefreshMap(delayMs = 180, options = {}) {
           try { Chat.scheduleLocalConversationPresenceRefresh(); } catch (_) { }
           try { cleanupAllPendingMoves(); } catch (_) { }
           try { cleanupMovementSprites(); } catch (_) { }
+          if (pendingViewportCenterUid) {
+            scheduleViewportCenterOnEntity(pendingViewportCenterUid, {
+              delayMs: 0,
+              maxAttempts: 15,
+            });
+          }
           resolvers.forEach((done) => {
             try { done(); } catch (_) { /* ignore */ }
           });
@@ -1273,6 +1707,13 @@ class EventQueue {
               enterGoalArrivalConversationMode(entityId, entityName);
             } else if (entityId && data.forced && typeof enterForcedConversationMode === 'function') {
               enterForcedConversationMode(entityId, entityName);
+            } else if (entityId && typeof runTalkWithApproach === 'function') {
+              const povUid = $('body').attr('data-pov-entity') || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
+              if (povUid) {
+                runTalkWithApproach(povUid, entityId, entityName);
+              } else if (typeof handleDialogBubbleClick === 'function') {
+                handleDialogBubbleClick(entityId, entityName);
+              }
             } else if (entityId && typeof handleDialogBubbleClick === 'function') {
               handleDialogBubbleClick(entityId, entityName);
             }
@@ -1745,10 +2186,12 @@ class EventQueue {
           resolve();
           break;
         case "initiative":
+          $("body").attr("data-battle_in_progress", "true");
           refreshTurnOrder();
           $("#start-initiative, #start-battle").hide();
           $("#end-battle").show();
-          if (!playPendingSoundtrackIfAny()) {
+          const isBattleStart = !data.message || data.message.index === undefined;
+          if (isBattleStart && !playPendingSoundtrackIfAny()) {
             const battleTrackUrl = $("body").data("soundtrack-url");
             const battleTrackId = $("body").data("soundtrack-id");
             const battleTrackVolume = $("body").data("soundtrack-volume");
@@ -1759,6 +2202,7 @@ class EventQueue {
           resolve();
           break;
         case "stop":
+          $("body").attr("data-battle_in_progress", "false");
           $("#turn-order").html("");
           $(".game-turn-container").hide();
           $("#battle-turn-order").fadeOut();
@@ -1780,33 +2224,13 @@ class EventQueue {
         case "switch_map":
           var map_id = data.message.map;
           var triggered_entity_uid = data.message.entity_uid || null;
-          // Reset viewport before switching maps
-          resetViewport();
           Utils.switchMap(map_id, globalCanvas, () => {
             createGlobalCanvas();
-            // After map loads, center on the entity that triggered the switch
-            // (e.g. character that stepped on a teleporter / stairs). Fall back
-            // to the current POV entity. Tile rendering may be slightly
-            // deferred, so retry briefly until the tile appears.
             const targetUid = triggered_entity_uid || (function () {
               try { return Chat.getCurrentPovEntity(); } catch (e) { return null; }
             })();
             if (targetUid) {
-              let attempts = 0;
-              const maxAttempts = 20; // ~1s total
-              const tryCenter = () => {
-                const $tile = getEntityTile(targetUid);
-                if ($tile.length) {
-                  try { centerOnEntityId(targetUid); } catch (e) {
-                    console.warn('Could not center on entity after map switch', e);
-                  }
-                  return;
-                }
-                if (++attempts < maxAttempts) {
-                  setTimeout(tryCenter, 50);
-                }
-              };
-              setTimeout(tryCenter, 50);
+              scheduleViewportCenterOnEntity(targetUid, { resetZoom: true });
             }
             try { Chat.scheduleLocalConversationPresenceRefresh(); } catch (_) { }
             resolve();
@@ -2737,10 +3161,6 @@ const switchPOV = (entity_uid, canvas) => {
     
     // Always update map display if background data is present - the server knows best
     if (data.background) {
-      // Reset viewport when map changes
-      if (isMapChange) {
-        resetViewport();
-      }
       Utils.updateMapDisplay(data, canvas);
       // Re-apply persistent status overlays after map display update
       try { if (window.PersistentEffects && window.PersistentEffects.applyAll) window.PersistentEffects.applyAll(); } catch (e) { }
@@ -2778,9 +3198,7 @@ const switchPOV = (entity_uid, canvas) => {
         // Avoid resetting .tile positioning globally; some layouts rely on absolute positioning per tile
         // If needed, specific animated tiles should clear transition in the animation handler itself
         try { updateDraggableEntityClasses(); } catch (e) { }
-        const $tile = getEntityTile(entity_uid);
-        createGlobalCanvas();
-        centerOnTile($tile);
+        scheduleViewportCenterOnEntity(entity_uid, { resetZoom: isMapChange });
         try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { }
       },
       isMapChange
@@ -3665,8 +4083,9 @@ function centerOnTile(tile, highlight = false) {
   $(".tile .entity").removeClass("focus-highlight");
   $tile.find(".entity").addClass("focus-highlight");
 
-  // Use viewport centering if coordinates are available
-  if (tileX !== undefined && tileY !== undefined) {
+  if (centerViewportOnTileElement($tile)) {
+    // DOM-based centering (stack overlays, anchors, offsets).
+  } else if (tileX !== undefined && tileY !== undefined) {
     centerViewportOnTile(tileX, tileY);
   }
   
@@ -4144,6 +4563,28 @@ function redrawMovementPathOverlay() {
   }
 }
 
+// Pan viewport by trackpad/mouse-wheel deltas (pixels).
+function panViewportByDelta(deltaX, deltaY) {
+  viewportPan.x -= deltaX;
+  viewportPan.y -= deltaY;
+  applyViewportTransform();
+}
+
+// macOS maps trackpad pinch to ctrl+wheel; plain two-finger scroll should pan.
+function resolveViewportWheelGesture(ctrlKey, deltaY) {
+  if (ctrlKey) {
+    return {
+      action: 'zoom',
+      zoomDelta: deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP,
+    };
+  }
+  return { action: 'pan' };
+}
+
+if (typeof window !== 'undefined') {
+  window.N20ViewportWheel = { resolveViewportWheelGesture };
+}
+
 // Zoom at a specific point (for scroll wheel zoom)
 function zoomAtPoint(delta, clientX, clientY) {
   const $mapArea = $('#main-map-area');
@@ -4205,6 +4646,67 @@ function centerViewportOnTile(tileX, tileY) {
   viewportPan.y = (mapRect.height / 2) - (tileCenterY * viewportZoom);
   
   applyViewportTransform();
+}
+
+/** Center using live tile geometry (handles stack overlays and layout offsets). */
+function centerViewportOnTileElement($tile, options = {}) {
+  const $mapArea = $('#main-map-area');
+  if (!$mapArea.length || !$tile || !$tile.length) {
+    return false;
+  }
+  if (options.resetZoom) {
+    viewportZoom = 1.0;
+    applyViewportTransform();
+    updateZoomDisplay();
+  }
+  const mapRect = $mapArea[0].getBoundingClientRect();
+  const tileRect = $tile[0].getBoundingClientRect();
+  if (!tileRect.width || !tileRect.height) {
+    return false;
+  }
+  const tileCenterX = tileRect.left + tileRect.width / 2;
+  const tileCenterY = tileRect.top + tileRect.height / 2;
+  const mapCenterX = mapRect.left + mapRect.width / 2;
+  const mapCenterY = mapRect.top + mapRect.height / 2;
+  viewportPan.x += mapCenterX - tileCenterX;
+  viewportPan.y += mapCenterY - tileCenterY;
+  applyViewportTransform();
+  return true;
+}
+
+let viewportCenterTimer = null;
+let pendingViewportCenterUid = null;
+
+/** Retry centering until stack overlay tiles are mounted (map switch / stairs). */
+function scheduleViewportCenterOnEntity(entityUid, options = {}) {
+  if (!entityUid) {
+    return;
+  }
+  const delayMs = Number(options.delayMs) >= 0 ? Number(options.delayMs) : 50;
+  const maxAttempts = Number(options.maxAttempts) > 0 ? Number(options.maxAttempts) : 25;
+  pendingViewportCenterUid = entityUid;
+  if (viewportCenterTimer) {
+    clearTimeout(viewportCenterTimer);
+    viewportCenterTimer = null;
+  }
+
+  let attempts = 0;
+  const resetZoom = !!options.resetZoom;
+  const tryCenter = () => {
+    viewportCenterTimer = null;
+    if (pendingViewportCenterUid !== entityUid) {
+      return;
+    }
+    const $tile = getEntityTile(entityUid);
+    if ($tile.length && centerViewportOnTileElement($tile, { resetZoom: resetZoom && attempts === 0 })) {
+      pendingViewportCenterUid = null;
+      return;
+    }
+    if (++attempts < maxAttempts) {
+      viewportCenterTimer = setTimeout(tryCenter, delayMs);
+    }
+  };
+  viewportCenterTimer = setTimeout(tryCenter, delayMs);
 }
 
 // Update zoom display in UI
@@ -4295,7 +4797,7 @@ function initViewportControls() {
     }
   });
   
-  // Scroll wheel zoom
+  // Trackpad: two-finger scroll pans; pinch (ctrl+wheel on macOS) zooms.
   $mapArea.on('wheel', function(e) {
     // Check if we're over a modal or UI element
     if ($(e.target).closest('.modal, .panel, #turn-order, #console-container, .popover-menu, .popover-menu-2, #centerActionBar').length) {
@@ -4303,9 +4805,13 @@ function initViewportControls() {
     }
     
     e.preventDefault();
-    
-    const delta = e.originalEvent.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
-    zoomAtPoint(delta, e.clientX, e.clientY);
+    const oe = e.originalEvent;
+    const gesture = resolveViewportWheelGesture(!!oe.ctrlKey, oe.deltaY);
+    if (gesture.action === 'zoom') {
+      zoomAtPoint(gesture.zoomDelta, e.clientX, e.clientY);
+      return;
+    }
+    panViewportByDelta(oe.deltaX, oe.deltaY);
   });
   
   // Prevent context menu on right-click (used for map panning) and middle
@@ -4807,7 +5313,10 @@ $(document).ready(() => {
   });
 
   let currentSoundtrackId = $("body").data("soundtrack-id");
-  $("body").on("click", () => {
+  $("body").on("click", (event) => {
+    if (shouldSuppressSoundtrackOnClick(event.target)) {
+      return;
+    }
     // Recover soundtrack state on first click.
     if (playPendingSoundtrackIfAny()) {
       if (typeof UserVolumeControl !== 'undefined') {
@@ -5067,6 +5576,9 @@ $(document).ready(() => {
   });
 
   $(".tiles-container").on("click", ".tile", function (e) {
+    if ($(e.target).closest('.object-quick-action, .object-quick-actions, .object-quick-interact-layer, .teleporter-marker').length) {
+      return;
+    }
     if (isInteractionLocked()) {
       e.stopPropagation();
       return;
@@ -5365,6 +5877,13 @@ $(document).ready(() => {
       ? pathDestY
       : (targetMode && (targetX !== coordsx || targetY !== coordsy) ? targetY : (displayY !== undefined ? displayY : coordsy));
     let tooltip = $tile.data("tooltip") || "";
+    const $tpMarker = $tile.find('.teleporter-marker[data-destination]').first();
+    if ($tpMarker.length) {
+      const dest = $tpMarker.attr('data-destination') || '';
+      if (dest) {
+        tooltip += `<p class="teleporter-destination-hint"><span style="color: var(--teleporter-marker-color, #22c55e);">→ ${dest}</span></p>`;
+      }
+    }
     if (targetMode) {
       const cacheKey = `${targetX}-${targetY}`;
       $(".highlighted").removeClass("highlighted");
@@ -5622,6 +6141,9 @@ $(document).ready(() => {
     }
     // if 'q' is pressed, toggle move path
     if (event.keyCode === 81) {
+      if (isTypingIntoField(event.target) || isTypingIntoField(document.activeElement)) {
+        return;
+      }
       // get current mouse tile coords
       if (currentPosition) {
         const coordsx = currentPosition.x;
@@ -7712,7 +8234,10 @@ $(document).ready(() => {
       activateCenterActionEntry($entry);
     }
 
-    if (entityId && typeof handleDialogBubbleClick === 'function') {
+    const povUid = $('body').attr('data-pov-entity') || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
+    if (entityId && povUid && typeof runTalkWithApproach === 'function') {
+      runTalkWithApproach(povUid, entityId, entityName);
+    } else if (entityId && typeof handleDialogBubbleClick === 'function') {
       handleDialogBubbleClick(entityId, entityName);
     }
     closeCenterActionBar();
@@ -8636,7 +9161,12 @@ $(document).ready(() => {
       dialogTrigger: true,
       onDialogTriggerClick: function (_e, $tile) {
         const entityName = $tile.find('.nameplate').text() || $tile.data('entity-name') || 'Entity';
-        handleDialogBubbleClick(entity_id, entityName);
+        const povUid = $('body').attr('data-pov-entity') || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
+        if (povUid && typeof runTalkWithApproach === 'function') {
+          runTalkWithApproach(povUid, entity_id, entityName);
+        } else if (typeof handleDialogBubbleClick === 'function') {
+          handleDialogBubbleClick(entity_id, entityName);
+        }
       },
     });
     Chat.showConversationBubble(entity_id, message, bubbleOptions);
@@ -8845,7 +9375,20 @@ $(document).ready(() => {
     event.preventDefault();
     const entityId = $(this).data('id');
     const entityName = $(this).data('name');
-    handleDialogBubbleClick(entityId, entityName);
+    const povUid = $('body').attr('data-pov-entity') || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
+    if (!povUid) {
+      if (typeof Utils !== 'undefined' && Utils.showToast) {
+        Utils.showToast('Select a character first.');
+      }
+      return;
+    }
+    runTalkWithApproach(povUid, entityId, entityName);
+  });
+
+  $(".tiles-container").on('click', '.object-quick-action', function (event) {
+    event.stopPropagation();
+    event.preventDefault();
+    activateObjectQuickAction(this);
   });
 
   // DM Entity Drag and Drop functionality
@@ -8891,7 +9434,7 @@ $(document).ready(() => {
     if (isEditMode() && !$tile.find('.entity, .npc, .object-container').length) return;
 
     // Prevent dragging if clicking on action buttons or other interactive elements
-    if ($(e.target).closest('.popover-menu, .popover-menu-2, .action-button, .add-to-turn-order, .dialog-bubble, .conversation-bubble, .close-bubble, .add-to-target').length) {
+    if ($(e.target).closest('.popover-menu, .popover-menu-2, .action-button, .add-to-turn-order, .dialog-bubble, .conversation-bubble, .close-bubble, .add-to-target, .object-quick-action, .object-quick-actions, .teleporter-marker').length) {
       return;
     }
 

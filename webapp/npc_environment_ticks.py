@@ -20,7 +20,7 @@ from webapp.long_rest_npc_simulation import (
     build_long_rest_system_context,
     iter_dialog_npcs,
 )
-from webapp.npc_background_llm import resolve_background_llm_enabled
+from webapp.npc_background_llm import resolve_background_llm_enabled, npc_autonomous_loops_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,10 @@ def load_npc_environment_tick_config(game_session) -> Dict[str, Any]:
 
     env_enabled = os.environ.get('N20_NPC_ENV_TICKS', '1').strip().lower()
     enabled = block.get('enabled', env_enabled not in ('0', 'false', 'no', 'off'))
+    enabled = bool(enabled) and npc_autonomous_loops_enabled(game_session)
 
     return {
-        'enabled': bool(enabled),
+        'enabled': enabled,
         'llm_enabled': resolve_background_llm_enabled(game_session, config_block=block),
     }
 
@@ -290,6 +291,9 @@ def npc_environment_ticks_running() -> bool:
 def schedule_npc_environment_ticks(game, *, force: bool = False) -> bool:
     """Queue a background batch of NPC environment ticks; returns False if skipped."""
     global _env_tick_running, _env_tick_pending
+
+    if not npc_autonomous_loops_enabled(getattr(game, 'game_session', None)):
+        return False
 
     cfg = load_npc_environment_tick_config(game.game_session)
     if not cfg.get('enabled') and not force:

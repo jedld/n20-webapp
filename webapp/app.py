@@ -308,6 +308,8 @@ def _shutdown_flush():
 atexit.register(_shutdown_flush)
 
 game_context_provider = GameContextProvider(game_session, current_game)
+from natural20.utils.localization import ensure_default_locale_paths
+ensure_default_locale_paths()
 i18n.set('locale', 'en')
 
 for extension in EXTENSIONS:
@@ -5955,6 +5957,7 @@ def ai_chat():
 
         # Get comprehensive game context using the LLM handler's RAG system
         context = llm_handler.get_game_context()
+        context['dm_assistant'] = True
         username = session.get('username')
         current_pov_entity = current_game.get_pov_entity_for_user(username)
         # Add basic session context
@@ -6150,6 +6153,35 @@ def ai_set_model():
             
     except Exception as e:
         logger.error(f"Error setting AI model: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/ai/set-context-window', methods=['POST'])
+def ai_set_context_window():
+    """Set LLM context window for DM and/or NPC providers (admin override)."""
+    if 'dm' not in user_role():
+        return jsonify({'success': False, 'error': 'DM access required'}), 403
+
+    try:
+        data = request.get_json(silent=True) or {}
+        raw_limit = data.get('context_window')
+        if raw_limit is None:
+            return jsonify({'success': False, 'error': 'context_window is required'}), 400
+        context_window = int(raw_limit)
+        if context_window <= 0:
+            return jsonify({'success': False, 'error': 'context_window must be positive'}), 400
+
+        target = str(data.get('target') or 'npc').strip().lower()
+        updated = {}
+        if target in ('dm', 'both'):
+            updated['dm'] = bool(llm_handler.set_context_window(context_window))
+        if target in ('npc', 'both'):
+            updated['npc'] = bool(llm_handler.set_npc_context_window(context_window))
+
+        info = llm_handler.get_provider_info()
+        info['npc_provider'] = llm_handler.get_npc_provider_info()
+        return jsonify({'success': any(updated.values()), 'updated': updated, 'info': info})
+    except Exception as e:
+        logger.error(f"Error setting AI context window: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/ai/provider-info', methods=['GET'])

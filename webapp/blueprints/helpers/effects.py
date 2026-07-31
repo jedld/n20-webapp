@@ -314,12 +314,28 @@ def _select_outcome_narration(battle, outcome):
         'on_enter': {
             'title': entry.get('title'),
             'text': text,
-            'once': False,
+            'once': True,
             'tpk': outcome == 'tpk',
             'outcome': outcome,
         }
     }
     return payload, map_name
+
+
+def _battle_end_narration_already_emitted(game_manager, outcome, map_name, title):
+    """Return True when this outcome narration was already emitted this server run."""
+    try:
+        emitted = getattr(game_manager, '_emitted_battle_end_narrations', None)
+        if emitted is None:
+            emitted = set()
+            game_manager._emitted_battle_end_narrations = emitted
+        key = f"{outcome}|{map_name or ''}|{title or ''}"
+        if key in emitted:
+            return True
+        emitted.add(key)
+        return False
+    except Exception:
+        return False
 
 
 def _on_battle_end_narrate(game_manager, session, record_narration_fn):
@@ -328,14 +344,30 @@ def _on_battle_end_narrate(game_manager, session, record_narration_fn):
     if battle is None:
         return False
     try:
+        if not battle.has_player_combatants():
+            return False
         outcome = 'tpk' if battle.tpk() else 'victory'
     except Exception:
         return False
     narration, map_name = _select_outcome_narration(battle, outcome)
     if not narration:
         return False
+    entry = (narration.get('on_enter') or {})
+    if _battle_end_narration_already_emitted(
+        game_manager,
+        outcome,
+        map_name,
+        entry.get('title'),
+    ):
+        return False
     try:
         socketio = get_socketio()
+        logger.info(
+            "Emitting battle-end %s narration overlay: title=%r map=%r",
+            outcome,
+            entry.get('title'),
+            map_name,
+        )
         socketio.emit('message', {
             'type': 'narration',
             'message': narration,

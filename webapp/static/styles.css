@@ -718,6 +718,7 @@ body.aoe-point-targeting .tile .brightness-overlay {
   width: 100%;
   height: 100%;
   background-color: black;
+  pointer-events: none;
 }
 
 /* Special Styles for bonus action equivalents */
@@ -1147,6 +1148,22 @@ input.initiative-input.form-control {
   z-index: 1;
 }
 
+.object-container:has(.object-quick-actions) {
+  z-index: 1004;
+}
+
+.object-quick-interact-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1101;
+  pointer-events: none;
+}
+
+.object-quick-interact-layer .object-quick-actions {
+  pointer-events: auto;
+}
+
 .secret-door-marker {
   position: absolute;
   inset: -4px;
@@ -1157,11 +1174,40 @@ input.initiative-input.form-control {
 .teleporter-marker {
   position: absolute;
   inset: 0;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
   border: 2px solid var(--teleporter-marker-color, #22c55e);
   box-shadow: 0 0 4px var(--teleporter-marker-color, #22c55e) inset;
   box-sizing: border-box;
-  z-index: 1001;
+  z-index: 1100;
+}
+
+.teleporter-marker-label {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 4px);
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  max-width: min(220px, 90vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: rgba(15, 23, 42, 0.94);
+  color: #f8fafc;
+  border: 1px solid var(--teleporter-marker-color, #22c55e);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 1102;
+}
+
+.tile:hover .teleporter-marker-label,
+.teleporter-marker:hover .teleporter-marker-label {
+  opacity: 1;
 }
 
 body.highlight-doors .tile.tile-door-highlight {
@@ -2019,6 +2065,116 @@ body.highlight-doors .tile.tile-door-highlight {
 .dialog-bubble-dm {
   border-color: #c9a227;
   background: rgba(255, 248, 220, 0.95);
+}
+
+/* Compact door/chest quick interact (hover, like talk bubble) */
+.object-quick-actions {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 1101;
+  pointer-events: auto;
+}
+
+.object-quick-actions.anchor-top {
+  top: 2px;
+  bottom: auto;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+}
+
+.object-quick-actions.anchor-bottom {
+  top: auto;
+  bottom: 2px;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+}
+
+.object-quick-actions.anchor-left {
+  top: 50%;
+  bottom: auto;
+  left: 2px;
+  right: auto;
+  transform: translateY(-50%);
+}
+
+.object-quick-actions.anchor-right {
+  top: 50%;
+  bottom: auto;
+  left: auto;
+  right: 2px;
+  transform: translateY(-50%);
+}
+
+.object-quick-actions.hover-only {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+
+.tile:hover .object-quick-actions.hover-only,
+.object-container:hover .object-quick-actions.hover-only,
+.object-quick-interact-layer:hover .object-quick-actions.hover-only,
+.object-quick-actions.hover-only:hover {
+  opacity: 1;
+  visibility: visible;
+}
+
+.object-quick-action {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(20, 20, 20, 0.55);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  line-height: 1;
+  pointer-events: auto;
+  position: relative;
+  z-index: 1102;
+}
+
+.object-quick-action:hover:not(:disabled) {
+  background-color: rgba(34, 34, 34, 0.78);
+  transform: scale(1.08);
+}
+
+.object-quick-actions.anchor-top .object-quick-action:hover:not(:disabled),
+.object-quick-actions.anchor-bottom .object-quick-action:hover:not(:disabled),
+.object-quick-actions.anchor-left .object-quick-action:hover:not(:disabled),
+.object-quick-actions.anchor-right .object-quick-action:hover:not(:disabled) {
+  transform: scale(1.08);
+}
+
+.object-quick-action.is-disabled,
+.object-quick-action:disabled {
+  background-color: rgba(90, 90, 90, 0.65);
+  cursor: not-allowed;
+  opacity: 0.85;
+}
+
+.object-quick-action i {
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.object-quick-action-icon {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  pointer-events: none;
+  image-rendering: auto;
 }
 
 #floating-entity-portraits.dm-portrait-dock {

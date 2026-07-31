@@ -47,6 +47,15 @@ def can_rest_for(entity_uid):
         return False
 
 
+def battle_active():
+    """Return True when a battle is currently in progress."""
+    try:
+        current_game = get_current_game()
+        return current_game.get_current_battle() is not None
+    except Exception:
+        return False
+
+
 def within_talking_distance(entity_uid):
     """Return True if the POV entity is within 2 tiles and has line of sight."""
     if not entity_uid:
@@ -289,7 +298,8 @@ def format_game_time(total_seconds):
 
 def t(key):
     import i18n
-    return i18n.t(key)
+    from natural20.utils.localization import resolve_locale_text
+    return resolve_locale_text(i18n.t, key)
 
 
 def describe_terrain(tile):
@@ -345,6 +355,7 @@ def register_template_globals(flask_app):
     flask_app.add_template_global(asset_url, name='asset_url')
     flask_app.add_template_global(controller_of, name='controller_of')
     flask_app.add_template_global(can_rest_for, name='can_rest_for')
+    flask_app.add_template_global(battle_active, name='battle_active')
     flask_app.add_template_global(within_talking_distance, name='within_talking_distance')
     flask_app.add_template_global(opacity_for, name='opacity_for')
     flask_app.add_template_global(transform_for, name='transform_for')

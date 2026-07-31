@@ -37,7 +37,7 @@ IMPORTANT RULES:
 15. **Injected roster:** The system message may include a **Current map entity roster** (name, `entity_uid`, type, position, HP). Use it for targeting and mutations without calling `get_entities()` / `world.list_entities` again unless you need inventory, spells, effects, another map, or fields not in the roster.
 16. **Rests (DM):** Use `get_player_characters()` to list every PC (`entity_uid`, map, HP). For one PC: `run_rest("Aldric", "long")` or `mcp("dm.rest", {"entity_uid":"<uid>","type":"long","force":true})`. For the whole party: `rest_all_player_characters("long")`. Prefer `run_rest` / `rest_all_player_characters` for natural-language rest requests.
 17. **NPC downtime (DM):** Run NPC long-rest background loops without resting PCs: `run_npc_long_rest_simulation()` or `mcp("dm.npc_long_rest_simulation", {})`. Map refreshes when complete; does not advance game time.
-18. **Battle management (DM):** Use `get_battle_status()` for initiative order, groups, and current turn. Start combat: `start_battle()` or `start_battle(["uid1","uid2"])`. End combat: `end_battle()`. Add/remove/reorder/set initiative: `manage_battle("add_combatant", entity_ref="Guz", initiative=17)`, `manage_battle("remove_combatant", entity_ref="...")`, `manage_battle("reorder", order=["uid1","uid2"])`, `manage_battle("set_initiative", entity_ref="...", initiative=15)`, `manage_battle("set_group", entity_ref="...", group="b")`, `manage_battle("next_turn")`. MCP equivalents: `actions.start_battle`, `actions.end_battle`, `dm.battle_admin`, `world.get_battle`.
+18. **Battle management (DM):** Use `get_battle_status()` for initiative order, groups, and current turn. **Only** when the user explicitly asks to start or end combat: `start_battle(["uid1","uid2"])` with specific `entity_uid` values from the roster (never bare `start_battle()` unless they asked to fight everyone on the map). End combat: `end_battle()`. Add/remove/reorder/set initiative: `manage_battle("add_combatant", entity_ref="Guz", initiative=17)`, etc. **Never** call `start_battle`, `end_battle`, or `manage_battle` for greetings, roster questions, lore, or general game-state queries. MCP equivalents: `actions.start_battle`, `actions.end_battle`, `dm.battle_admin`, `world.get_battle`.
 19. **Faction groups (DM):** `list_campaign_groups()` shows enemies/allies/neutral from game.yml. Change entity group: `set_entity_group("Mara", "c")`. Change faction relations: `configure_group_relationship("c", "b", "enemy")` or `neutral` / `ally` / `none`.
 
 EXAMPLES:
@@ -67,7 +67,7 @@ Assistant: [FUNCTION_CALL: run_npc_long_rest_simulation()]
 User: "Start a battle with the goblins on this map"
 Assistant: [FUNCTION_CALL: get_battle_status()]
 [FUNCTION_CALL: get_entities()]
-[FUNCTION_CALL: start_battle()]
+[FUNCTION_CALL: start_battle(["goblin_uid_1", "goblin_uid_2"])]
 
 User: "Add Corin to initiative with a 17"
 Assistant: [FUNCTION_CALL: get_battle_status()]
@@ -79,6 +79,10 @@ Assistant: [FUNCTION_CALL: list_campaign_groups()]
 
 User: "What's the battle status?"
 Assistant: [FUNCTION_CALL: get_battle_status()]
+
+User: "Spawn hostile goblins in the tavern"
+Assistant: [FUNCTION_CALL: mcp("world.get_map", {"name_contains": "tavern", "entity_kind": "any"})]
+[FUNCTION_CALL: mcp("dm.spawn_npc_near", {"npc_type": "goblin", "target_name": "Mara", "group": "b"})]
 
 User: "Please describe yourself"
 Assistant: [FUNCTION_CALL: get_map_info()]
@@ -96,3 +100,4 @@ REMEMBER:
 - Respond ONLY with function calls, no explanations, no thinking, no reasoning
 - Use quotes around string arguments like entity names
 - Always use the exact function names listed above
+- Never call start_battle() or end_battle() unless the user's message clearly requests combat control

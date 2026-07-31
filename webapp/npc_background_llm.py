@@ -19,6 +19,8 @@ def npc_background_llm_enabled(game_session: Any = None) -> bool:
     Controlled by ``N20_NPC_BACKGROUND_LLM`` (default enabled) and optional
     ``game.yml`` block ``npc_background_llm.enabled``.
     """
+    if not npc_autonomous_loops_enabled(game_session):
+        return False
     enabled = _env_enabled('N20_NPC_BACKGROUND_LLM', default='1')
     if game_session is None:
         return enabled
@@ -28,6 +30,25 @@ def npc_background_llm_enabled(game_session: Any = None) -> bool:
     if isinstance(block, dict) and 'enabled' in block:
         return bool(block.get('enabled'))
     return enabled
+
+
+def npc_autonomous_loops_enabled(game_session: Any = None) -> bool:
+    """Master switch for background NPC loops (environment ticks, long-rest sim).
+
+    When disabled, autonomous loops are skipped even for DM ``force`` triggers.
+    Controlled by ``N20_NPC_LOOPS`` and optional ``game.yml`` block
+    ``npc_autonomous_loops.enabled``.
+    """
+    if not _env_enabled('N20_NPC_LOOPS', default='1'):
+        return False
+    if game_session is None:
+        return True
+
+    props = getattr(game_session, 'game_properties', None) or {}
+    block = props.get('npc_autonomous_loops') or {}
+    if isinstance(block, dict) and 'enabled' in block:
+        return bool(block.get('enabled'))
+    return True
 
 
 def resolve_background_llm_enabled(

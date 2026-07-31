@@ -780,6 +780,13 @@ class GameContextProvider:
         if npc_long_rest_simulation_running():
             return {'success': False, 'error': 'NPC long rest simulation is already running'}
 
+        from webapp.npc_background_llm import npc_autonomous_loops_enabled
+        if not npc_autonomous_loops_enabled(self.game_session):
+            return {
+                'success': False,
+                'error': 'NPC autonomous loops are disabled (npc_autonomous_loops / N20_NPC_LOOPS)',
+            }
+
         if self.current_game.get_current_battle() is not None:
             return {'success': False, 'error': 'Cannot run NPC long rest simulation during combat'}
 

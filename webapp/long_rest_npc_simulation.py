@@ -18,7 +18,7 @@ from natural20.entity import Entity
 from natural20.player_character import PlayerCharacter
 from natural20.utils.conversation import entity_label
 
-from webapp.npc_background_llm import resolve_background_llm_enabled
+from webapp.npc_background_llm import resolve_background_llm_enabled, npc_autonomous_loops_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ def load_long_rest_sim_config(game_session) -> Dict[str, Any]:
 
     env_enabled = os.environ.get('N20_LONG_REST_NPC_SIM', '1').strip().lower()
     enabled = block.get('enabled', env_enabled not in ('0', 'false', 'no', 'off'))
+    enabled = bool(enabled) and npc_autonomous_loops_enabled(game_session)
 
     try:
         loops = int(block.get('loops_per_npc') or os.environ.get('N20_LONG_REST_NPC_LOOPS') or _DEFAULT_LOOPS)
@@ -672,9 +673,13 @@ def schedule_long_rest_npc_simulation(
 ) -> bool:
     """Queue background long-rest NPC simulation; returns False if skipped.
 
-    When ``force`` is True (DM manual trigger), runs even if disabled in game.yml.
+    When ``force`` is True (DM manual trigger), runs even if disabled in game.yml
+    unless the master ``npc_autonomous_loops`` switch is off.
     """
     global _long_rest_sim_running
+
+    if not npc_autonomous_loops_enabled(getattr(game, 'game_session', None)):
+        return False
 
     config = load_long_rest_sim_config(game.game_session)
     if not config.get('enabled') and not force:

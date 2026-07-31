@@ -1,0 +1,23 @@
+{% if pov_entity and obj.get('quick_interact') %}
+  <div class="object-quick-actions hover-only{% if obj.get('quick_interact_anchor') %} anchor-{{ obj['quick_interact_anchor'] }}{% endif %}"
+       aria-label="Object interactions">
+    {% for qa in obj['quick_interact'] %}
+      <button type="button"
+              class="object-quick-action{% if qa.get('disabled') %} is-disabled{% endif %}"
+              title="{{ qa.get('label', qa['action'])|capitalize }}{% if qa.get('disabled_text') %} — {{ t(qa['disabled_text']) }}{% endif %}"
+              data-object-id="{{ obj['id'] }}"
+              data-object-action="{{ qa['action'] }}"
+              data-needs-approach="{{ '1' if qa.get('needs_approach') else '0' }}"
+              {% if qa.get('disabled') %}disabled{% endif %}>
+        {% if qa.get('image') %}
+          <img class="object-quick-action-icon"
+               src="{{ url_for('static', filename='actions/' ~ qa['image'] ~ '.png') }}"
+               alt=""
+               aria-hidden="true" />
+        {% else %}
+          <i class="glyphicon glyphicon-{{ qa.get('icon', 'wrench') }}"></i>
+        {% endif %}
+      </button>
+    {% endfor %}
+  </div>
+{% endif %}
