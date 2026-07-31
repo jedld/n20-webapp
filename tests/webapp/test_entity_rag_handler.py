@@ -1678,6 +1678,48 @@ class TestEntityRAGHandler(unittest.TestCase):
         self.assertIn('Standard Room 1', prompt)
         self.assertIn('upstairs (tavern_2nd_floor)', prompt)
 
+    def test_map_landmarks_prompt_includes_current_location(self):
+        battle_map = Mock()
+        battle_map.name = 'town_market'
+        battle_map.properties = {
+            'map_annotations': [
+                {
+                    'id': 'taproom',
+                    'label': 'Prancing Flagon taproom',
+                    'kind': 'area',
+                    'bounds': {'x1': 7, 'y1': 16, 'x2': 14, 'y2': 24},
+                    'description': 'Main common room.',
+                },
+                {
+                    'id': 'behind_the_bar',
+                    'label': 'Behind the bar',
+                    'kind': 'area',
+                    'bounds': {'x1': 6, 'y1': 16, 'x2': 10, 'y2': 21},
+                    'description': 'Staff side of the counter.',
+                },
+            ],
+        }
+        battle_map.map_annotations.return_value = battle_map.properties['map_annotations']
+        battle_map.map_annotation_by_id.side_effect = lambda ann_id: next(
+            (ann for ann in battle_map.properties['map_annotations'] if ann['id'] == ann_id),
+            None,
+        )
+        battle_map.map_annotations_at.return_value = []
+        battle_map.position_of.return_value = (9, 20)
+
+        self.mock_game_session.maps = {'town_market': battle_map}
+
+        npc = Mock()
+        npc.properties = {'known_places': ['taproom']}
+
+        self.mock_current_game.get_map_for_entity.return_value = battle_map
+
+        prompt = self.rag_handler.map_landmarks_prompt_for_entity(npc)
+
+        self.assertIn('Current location on town_market at grid 9,20', prompt)
+        self.assertIn('Behind the bar', prompt)
+        self.assertNotIn('- (here) Behind the bar', prompt)
+
     def test_campaign_setting_prompt_from_game_properties(self):
         self.mock_game_session.game_properties = {
             'campaign_setting': {

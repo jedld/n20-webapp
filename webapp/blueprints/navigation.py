@@ -24,6 +24,7 @@ from flask import (
 from natural20.ai.path_compute import PathCompute
 from natural20.ai.pathfinding_cost_map import build_pathfinding_snapshot
 from natural20.player_character import PlayerCharacter
+from webapp.pov_utils import build_portrait_render_context, dm_pov_portrait_entities
 from natural20.web.json_renderer import JsonRenderer
 from natural20.web.stack_renderer import build_stack_render_layers, stack_for_map, stack_floors_for_ui, annotate_base_tiles_with_stack_overlay_entities
 
@@ -185,12 +186,8 @@ def _difficult_terrain_lookup(battle_map, entity, battle):
 def pov_entities():
     current_game = get_current_game()
     if 'dm' in user_role():
-        pov_list = []
-        for battle_map in current_game.maps.values():
-            for entity in battle_map.entities:
-                if isinstance(entity, PlayerCharacter) and entity not in pov_list:
-                    pov_list.append(entity)
-        return pov_list
+        battle_map = current_game.get_map_for_user(session['username'])
+        return dm_pov_portrait_entities(current_game, battle_map)
     return entities_controlled_by(session['username'])
 
 
@@ -287,6 +284,7 @@ def index():
             current_game.update_ambient_soundtrack(entity=current_pov_entity)
         except Exception:
             pass
+    portrait_ctx = build_portrait_render_context(current_game, session['username'], user_role())
     return render_template(
         'index.html',
         tiles=my_2d_array,
@@ -315,8 +313,8 @@ def index():
         left_offset_px=left_offset_px,
         available_maps=available_maps,
         user_entity_ids=[e.entity_uid for e in entities_controlled_by(session['username'])],
-        pov_entities=pov_entities(),
         current_pov=current_pov_entity.entity_uid if current_pov_entity else None,
+        **portrait_ctx,
         game_session=current_game.game_session,
         username=session['username'],
         role=user_role(),
@@ -766,6 +764,80 @@ def jump_info():
         return jsonify(error=str(e)), 500
 
 
+@navigation_bp.route('/switch_pov', methods=['POST'], endpoint='switch_pov')
+def switch_pov():
+    from webapp.pov_utils import user_may_set_pov_entity
+
+    current_game = get_current_game()
+    tile_px = get_tile_px()
+    active_effects = get_active_effects()
+    active_effects_map = get_active_effects_map()
+    battle_map = current_game.get_map_for_user(session['username'])
+    if request.is_json:
+        entity_id = (request.get_json(silent=True) or {}).get('entity_uid')
+    else:
+        entity_id = request.form.get('entity_uid')
+    entity = current_game.get_entity_by_uid(entity_id)
+    if entity is None:
+        return jsonify(error='Entity not found'), 404
+    if not user_may_set_pov_entity(
+        current_game,
+        session['username'],
+        user_role(),
+        entity,
+        battle_map=battle_map,
+    ):
+        return jsonify(error='Forbidden'), 403
+
+    entity_battle_map = current_game.get_map_for_entity(entity)
+    if entity_battle_map is None:
+        return jsonify(error='Entity is not currently on a map'), 409
+
+    current_game.set_pov_entity_for_user(session['username'], entity)
+    map_changed = battle_map != entity_battle_map
+    if map_changed:
+        current_game.switch_map_for_user(session['username'], entity_battle_map.name)
+    background = current_game.get_background_image_for_user(session['username'])
+    map_width, map_height = entity_battle_map.size
+    tiles_dimension_height = map_height * tile_px
+    tiles_dimension_width = map_width * tile_px
+    dm_active = False
+    map_default = None
+    map_defaults = []
+    if map_changed:
+        try:
+            map_defaults = map_default_effect_payloads(entity_battle_map)
+            map_default = map_defaults[0] if map_defaults else None
+        except Exception:
+            map_default = None
+        try:
+            game_key = (
+                getattr(current_game.game_session, 'root_path', None)
+                or get_level()
+            )
+            dm_active = has_enabled_effect_payloads(active_effects.get(game_key, {}).values())
+            try:
+                dm_active = dm_active or has_enabled_effect_payloads(
+                    active_effects_map.get(game_key, {}).get(entity_battle_map.name, {}).values()
+                )
+            except Exception:
+                pass
+        except Exception:
+            dm_active = False
+    return jsonify(
+        background=f"assets/{background}",
+        name=entity_battle_map.name,
+        pov_entity=entity_id,
+        image_offset_px=entity_battle_map.image_offset_px,
+        height=tiles_dimension_height,
+        width=tiles_dimension_width,
+        map_default_effect=map_default,
+        map_default_effects=map_defaults,
+        dm_active=dm_active,
+        special_effects_enabled=special_effects_enabled(),
+    )
+
+
 @navigation_bp.route('/refresh-portraits', methods=['GET'], endpoint='refresh_portraits')
 def refresh_portraits():
     """Endpoint to refresh the floating entity portraits."""
@@ -773,11 +845,10 @@ def refresh_portraits():
     username = session.get('username')
     if not username:
         return "", 200
-    current_pov_entity = current_game.get_pov_entity_for_user(username)
+    portrait_ctx = build_portrait_render_context(current_game, username, user_role())
     return render_template(
         'floating_portraits.html',
-        pov_entities=pov_entities(),
-        current_pov_entity=current_pov_entity,
+        **portrait_ctx,
     )
 
 

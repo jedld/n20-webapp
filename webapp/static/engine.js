@@ -29,6 +29,9 @@ let keyboardMovementPivotPoints = [];
 let globalCanvas = null;
 let globalCtx = null;
 let talkToEntityMode = false; // Flag to track when user is talking to an entity
+let dialogPartnerEntityId = null;
+let dialogNpcManualMode = false;
+let currentDialogNpcId = null;
 let forcedConversationMode = false; // Blocks movement/actions during scripted confrontations
 let goalArrivalConversationMode = false; // NPC-initiated arrival debrief; lighter than forced mode
 function isInteractionLocked() {
@@ -569,7 +572,7 @@ function actionHtmlHasActionableContent(html) {
     // at least one of: a regular action button, end-turn, talk button,
     // or DM delete control.
     const actionable = $probe.find(
-      '.action-button, .action-end-turn, .talk-action, .delete-entity-btn'
+      '.action-button, .action-end-turn, .talk-action, .jrpg-dialog-action, .set-pov-action, .delete-entity-btn'
     );
     return actionable.length > 0;
   } catch (e) {
@@ -708,6 +711,10 @@ function shouldShowMessageInJrpgDialog(entityId, targets, options) {
   const currentDialogEntityId = $('#dialogEntityName').data('entity-id');
   const currentPovEntity = Chat.getCurrentPovEntity();
 
+  if (goalArrivalConversationMode && currentDialogEntityId && entityId === currentDialogEntityId) {
+    return true;
+  }
+
   if (options.perceptionCheck && options.perceptionCheck.target_uid) {
     if (currentDialogEntityId && options.perceptionCheck.target_uid === currentDialogEntityId) {
       return true;
@@ -744,11 +751,16 @@ function tryPlayConversationTts(message) {
       && TTSPlayer.hasReplyPlayed(replyId)) {
     return;
   }
+  const deliveryMode = typeof TTSPlayer.getDeliveryMode === 'function'
+    ? TTSPlayer.getDeliveryMode()
+    : '';
+  // Async/stream/manual replies autoplay via tts_ready / stream socket events only.
+  if (deliveryMode === 'async' || deliveryMode === 'stream' || deliveryMode === 'manual') {
+    return;
+  }
   const shouldPlay = (
-    (typeof TTSPlayer.shouldAutoplay === 'function' && TTSPlayer.shouldAutoplay())
-    || (typeof TTSPlayer.getDeliveryMode === 'function'
-      && (TTSPlayer.getDeliveryMode() === 'stream' || TTSPlayer.getDeliveryMode() === 'async'))
-  );
+    typeof TTSPlayer.shouldAutoplay === 'function' && TTSPlayer.shouldAutoplay()
+  ) || deliveryMode === 'sync';
   if (!shouldPlay) {
     return;
   }
@@ -1363,6 +1375,19 @@ class EventQueue {
             // Show toast but don't block the queue for the full duration
             showMapToast(text, position, source, 10000);
           } catch (e) { console.warn('Failed to show message_toaster', e, data); }
+          resolve();
+          break;
+        }
+        case "contextual_sound": {
+          try {
+            showContextualSound(
+              data && data.message,
+              data && (data.position || data.pos || data.coords),
+              data && (data.source || data.entity_id),
+              data && data.duration_ms,
+              data && data.label,
+            );
+          } catch (e) { console.warn('Failed to show contextual_sound', e, data); }
           resolve();
           break;
         }
@@ -2025,6 +2050,17 @@ class EventQueue {
           } catch (e) { console.warn('Inline message_toaster failed', e, entry); }
           // Continue immediately
           animateFunction(animationLog, idx + 1);
+        } else if (t === 'contextual_sound') {
+          try {
+            showContextualSound(
+              entry && entry.message,
+              entry && (entry.position || entry.pos || entry.coords),
+              entry && (entry.source || entry.entity_id),
+              entry && entry.duration_ms,
+              entry && entry.label,
+            );
+          } catch (e) { console.warn('Inline contextual_sound failed', e, entry); }
+          animateFunction(animationLog, idx + 1);
         } else {
           // Unknown inline event; skip
           console.warn('Skipping unknown inline animation entry:', t);
@@ -2521,11 +2557,14 @@ function enqueueTileRefresh(opts = {}) {
 }
 
 // Helper: show an on-map "toaster" message near a tile coordinate or an entity id
-function showMapToast(text, position, sourceEntityId = null, durationMs = 10000) {
+function showMapToast(text, position, sourceEntityId = null, durationMs = 10000, options = null) {
   try {
+    const opts = (options && typeof options === 'object') ? options : {};
     const dur = typeof durationMs === 'number' && durationMs > 0 ? durationMs : 10000;
     const safeText = (text == null) ? '' : String(text);
     const expiryTs = Date.now() + dur;
+    const extraClass = opts.className || '';
+    const prefix = opts.prefix || '';
 
     const resolveTile = () => {
       // 1) By explicit grid position [x, y] or {x, y}
@@ -2553,8 +2592,14 @@ function showMapToast(text, position, sourceEntityId = null, durationMs = 10000)
         const $existing = $tile.find('.map-toast');
         if ($existing.length) { try { $existing.remove(); } catch (_) { } }
 
-        const $toast = $('<div class="map-toast"></div>').text(safeText);
+        const $toast = $('<div class="map-toast"></div>');
+        if (extraClass) $toast.addClass(extraClass);
+        if (prefix) {
+          $('<span class="map-toast-prefix"></span>').text(prefix).appendTo($toast);
+        }
+        $('<span class="map-toast-text"></span>').text(safeText).appendTo($toast);
         $toast.attr('data-toast-expiry', expiryTs);
+        if (extraClass) $toast.attr('data-toast-class', extraClass);
         // Position above the tile center
         $toast.css({ position: 'absolute', left: '50%', top: '-6px', transform: 'translate(-50%, -100%)' });
         $tile.append($toast);
@@ -2584,6 +2629,14 @@ function showMapToast(text, position, sourceEntityId = null, durationMs = 10000)
   } catch (e) {
     console.warn('showMapToast failed', e, { text, position, sourceEntityId, durationMs });
   }
+}
+
+function showContextualSound(text, position, sourceEntityId = null, durationMs = 4000, label = null) {
+  const prefix = label ? `${label}: ` : '♪ ';
+  showMapToast(text, position, sourceEntityId, durationMs || 4000, {
+    className: 'contextual-sound',
+    prefix,
+  });
 }
 
 // Add debug panel for monitoring event queue
@@ -4322,7 +4375,11 @@ function initViewportControls() {
 
 // Check if user is DM
 function isDM() {
-  return $('body').data('role') && $('body').data('role').includes('dm');
+  const role = $('body').attr('data-role') || $('body').data('role') || '';
+  if (Array.isArray(role)) {
+    return role.some((entry) => String(entry).toLowerCase().includes('dm'));
+  }
+  return String(role).toLowerCase().includes('dm');
 }
 
 function isEditMode() {
@@ -5071,7 +5128,12 @@ $(document).ready(() => {
       }
     } else {
       if (e.metaKey || e.ctrlKey) {
-        enqueueTileRefresh({ pov: true, x: coordsx, y: coordsy });
+        const focusEntityId = $tile.data('coords-id') || null;
+        if (isDM() && focusEntityId) {
+          switchPOV(focusEntityId, globalCanvas);
+        } else {
+          enqueueTileRefresh({ pov: true, x: coordsx, y: coordsy, entity_uid: focusEntityId });
+        }
       } else if (e.shiftKey && isEditMode()) {
         // Fixture placement uses Shift+label drag handles in edit_mode.js.
       } else if (e.metaKey || e.shiftKey) {
@@ -5235,7 +5297,47 @@ $(document).ready(() => {
 
 
   // Character switcher
-  $('#floating-entity-portraits').on('click', '.floating-entity-portrait', function () {
+  window.initDmPortraitSections = function initDmPortraitSections() {
+    const $dock = $('#floating-entity-portraits.dm-portrait-dock');
+    if (!$dock.length) {
+      return;
+    }
+
+    $dock.find('.dm-portrait-section').each(function () {
+      const $section = $(this);
+      const key = $section.data('section');
+      const storageKey = `natural20.dmPortraitSection.${key}`;
+      const stored = window.localStorage.getItem(storageKey);
+      if (stored === '1') {
+        $section.removeClass('collapsed');
+        $section.find('.dm-portrait-section-toggle').attr('aria-expanded', 'true');
+      } else if (stored === '0') {
+        $section.addClass('collapsed');
+        $section.find('.dm-portrait-section-toggle').attr('aria-expanded', 'false');
+      }
+    });
+
+    $dock.off('click.dmPortraitToggle', '.dm-portrait-section-toggle');
+    $dock.on('click.dmPortraitToggle', '.dm-portrait-section-toggle', function (event) {
+      event.stopPropagation();
+      event.preventDefault();
+      const $section = $(this).closest('.dm-portrait-section');
+      const key = $section.data('section');
+      $section.toggleClass('collapsed');
+      const expanded = !$section.hasClass('collapsed');
+      $(this).attr('aria-expanded', expanded ? 'true' : 'false');
+      if (key) {
+        window.localStorage.setItem(`natural20.dmPortraitSection.${key}`, expanded ? '1' : '0');
+      }
+    });
+  };
+
+  initDmPortraitSections();
+
+  $('#floating-entity-portraits').on('click', '.floating-entity-portrait', function (event) {
+    if ($(event.target).closest('.dm-portrait-section-toggle').length) {
+      return;
+    }
     const entity_uid = $(this).data('id');
     switchPOV(entity_uid, globalCanvas);
     setTimeout(() => {
@@ -7598,18 +7700,142 @@ $(document).ready(() => {
     closeCenterActionBar();
   });
 
+  $(document).on('click', '.jrpg-dialog-action', function (event) {
+    event.stopPropagation();
+    event.preventDefault();
+    const $entry = $(this).closest('.center-action-entry');
+    const $tile = $(this).closest('.tile');
+    const entityId = $entry.data('entityUid') || $tile.data('coords-id');
+    const entityName = $(this).data('entityName') || $entry.find('.popover-actions-title').text() || entityId;
+
+    if ($entry.length) {
+      activateCenterActionEntry($entry);
+    }
+
+    if (entityId && typeof handleDialogBubbleClick === 'function') {
+      handleDialogBubbleClick(entityId, entityName);
+    }
+    closeCenterActionBar();
+  });
+
+  $(document).on('click', '.set-pov-action', function (event) {
+    event.stopPropagation();
+    event.preventDefault();
+    const $entry = $(this).closest('.center-action-entry');
+    const $tile = $(this).closest('.tile');
+    const entityId = $entry.data('entityUid') || $tile.data('coords-id');
+    if ($entry.length) {
+      activateCenterActionEntry($entry);
+    }
+    if (entityId) {
+      switchPOV(entityId, globalCanvas);
+    }
+    closeCenterActionBar();
+  });
+
   $(document).on('click', '.conversation-bubble', function (event) {
     event.stopPropagation();
     Utils.toggleBubble(this);
   });
 
   // Handle dialog bubble clicks for dialog-capable entities
+  function getDialogPartnerEntityId() {
+    const selected = ($('#dialogPartnerSelect').val() || dialogPartnerEntityId || '').trim();
+    if (selected) {
+      return selected;
+    }
+    return Chat.getCurrentPovEntity() || null;
+  }
+
+  function updateDialogManualModeUi() {
+    const npcName = $('#dialogEntityName').text() || 'this NPC';
+    if (dialogNpcManualMode) {
+      $('body').addClass('dialog-manual-mode-active');
+      $('#dialogChatInput').attr(
+        'placeholder',
+        `Speak as ${npcName}… (manual mode — no LLM)`,
+      );
+    } else {
+      $('body').removeClass('dialog-manual-mode-active');
+      $('#dialogChatInput').attr('placeholder', 'Say something, or *describe an action*');
+    }
+  }
+
+  function loadDialogDmNpcControls(entityId, entity) {
+    const $panel = $('#dialogDmNpcControls');
+    const $profilePanel = $('#dialogEntityProfilePanel');
+    if (!isDM() || !entity || !entity.is_npc) {
+      $panel.hide();
+      $profilePanel.removeClass('has-dm-npc-controls');
+      dialogNpcManualMode = false;
+      currentDialogNpcId = null;
+      $('body').removeClass('dialog-manual-mode-active');
+      return;
+    }
+
+    currentDialogNpcId = entityId;
+    $panel.show();
+    $profilePanel.addClass('has-dm-npc-controls');
+    dialogNpcManualMode = entity.conversation_mode === 'manual';
+    $('#dialogManualModeToggle').prop('checked', dialogNpcManualMode);
+    updateDialogManualModeUi();
+
+    const $partner = $('#dialogPartnerSelect');
+    $partner.empty().append('<option value="">Conversation partner…</option>');
+    const candidates = entity.partner_candidates || [];
+    candidates.forEach((row) => {
+      const safeName = $('<div>').text(row.name || row.id).html();
+      $partner.append(`<option value="${row.id}">${safeName}</option>`);
+    });
+    const pov = Chat.getCurrentPovEntity();
+    const defaultPartner = candidates.some((row) => row.id === pov) ? pov : '';
+    if (defaultPartner) {
+      $partner.val(defaultPartner);
+      dialogPartnerEntityId = defaultPartner;
+    } else {
+      dialogPartnerEntityId = null;
+    }
+    $partner.toggle(candidates.length > 0);
+  }
+
+  function setDialogNpcConversationMode(entityId, mode) {
+    if (!entityId || !isDM()) {
+      return;
+    }
+    $.ajax({
+      url: '/admin/npc_conversation_mode',
+      type: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({ entity_id: entityId, mode }),
+      success: (data) => {
+        if (!data || !data.success) {
+          Chat.addDialogMessage('system', (data && data.error) || 'Failed to update conversation mode.', 'system');
+          return;
+        }
+        dialogNpcManualMode = data.conversation_mode === 'manual';
+        $('#dialogManualModeToggle').prop('checked', dialogNpcManualMode);
+        updateDialogManualModeUi();
+        const label = dialogNpcManualMode ? 'Manual mode enabled — you control this NPC.' : 'LLM mode restored for this NPC.';
+        Chat.addDialogMessage('system', label, 'system');
+        if (data.partner_candidates) {
+          loadDialogDmNpcControls(entityId, data);
+        }
+      },
+      error: () => {
+        Chat.addDialogMessage('system', 'Failed to update conversation mode.', 'system');
+      },
+    });
+  }
+
   function handleDialogBubbleClick(entityId, entityName, options) {
     const opts = options || {};
     console.log('Dialog bubble clicked for entity:', entityId, entityName);
 
     // Set talk to entity mode flag
     talkToEntityMode = true;
+    currentDialogNpcId = entityId;
+    $('#dialogEntityName').text(entityName || entityId).data('entity-id', entityId);
+    $('#jrpgDialogPanel').show();
     if (opts.forced) {
       forcedConversationMode = true;
       $('body').addClass('forced-conversation-active');
@@ -7620,9 +7846,6 @@ $(document).ready(() => {
       $('body').addClass('goal-arrival-active');
       $('#dialogNoResponse').show();
     }
-
-    // Show the JRPG dialog panel
-    $('#jrpgDialogPanel').show();
 
     // Update panel title to indicate talk to entity mode
     $('#jrpgDialogPanelLabel').text('Talk to Entity');
@@ -7796,6 +8019,7 @@ $(document).ready(() => {
           setDialogEntityDescription(entity.description, entity.description_suppressed);
 
           updateMerchantDialogButton(entity);
+          loadDialogDmNpcControls(entityId, entity);
         } else {
           // Set default values if entity info not available
           $('#dialogEntityHP').text('0/0');
@@ -7805,6 +8029,7 @@ $(document).ready(() => {
           $('#dialogEntityClass').text('Unknown');
           setDialogEntityDescription(null, isDialogDescriptionSuppressed());
           updateMerchantDialogButton(null);
+          loadDialogDmNpcControls(entityId, null);
         }
       },
       error: () => {
@@ -7816,9 +8041,26 @@ $(document).ready(() => {
         $('#dialogEntityClass').text('Unknown');
         setDialogEntityDescription(null, isDialogDescriptionSuppressed());
         updateMerchantDialogButton(null);
+        loadDialogDmNpcControls(entityId, null);
       }
     });
   }
+
+  $('#dialogManualModeToggle').off('change.dialogManualMode').on('change.dialogManualMode', function () {
+    const entityId = $('#dialogEntityName').data('entity-id');
+    if (!entityId) {
+      return;
+    }
+    setDialogNpcConversationMode(entityId, $(this).is(':checked') ? 'manual' : 'llm');
+  });
+
+  $('#dialogPartnerSelect').off('change.dialogPartner').on('change.dialogPartner', function () {
+    dialogPartnerEntityId = ($(this).val() || '').trim() || null;
+    const entityId = $('#dialogEntityName').data('entity-id');
+    if (entityId) {
+      loadDialogHistory(entityId);
+    }
+  });
 
   $('#dialogBrowseShop').off('click.merchantShop').on('click.merchantShop', function () {
     const merchantUid = $('#dialogEntityName').data('entity-id');
@@ -8110,12 +8352,27 @@ $(document).ready(() => {
             clearDialogWaitingState();
           }
         } else if (!data.success) {
-          Chat.addDialogMessage('system', 'Skill check failed.', 'system');
+          const err = (data && data.error) ? String(data.error) : 'Skill check failed.';
+          Chat.addDialogMessage('system', err, 'system');
+          if (typeof Chat.setLocalConversationStatus === 'function') {
+            Chat.setLocalConversationStatus(err);
+          }
         }
       },
-      error: () => {
+      error: (xhr) => {
         removeWaitingIndicator(waitingId);
-        Chat.addDialogMessage('system', 'Skill check failed.', 'system');
+        let err = 'Skill check failed.';
+        try {
+          const body = xhr.responseJSON || JSON.parse(xhr.responseText || '{}');
+          if (body && body.error) {
+            err = String(body.error);
+          }
+        } catch (_) {
+        }
+        Chat.addDialogMessage('system', err, 'system');
+        if (typeof Chat.setLocalConversationStatus === 'function') {
+          Chat.setLocalConversationStatus(err);
+        }
       },
       complete: () => {
         skillCheckProcessing = false;
@@ -8190,6 +8447,13 @@ $(document).ready(() => {
     const parsedMessage = Chat.parsePlayerConversationInput(rawMessage);
     if (!parsedMessage.spoken && !(parsedMessage.actions || []).length) return;
 
+    const dmManualReply = isDM() && dialogNpcManualMode && talkToEntityMode;
+    const partnerEntityId = getDialogPartnerEntityId();
+    if (dmManualReply && !partnerEntityId) {
+      Chat.addDialogMessage('system', 'Select a conversation partner (player character) before speaking as this NPC.', 'system');
+      return;
+    }
+
     // Prevent multiple messages from being sent simultaneously
     if (dialogMessageProcessing) return;
 
@@ -8211,10 +8475,18 @@ $(document).ready(() => {
     const selectedLanguage = $('#dialogLanguageSelect').val();
     const selectedVolume = $('#localConversationVolume').val() || 'normal';
 
-    // Add player message to chat
-    Chat.addDialogMessage('player', parsedMessage.spoken, 'player', {
-      actions: parsedMessage.actions,
-    });
+    if (dmManualReply) {
+      Chat.addDialogMessage('entity', parsedMessage.spoken, 'entity', {
+        displayName: $('#dialogEntityName').text() || 'NPC',
+        actions: parsedMessage.actions,
+        entity_id: entityId,
+      });
+    } else {
+      // Add player message to chat
+      Chat.addDialogMessage('player', parsedMessage.spoken, 'player', {
+        actions: parsedMessage.actions,
+      });
+    }
 
     // Clear input
     $('#dialogChatInput').val('');
@@ -8240,22 +8512,28 @@ $(document).ready(() => {
     }, 2000);
 
     const timeout2 = setTimeout(() => {
-      updateWaitingIndicator(waitingId, "Entity is thinking...");
+      updateWaitingIndicator(waitingId, dmManualReply ? 'Broadcasting NPC line…' : 'Entity is thinking...');
     }, 5000);
 
     const timeout3 = setTimeout(() => {
-      updateWaitingIndicator(waitingId, "Almost ready to respond...");
+      updateWaitingIndicator(waitingId, dmManualReply ? 'Still sending…' : 'Almost ready to respond...');
     }, 10000);
 
     // Determine the source entity based on mode
     let sourceEntityId = entityId;
-    if (talkToEntityMode) {
+    let talkTargets = [];
+    let dmImpersonate = false;
+    if (dmManualReply) {
+      sourceEntityId = entityId;
+      talkTargets = [partnerEntityId];
+      dmImpersonate = true;
+    } else if (talkToEntityMode) {
       // In talk to entity mode, the POV user is talking to the entity
-      // We need to get the current POV user's entity ID
       const currentPovEntity = Chat.getCurrentPovEntity();
       if (currentPovEntity) {
         sourceEntityId = currentPovEntity;
       }
+      talkTargets = [entityId];
     }
 
     // Send message to server
@@ -8267,10 +8545,11 @@ $(document).ready(() => {
       data: JSON.stringify({
         entity_id: sourceEntityId,
         message: rawMessage,
-        targets: talkToEntityMode ? [entityId] : [], // In talk mode, target the entity being talked to
-        no_specific_target: !talkToEntityMode, // Only set to true if not in talk mode
+        targets: talkTargets,
+        no_specific_target: !talkToEntityMode && !dmManualReply,
         language: selectedLanguage,
-        volume: selectedVolume
+        volume: selectedVolume,
+        dm_impersonate: dmImpersonate,
       }),
       success: (data) => {
         // Clear timeouts
@@ -8282,7 +8561,17 @@ $(document).ready(() => {
         $input.focus();
 
         if (data.success) {
+          if (data.goal_arrival_ended && typeof exitGoalArrivalConversationMode === 'function') {
+            exitGoalArrivalConversationMode();
+          }
           Chat.ingestTalkReplies(data.replies);
+          if (data.manual_mode_npcs && data.manual_mode_npcs.length) {
+            Chat.addDialogMessage(
+              'system',
+              'This NPC is in manual DM mode — waiting for the Dungeon Master to respond in character.',
+              'system',
+            );
+          }
           // Insight checks return via HTTP as well as Socket.IO. Prefer the
           // HTTP payload for the open dialog so the badge always appears even
           // if the socket event is delayed; dedupe prevents a double render.
@@ -8423,7 +8712,7 @@ $(document).ready(() => {
       type: 'GET',
       data: {
         entity_id: entityId,
-        entity_pov: Chat.getCurrentPovEntity()
+        entity_pov: getDialogPartnerEntityId(),
       },
       dataType: 'json',
       beforeSend: () => {
@@ -8476,6 +8765,12 @@ $(document).ready(() => {
     }
     $('#jrpgDialogPanel').hide();
     talkToEntityMode = false;
+    dialogPartnerEntityId = null;
+    dialogNpcManualMode = false;
+    currentDialogNpcId = null;
+    $('#dialogDmNpcControls').hide();
+    $('#dialogEntityProfilePanel').removeClass('has-dm-npc-controls');
+    $('body').removeClass('dialog-manual-mode-active');
     if (typeof Chat.resetDialogAutoContinue === 'function') {
       Chat.resetDialogAutoContinue();
     }

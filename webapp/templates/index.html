@@ -1339,7 +1339,7 @@
             aria-label="Show or hide characters">
       <span class="glyphicon glyphicon-user" aria-hidden="true"></span>
     </button>
-    <div id="floating-entity-portraits">
+    <div id="floating-entity-portraits" class="{% if 'dm' in role %}dm-portrait-dock{% endif %}">
         {% include 'floating_portraits.html' %}
     </div>
     <script>
@@ -1354,6 +1354,9 @@
             portraitsContainer.style.display = 'none';
           }
         });
+        if (typeof window.initDmPortraitSections === 'function') {
+          window.initDmPortraitSections();
+        }
       })();
     </script>
     <div id="commandModal" class="modal fade" tabindex="-1" role="dialog" aria-labelledby="commandModalLabel" aria-hidden="true">
@@ -1427,7 +1430,7 @@
                   </div>
                     <div id="chat-messages" class="chat-transcript" style="height: 250px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background: #fff; margin-bottom: 10px;">
                     <div class="chat-message system">
-                      <strong>AI Assistant:</strong> Connecting to the server LLM (same as NPC/dialog features)…
+                      <strong>AI Assistant:</strong> Connecting to the DM assistant LLM (NPC dialog uses a separate model)…
                     </div>
                   </div>
                   
@@ -1573,6 +1576,16 @@
           <button class="btn btn-success btn-block" id="dialogBrowseShop" title="Browse wares" style="display: none;">
             <i class="glyphicon glyphicon-shopping-cart"></i> Shop
           </button>
+          <div id="dialogDmNpcControls" class="dialog-dm-npc-controls" style="display: none;">
+            <label class="dialog-manual-mode-toggle" for="dialogManualModeToggle" title="When enabled, this NPC will not use the LLM. You speak for them via this dialog or Speak as NPC in local chat.">
+              <input type="checkbox" id="dialogManualModeToggle" />
+              Manual mode (DM controls speech)
+            </label>
+            <label class="sr-only" for="dialogPartnerSelect">Conversation partner</label>
+            <select class="form-control input-sm" id="dialogPartnerSelect" title="Which player character's conversation history to show">
+              <option value="">Conversation partner…</option>
+            </select>
+          </div>
         </div>
       </div>
       
@@ -1748,7 +1761,7 @@
           </div>
           <div id="draggable-chat-messages" class="chat-transcript" style="flex: 1; overflow-y: auto; border: 1px solid #ddd; padding: 8px; background: #fff; margin-bottom: 8px; font-size: 12px; min-height: 0;">
             <div class="chat-message system">
-              <strong>AI Assistant:</strong> Connecting to the server LLM…
+              <strong>AI Assistant:</strong> Connecting to the DM assistant LLM…
             </div>
           </div>
           

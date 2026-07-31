@@ -1,0 +1,207 @@
+{
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/actions/bardic_inspiration.png": {
+    "mtime": 1785255845,
+    "sha1": "d5d8105497c649f284c7aa15c83ce824736a98f3",
+    "size": 104184
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/actions/flurry_of_blows.png": {
+    "mtime": 1785255845,
+    "sha1": "ef5b8ff91ea9d1faa5cfea223748ecab7fb48e25",
+    "size": 124514
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/actions/patient_defense.png": {
+    "mtime": 1785255845,
+    "sha1": "b28610c78338e3fdb7103877505c2f0f3a7ceafa",
+    "size": 117401
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/actions/rage.png": {
+    "mtime": 1785255845,
+    "sha1": "08bbba955373e499b3589dd7ee1a9c352eaf110b",
+    "size": 120350
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/actions/reckless_attack.png": {
+    "mtime": 1785255845,
+    "sha1": "8a682b4d12a19bea4bc57688bd4e51789ffdefec",
+    "size": 139607
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/actions/step_of_the_wind.png": {
+    "mtime": 1785255845,
+    "sha1": "0d6e5dccff86f4b5ab7a46f9030c6bcbaf3d104b",
+    "size": 119938
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/actions/wild_shape.png": {
+    "mtime": 1785255845,
+    "sha1": "90546572a0f1e6230e38d59a0ec4d0fbd5843a1d",
+    "size": 114713
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/armor_of_agathys.png": {
+    "mtime": 1785255845,
+    "sha1": "c95f1c116119d48f0b8245ff2eb776335a4cd153",
+    "size": 105037
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/bane.png": {
+    "mtime": 1785255845,
+    "sha1": "8c6ef4e782582b525ab4ddb12c7634047a071a79",
+    "size": 32619
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/darkness.png": {
+    "mtime": 1785255845,
+    "sha1": "925698db4792526289e95dae1c28842d8bb32149",
+    "size": 79285
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/engulf.png": {
+    "mtime": 1785255845,
+    "sha1": "3bb930ff270b7e5121ee67983b1ad3306fe34a0c",
+    "size": 67099
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/guidance.png": {
+    "mtime": 1785255845,
+    "sha1": "659cf1a22bf5d175e9ce3c16e4f50ad81e8e9678",
+    "size": 102878
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/protection_from_poison.png": {
+    "mtime": 1785255845,
+    "sha1": "fc5856838fcf8a16a70448e1e7cda1ca10e2dea0",
+    "size": 61559
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/resistance.png": {
+    "mtime": 1785255845,
+    "sha1": "b179e07f0c405a028d29454f40433d37f6fce3fe",
+    "size": 25814
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/true_strike.png": {
+    "mtime": 1785255845,
+    "sha1": "ec252b5a2891486747fdb266f81bda093d8fca18",
+    "size": 60142
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/battleaxe.png": {
+    "mtime": 1785255845,
+    "sha1": "af25bec7f2ad0986adb21ae8b3585f4439ca5fcf",
+    "size": 63197
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/candle.png": {
+    "mtime": 1785255845,
+    "sha1": "492c205a7b29472e2b0b9a864951d18c2d9a568f",
+    "size": 84749
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/chain_mail.png": {
+    "mtime": 1785255845,
+    "sha1": "d1d178e86d9c9c97b339847e0fed221a5207db44",
+    "size": 79495
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/dart.png": {
+    "mtime": 1785255845,
+    "sha1": "42c6159de1dd251a260b12bb7c41f5f7f7ea076d",
+    "size": 91701
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/greataxe.png": {
+    "mtime": 1785255845,
+    "sha1": "46e579a26a782a5b0cfa8ecf57ad0edf4f0fe1b4",
+    "size": 102383
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/handaxe.png": {
+    "mtime": 1785255845,
+    "sha1": "62cc15170f9c1583445c2dc94e6cbf3a448ebef7",
+    "size": 115289
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/healers_kit.png": {
+    "mtime": 1785255845,
+    "sha1": "e91f050f9a20d51e0ed153107cd09f41c1993504",
+    "size": 65045
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/holy_water.png": {
+    "mtime": 1785255845,
+    "sha1": "05cfdfaa5626072b1fe2a51b8ec05e3d6fbafb72",
+    "size": 58221
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/ink.png": {
+    "mtime": 1785255845,
+    "sha1": "8830245ed16ce00c5c6fde134b59887dda310823",
+    "size": 21482
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/ink_pen.png": {
+    "mtime": 1785255845,
+    "sha1": "a4880d827883d1f078340473a0d12ab62d183989",
+    "size": 37216
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/iron_key.png": {
+    "mtime": 1785255845,
+    "sha1": "eba1ca36d7fb2d26d1fc57cd80ce23682a34f4ac",
+    "size": 70889
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/iron_key.webp": {
+    "mtime": 1785255845,
+    "sha1": "e7913fac8cfb364ea92a942f34f52b94978a5cbf",
+    "size": 5458
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/javelin.png": {
+    "mtime": 1785255845,
+    "sha1": "0fb2bd4014acc622a9e245df1afb07729c296e35",
+    "size": 110439
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/letter_from_a_dead_friend.png": {
+    "mtime": 1785255845,
+    "sha1": "71af32f99e3d06562b0d5adb0df6e74bd3d41010",
+    "size": 61367
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/letter_from_a_dead_friend.webp": {
+    "mtime": 1785255845,
+    "sha1": "a934801555d5dde1cdecca0db9d9d7fd694b2f89",
+    "size": 4590
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/parchment.png": {
+    "mtime": 1785255845,
+    "sha1": "d2982bfe5e3416115169ef6254e4edf91b0495f3",
+    "size": 90093
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/quarterstaff.png": {
+    "mtime": 1785255845,
+    "sha1": "4ea0bc3d57835cd8097906425815100f71e8b71c",
+    "size": 84309
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_armor_of_agathys.png": {
+    "mtime": 1785255845,
+    "sha1": "c95f1c116119d48f0b8245ff2eb776335a4cd153",
+    "size": 105037
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_chromatic_orb.png": {
+    "mtime": 1785255845,
+    "sha1": "8295432235e58fecd0016c96a13fef140516de84",
+    "size": 98820
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_color_spray.png": {
+    "mtime": 1785255845,
+    "sha1": "3c256e77ade4000b9c819ff800d4a5ea515087d9",
+    "size": 107024
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_eldritch_blast.png": {
+    "mtime": 1785255845,
+    "sha1": "3a41d65e8a6a63acb3f00a49122f37ce5194c364",
+    "size": 81324
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_grease.png": {
+    "mtime": 1785255845,
+    "sha1": "fba3a751f5c8945b8244b40ef938b4566d671399",
+    "size": 111684
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_guidance.png": {
+    "mtime": 1785255845,
+    "sha1": "659cf1a22bf5d175e9ce3c16e4f50ad81e8e9678",
+    "size": 102878
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_mage_hand.png": {
+    "mtime": 1785255845,
+    "sha1": "819133bf6584153a85c92cfb2b5c7e36d4f8f712",
+    "size": 93086
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_misty_step.png": {
+    "mtime": 1785255845,
+    "sha1": "a03c099b2d94a690e8d16a7417a07f88debfa4f2",
+    "size": 86894
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/spells/spell_witch_bolt.png": {
+    "mtime": 1785255845,
+    "sha1": "d604043973249f297e9ff7b16cdcb2fd0c94915c",
+    "size": 100688
+  }
+}

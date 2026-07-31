@@ -1,0 +1,72 @@
+{
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/fireplace.png": {
+    "mtime": 1785255845,
+    "sha1": "6191b3164cc41a50bb75025f8f550e00be41d246",
+    "size": 401511
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/goblin_ambush.png": {
+    "mtime": 1785255845,
+    "sha1": "243b490178c558efe0945d569bccaf34ecd1933b",
+    "size": 380200
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/goblin_ambush_login.png": {
+    "mtime": 1785255845,
+    "sha1": "198acd045b81f384324b26df59081637a541561d",
+    "size": 413321
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/interact.png": {
+    "mtime": 1785255845,
+    "sha1": "faeebe3cab85785c2fbdba4cf390fce7876921c8",
+    "size": 311532
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/interact_off.png": {
+    "mtime": 1785255845,
+    "sha1": "2dfe7febcb7c6904949e8d84ea899ce351da8aac",
+    "size": 312837
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/interact_on.png": {
+    "mtime": 1785255845,
+    "sha1": "29661b8ef4c7bae49b778d0f878913263cd4751a",
+    "size": 411373
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/new_character.png": {
+    "mtime": 1785255845,
+    "sha1": "887b2c1f61a57aa05e913c635eadb7bafd6499f5",
+    "size": 190453
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/objects/fireplace.png": {
+    "mtime": 1785255845,
+    "sha1": "6191b3164cc41a50bb75025f8f550e00be41d246",
+    "size": 401511
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/prebuild_character/character1.png": {
+    "mtime": 1785255845,
+    "sha1": "970a46bc59044bb9eb3bc170b6f361eff76d7690",
+    "size": 325671
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/prebuild_character/character2.png": {
+    "mtime": 1785255845,
+    "sha1": "6468ca988594df4fb3e8bae748b84a3e89d221fb",
+    "size": 422521
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/token_mage_hand.png": {
+    "mtime": 1785255845,
+    "sha1": "f9d030acb2e566d4adf000f49bcb4ebfe3fa13d8",
+    "size": 488025
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/token_object.png": {
+    "mtime": 1785255845,
+    "sha1": "faeebe3cab85785c2fbdba4cf390fce7876921c8",
+    "size": 311532
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/token_spiritual_weapon.png": {
+    "mtime": 1785255845,
+    "sha1": "f8a32d9e0a6025287a5d5d4ffe1afe2713199012",
+    "size": 158353
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/token_wooden_door.png": {
+    "mtime": 1785255845,
+    "sha1": "ab7c7cfb2af0b3e2ce11b8582f73b3387af96e63",
+    "size": 235071
+  }
+}

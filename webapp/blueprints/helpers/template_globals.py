@@ -378,6 +378,7 @@ def register_template_globals(flask_app):
             except Exception:
                 tts_delivery_mode = 'async'
         return {
+            'viewer_is_dm': viewer_is_dm,
             'suppress_dialog_descriptions': suppress_all and not viewer_is_dm,
             'character_description_suppressed_for': character_description_suppressed_for,
             'highlight_doors': highlight_doors_enabled(index_data),

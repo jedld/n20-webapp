@@ -19,6 +19,9 @@ const Utils = {
   refreshPortraits: function () {
     Utils.ajaxGet('/refresh-portraits', {}, (data) => {
       $('#floating-entity-portraits').html(data);
+      if (typeof window.initDmPortraitSections === 'function') {
+        window.initDmPortraitSections();
+      }
     });
   },
   switchMap: function (mapId, canvas, first_callback = null) {
@@ -494,9 +497,11 @@ const Utils = {
         const $t = $(this);
         const exp = parseInt($t.attr('data-toast-expiry')) || (now + 5000);
         const remaining = Math.max(0, exp - now);
-        const text = $t.text();
+        const text = $t.find('.map-toast-text').text() || $t.text();
+        const className = $t.attr('data-toast-class') || ($t.hasClass('contextual-sound') ? 'contextual-sound' : '');
+        const prefix = ($t.find('.map-toast-prefix').text() || '').trim();
         if (remaining > 50 && text) {
-          res.push({ text: text, remainingMs: remaining });
+          res.push({ text: text, remainingMs: remaining, className: className, prefix: prefix });
         }
       });
     } catch (e) { }
@@ -510,9 +515,15 @@ const Utils = {
       const dur = Math.max(0, parseInt(t.remainingMs) || 0);
       if (dur <= 50) return;
       try {
-        const $toast = $('<div class="map-toast"></div>').text(t.text);
+        const $toast = $('<div class="map-toast"></div>');
+        if (t.className) $toast.addClass(t.className);
+        if (t.prefix) {
+          $('<span class="map-toast-prefix"></span>').text(t.prefix).appendTo($toast);
+        }
+        $('<span class="map-toast-text"></span>').text(t.text).appendTo($toast);
         $toast.css({ position: 'absolute', left: '50%', top: '-6px', transform: 'translate(-50%, -100%)' });
         $toast.attr('data-toast-expiry', now + dur);
+        if (t.className) $toast.attr('data-toast-class', t.className);
         $tile.append($toast);
         setTimeout(function () { try { $toast.fadeOut(400, function () { $toast.remove(); }); } catch (_) { } }, dur);
       } catch (e) { /* noop */ }
@@ -530,9 +541,11 @@ const Utils = {
       const y = $tile.data('coords-y');
       const exp = parseInt($t.attr('data-toast-expiry')) || (now + 5000);
       const remaining = Math.max(0, exp - now);
-      const text = $t.text();
+      const text = $t.find('.map-toast-text').text() || $t.text();
+      const className = $t.attr('data-toast-class') || ($t.hasClass('contextual-sound') ? 'contextual-sound' : '');
+      const prefix = ($t.find('.map-toast-prefix').text() || '').trim();
       if (x !== undefined && y !== undefined && text && remaining > 50) {
-        res.push({ x: x, y: y, text: text, remainingMs: remaining });
+        res.push({ x: x, y: y, text: text, remainingMs: remaining, className: className, prefix: prefix });
       }
     });
     return res;

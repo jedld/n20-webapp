@@ -7,7 +7,7 @@
     "test:coverage": "jest --coverage --runInBand",
     "ci:test": "jest --coverage --runInBand",
     "build:assets": "node scripts/minify.mjs",
-    "optimize:images": "python webapp/scripts/optimize_web_assets.py",
+    "optimize:images": "python webapp/scripts/optimize_web_assets.py --profile full",
     "optimize:assets": "npm run build:assets && npm run optimize:images"
   },
   "jest": {

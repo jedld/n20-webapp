@@ -74,6 +74,23 @@ _DIRECT_REPLY_MESSAGE = re.compile(
     re.IGNORECASE,
 )
 
+_PASSIVE_ACK_MESSAGE = re.compile(
+    r'^\s*(?:'
+    r'ok(?:ay)?|k|kk|cool|thanks?|thank\s+you|thx|ty|got\s+it|understood|'
+    r'will\s+do|sounds\s+good|perfect|great|alright|right|sure|yep|yeah|yes|'
+    r'no\s+problem|np|cheers|lovely|wonderful|fine|good|done|bye|goodbye|'
+    r'see\s+ya|see\s+you|later|farewell|good\s+night|gn'
+    r')\s*[.!?,]*\s*$',
+    re.IGNORECASE,
+)
+
+
+def is_passive_acknowledgement(message) -> bool:
+    text = (message or '').strip()
+    if not text:
+        return False
+    return bool(_PASSIVE_ACK_MESSAGE.match(text))
+
 PLAYER_INSIGHT_PATTERNS = [
     re.compile(r'^\s*/?\s*insight(?:\s+check)?\b', re.IGNORECASE),
     re.compile(r'^\s*\[\s*insight(?:\s+check)?[^\]]*\]', re.IGNORECASE),
@@ -2318,6 +2335,23 @@ class ConversationService:
                 (response or '')[:160],
                 (time.monotonic() - receiver_started) * 1000.0,
             )
+            try:
+                goal_arrival_manager = getattr(self.current_game, 'goal_arrival_manager', None)
+                if goal_arrival_manager is not None:
+                    if (
+                        goal_arrival_manager.active_state() is not None
+                        and isinstance(speaker, PlayerCharacter)
+                        and is_passive_acknowledgement(original_player_message)
+                    ):
+                        goal_arrival_manager.on_player_passive_ack(speaker)
+                    else:
+                        goal_arrival_manager.maybe_complete_after_npc_reply(receiver, response)
+            except Exception as exc:
+                self.logger.warning(
+                    "[Talk] goal arrival resolution failed for %s: %s",
+                    receiver.label(),
+                    exc,
+                )
             self.emit_nonverbal_npc_reply(
                 receiver,
                 reply_plan,
@@ -4605,7 +4639,7 @@ class ConversationService:
                 return {'error': 'No Response is only available to player characters'}, 400
             goal_arrival_manager = getattr(self.current_game, 'goal_arrival_manager', None)
             if goal_arrival_manager is not None and goal_arrival_manager.on_player_no_response(entity):
-                return {'success': True, 'no_response': True}, 200
+                return {'success': True, 'no_response': True, 'goal_arrival_ended': True}, 200
             return {'error': 'No active goal-arrival conversation'}, 400
 
         if dm_impersonate:
@@ -4628,8 +4662,10 @@ class ConversationService:
 
         skill_payload = data.get('skill_check')
         if isinstance(skill_payload, dict):
-            if not isinstance(entity, PlayerCharacter):
-                return {'error': 'Skill checks require a player character'}, 400
+            skill = str((skill_payload or {}).get('skill') or '').strip().lower()
+            roll_fn = getattr(entity, f'{skill}_check', None) if skill else None
+            if not callable(roll_fn):
+                return {'error': 'Skill check not available for this character'}, 400
             return self.handle_player_skill_check_button_request(
                 entity,
                 skill_payload,
@@ -4643,6 +4679,15 @@ class ConversationService:
         parsed_input = parse_player_conversation_input(message or '')
         spoken_message = parsed_input.get('spoken') or ''
         player_actions = parsed_input.get('actions') or []
+        if (
+            isinstance(entity, PlayerCharacter)
+            and spoken_message
+            and not player_actions
+            and is_passive_acknowledgement(spoken_message)
+        ):
+            goal_arrival_manager = getattr(self.current_game, 'goal_arrival_manager', None)
+            if goal_arrival_manager is not None and goal_arrival_manager.on_player_passive_ack(entity):
+                return {'success': True, 'passive_ack': True, 'goal_arrival_ended': True}, 200
         if not spoken_message and not player_actions:
             return {'error': 'Message or action is required'}, 400
 
@@ -4764,7 +4809,21 @@ class ConversationService:
             )
             if visual_whisper_usernames:
                 speaker_payload['visual_only_usernames'] = sorted(visual_whisper_usernames)
-        self.emit_conversation_to_usernames(speaker_audience | visual_whisper_usernames, speaker_payload, source_entity=entity)
+        if not isinstance(entity, PlayerCharacter):
+            speaker_payload['tts_pending'] = True
+        emitted_by_username = self.emit_conversation_to_usernames(
+            speaker_audience | visual_whisper_usernames,
+            speaker_payload,
+            source_entity=entity,
+        )
+        if dm_impersonate:
+            self._append_http_reply_for_requester(
+                http_replies,
+                normalized_requesting_username,
+                emitted_by_username,
+                speaker_payload,
+                entity,
+            )
         self._persist_conversation_line(
             entity,
             spoken_message,
@@ -4798,23 +4857,6 @@ class ConversationService:
                 # readied-action error.
                 pass
 
-        if dm_impersonate:
-            self.logger.info(
-                "[Talk] dm_impersonate complete speaker=%s elapsed_ms=%.1f",
-                entity_id,
-                (time.monotonic() - talk_started) * 1000.0,
-            )
-            return {
-                'success': True,
-                'resolved_target_ids': [target.entity_uid for target in delivered_targets],
-                'mentioned_target_ids': [target.entity_uid for target in mentioned_targets],
-                'volume': volume,
-                'distance_ft': distance_ft,
-                'dm_impersonate': True,
-                'draft_message': original_spoken_message if polished_message else None,
-                'polished_message': polished_message,
-            }, 200
-
         eligible_receivers = self.select_conversation_responders(
             processed_conversations,
             entity,
@@ -4842,7 +4884,15 @@ class ConversationService:
         forced_manager = getattr(self.current_game, 'forced_conversation_manager', None)
         if isinstance(entity, PlayerCharacter) and forced_manager is not None:
             forced_manager.on_player_reply(entity)
+        manual_mode_npcs = []
         for receiver in eligible_receivers:
+            if self.npc_conversation_mode_is_manual(receiver):
+                manual_mode_npcs.append(receiver.entity_uid)
+                self.logger.info(
+                    "[Talk] skipping LLM reply for %s (manual conversation mode)",
+                    receiver.label(),
+                )
+                continue
             summoned = self.message_summons_npc(message) and self._receiver_was_addressed(
                 receiver,
                 delivered_targets,
@@ -4933,6 +4983,13 @@ class ConversationService:
             'volume': volume,
             'distance_ft': distance_ft,
         }
+        if dm_impersonate:
+            response_payload['dm_impersonate'] = True
+            if polished_message:
+                response_payload['draft_message'] = original_spoken_message
+                response_payload['polished_message'] = polished_message
+        if manual_mode_npcs:
+            response_payload['manual_mode_npcs'] = manual_mode_npcs
         if http_replies:
             response_payload['replies'] = http_replies
         return response_payload, 200
@@ -4998,6 +5055,21 @@ class ConversationService:
         if not target_entities or npc is None:
             return False
 
+        if self.npc_conversation_mode_is_manual(npc):
+            if open_dialog:
+                self._open_entity_dialog_for_targets(
+                    npc,
+                    target_entities,
+                    map_name=map_name,
+                    forced=forced,
+                    goal_arrival=goal_arrival,
+                )
+            self.logger.info(
+                "[Talk] skipping NPC initiative LLM for %s (manual conversation mode)",
+                npc.label(),
+            )
+            return bool(open_dialog)
+
         if conversation_system_prompt is None:
             conversation_system_prompt = read_npc_system_prompt(get_level())
 
@@ -5023,6 +5095,15 @@ class ConversationService:
         llm_conversation_handler.update_conversation_history(npc.entity_uid, npc.conversation_buffer)
         if context:
             llm_conversation_handler.add_message(npc.entity_uid, 'system', str(context))
+
+        if open_dialog:
+            self._open_entity_dialog_for_targets(
+                npc,
+                target_entities,
+                map_name=map_name,
+                forced=forced,
+                goal_arrival=goal_arrival,
+            )
 
         speaker_pc = target_entities[0]
         response = llm_conversation_handler.generate_response(npc.entity_uid)
@@ -5137,15 +5218,6 @@ class ConversationService:
                 exc,
             )
 
-        if open_dialog:
-            self._open_entity_dialog_for_targets(
-                npc,
-                target_entities,
-                map_name=map_name,
-                forced=forced,
-                goal_arrival=goal_arrival,
-            )
-
         self.logger.info(
             "[Talk] NPC initiative from %s to %s open_dialog=%s",
             npc.label(),
@@ -5164,6 +5236,10 @@ class ConversationService:
 
     def _requester_is_dm(self, username):
         return 'dm' in self._requester_roles(username)
+
+    def npc_conversation_mode_is_manual(self, entity):
+        from webapp.npc_conversation_mode import is_npc_manual_conversation
+        return is_npc_manual_conversation(self.game_session, entity)
 
     def _impersonatable_npcs(self, anchor_entity=None):
         battle_map = None

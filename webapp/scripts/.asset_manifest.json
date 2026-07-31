@@ -1,4 +1,44 @@
 {
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/iron_key.webp": {
+    "mtime": 1785255845,
+    "sha1": "b0b6b75dda1100a6de642b78d026a8546d6a870f",
+    "size": 33438
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/letter_from_a_dead_friend.webp": {
+    "mtime": 1785255845,
+    "sha1": "91b0895ba4ca94898a5bce1814de52bcc5df4bbc",
+    "size": 57150
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/prebuild_character/character6.jpg": {
+    "mtime": 1785255845,
+    "sha1": "cdc0dad309f90f83abe585cc5ba53b4435b2b5c2",
+    "size": 45441
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/prebuild_character/character7.jpg": {
+    "mtime": 1785255845,
+    "sha1": "e8468e08d512550d65f72c4302051f8ae3fc68d5",
+    "size": 49461
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/prebuild_character/character9.jpg": {
+    "mtime": 1785255845,
+    "sha1": "d25df8019e90706c913137328d84cc5f7116580c",
+    "size": 43680
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/token_animated_broom.webp": {
+    "mtime": 1785255845,
+    "sha1": "e0bf529cc9aeb96060298edfad739f52da5d56d5",
+    "size": 185608
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/end_turn.webp": {
+    "mtime": 1785255845,
+    "sha1": "acf1c05ae967e52a77e6b8dee65bb40c0b2d91e0",
+    "size": 29020
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/red_x.jpg": {
+    "mtime": 1785255845,
+    "sha1": "357b174ad04f0af7e2735a1bdd8bd35cbbd11e72",
+    "size": 14139
+  },
   "/home/jedld/workspace/natural_20.py/user_levels/outcasts_path/assets/maps/cathedral.png": {
     "mtime": 1784645145,
     "sha1": "4b70b3acf6b7563c5eeaf280ad3daea678712389",

@@ -2254,6 +2254,21 @@ class LLMHandler:
                 info['context_window'] = context_window
         
         return info
+
+    def get_npc_provider_info(self) -> Dict[str, Any]:
+        """Summarize the dedicated NPC conversation provider (if configured)."""
+        provider = self.npc_provider
+        if provider is None:
+            return {"initialized": False}
+        info = {
+            "initialized": True,
+            "provider_type": type(provider).__name__,
+        }
+        if hasattr(provider, 'current_model'):
+            info['current_model'] = provider.current_model
+        if hasattr(provider, 'base_url'):
+            info['base_url'] = provider.base_url
+        return info
     
     def clear_history(self):
         """Clear conversation history."""

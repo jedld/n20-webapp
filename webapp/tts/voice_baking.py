@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 DEFAULT_BAKE_SAMPLE_TEXT = (
-    "A steady voice for dialogue. Warm, clear, and natural, just as I always speak."
+    "A deep, gravelly, and rough voice for dialogue. Warm but authoritative, just as I always speak."
 )
 
 

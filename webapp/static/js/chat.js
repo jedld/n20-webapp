@@ -961,7 +961,7 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
         if (!replyId || !skillCheckResult || skillCheckResult.roll_total == null) {
             return false;
         }
-        const $msg = $(`#dialogChatMessages .dialog-chat-message[data-reply-id="${replyId}"]`);
+        const $msg = $(Chat.ttsReplySelector(replyId));
         if (!$msg.length) {
             return false;
         }
@@ -1250,6 +1250,24 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
             $.getJSON(`/tts/reply/${encodeURIComponent(token)}`)
                 .done(function (data) {
                     if (data && data.ready && (data.audio_url || data.audioUrl)) {
+                        Chat._ttsReplyPolls.delete(pollKey);
+                        const replyId = data.reply_id || data.replyId || token;
+                        const deliveryMode = window.TTSPlayer
+                            && typeof window.TTSPlayer.getDeliveryMode === 'function'
+                            ? window.TTSPlayer.getDeliveryMode()
+                            : '';
+                        if (deliveryMode === 'stream') {
+                            Chat.applyTtsReady(data);
+                            return;
+                        }
+                        const alreadyPlayed = window.TTSPlayer
+                            && typeof window.TTSPlayer.hasReplyPlayed === 'function'
+                            && replyId
+                            && window.TTSPlayer.hasReplyPlayed(replyId);
+                        if (alreadyPlayed) {
+                            Chat.applyTtsReady(data);
+                            return;
+                        }
                         if (window.TTSPlayer && typeof window.TTSPlayer.unlockAudioForPlayback === 'function') {
                             window.TTSPlayer.unlockAudioForPlayback();
                         }
@@ -1260,7 +1278,6 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
                         } else {
                             Chat.applyTtsReady(data);
                         }
-                        Chat._ttsReplyPolls.delete(pollKey);
                         return;
                     }
                     setTimeout(poll, 2000);

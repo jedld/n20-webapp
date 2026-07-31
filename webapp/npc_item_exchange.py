@@ -398,6 +398,47 @@ def container_staff_viewers(container) -> set:
     return {str(entry).strip().lower() for entry in viewers if str(entry).strip()}
 
 
+def actor_is_container_staff(actor: Entity, container) -> bool:
+    actor_uid = str(getattr(actor, 'entity_uid', '') or '').strip().lower()
+    return bool(actor_uid and actor_uid in container_staff_viewers(container))
+
+
+STAFF_CROSS_MAP_RETRIEVE = 'staff_cross_map_retrieve'
+
+
+def maps_share_stack(map_a, map_b) -> bool:
+    if map_a is None or map_b is None:
+        return False
+    if map_a is map_b:
+        return True
+    stack_a = getattr(map_a, 'map_stack', None)
+    stack_b = getattr(map_b, 'map_stack', None)
+    if stack_a is not None and stack_a is stack_b:
+        return True
+    name_a = getattr(map_a, 'name', None)
+    name_b = getattr(map_b, 'name', None)
+    if stack_a is not None and name_b:
+        for floor in getattr(stack_a, 'floors', []) or []:
+            floor_map = getattr(floor, 'map', None)
+            if getattr(floor, 'map_name', None) == name_b or floor_map is map_b:
+                return True
+    if stack_b is not None and name_a:
+        for floor in getattr(stack_b, 'floors', []) or []:
+            floor_map = getattr(floor, 'map', None)
+            if getattr(floor, 'map_name', None) == name_a or floor_map is map_a:
+                return True
+    return False
+
+
+def container_workplace_landmark(container) -> str:
+    props = getattr(container, 'properties', None)
+    if isinstance(props, dict):
+        workplace = str(props.get('staff_workplace') or '').strip()
+        if workplace:
+            return workplace
+    return 'taproom'
+
+
 def container_interaction_range_ft(
     actor: Entity,
     container,
@@ -437,13 +478,26 @@ def container_access_block_reason(
         return 'The container is closed — open it first.'
 
     battle_map = None
+    container_map = None
     if current_game is not None:
         try:
             battle_map = current_game.get_map_for_entity(actor)
         except Exception:
             battle_map = None
+        try:
+            container_map = current_game.get_map_for_entity(container)
+        except Exception:
+            container_map = None
     if battle_map is None:
         return None
+
+    if (
+        container_map is not None
+        and container_map is not battle_map
+        and actor_is_container_staff(actor, container)
+        and maps_share_stack(battle_map, container_map)
+    ):
+        return STAFF_CROSS_MAP_RETRIEVE
 
     try:
         distance = battle_map.distance(actor, container) * battle_map.feet_per_grid
@@ -839,13 +893,26 @@ def container_visibility_block_reason(
         return 'That is not a container.'
 
     battle_map = None
+    container_map = None
     if current_game is not None:
         try:
             battle_map = current_game.get_map_for_entity(actor)
         except Exception:
             battle_map = None
+        try:
+            container_map = current_game.get_map_for_entity(container)
+        except Exception:
+            container_map = None
     if battle_map is None:
         return None
+
+    if (
+        container_map is not None
+        and container_map is not battle_map
+        and actor_is_container_staff(actor, container)
+        and maps_share_stack(battle_map, container_map)
+    ):
+        return STAFF_CROSS_MAP_RETRIEVE
 
     try:
         distance = battle_map.distance(actor, container) * battle_map.feet_per_grid

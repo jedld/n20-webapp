@@ -11,7 +11,6 @@ from .helpers.runtime_state import (
     get_controllers,
     get_index_data,
     get_title,
-    get_login_background,
     get_character_selection_background,
     get_builder_only_mode,
     get_logger,
@@ -27,6 +26,7 @@ from .helpers.pvp import (
     restore_player_character_for_user,
 )
 from .helpers.template_globals import entities_controlled_by
+from .helpers.login_ui import build_login_page_context
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -67,7 +67,10 @@ def login():
             return jsonify(status='ok')
         return jsonify(error="Invalid Login Credentials")
 
-    return render_template('login.html', title=get_title(), background=get_login_background())
+    return render_template(
+        'login.html',
+        **build_login_page_context(title=get_title(), index_data=get_index_data()),
+    )
 
 
 @auth_bp.route('/character_selection', methods=['GET'], endpoint='character_selection')

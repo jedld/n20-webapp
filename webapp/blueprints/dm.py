@@ -2683,3 +2683,94 @@ def admin_get_conversation_buffer():
     except Exception as exc:
         get_logger().error('Error reading conversation buffer: %s', exc)
         return jsonify(success=False, error=str(exc)), 500
+
+
+@dm_bp.route('/admin/users', methods=['GET', 'POST'])
+def admin_user_management():
+    """DM-only: list/create/update/delete logins and assign PCs to players."""
+    if not session.get('username'):
+        return jsonify(error='Unauthorized'), 401
+    if 'dm' not in user_role():
+        return jsonify(error='Forbidden'), 403
+
+    from webapp.user_management import UserManagementError, user_admin
+
+    if request.method == 'GET':
+        try:
+            return jsonify(success=True, **user_admin('list'))
+        except UserManagementError as exc:
+            return jsonify(success=False, error=str(exc)), 400
+
+    payload = request.get_json(silent=True) or {}
+    op = payload.get('op')
+    if not op:
+        return jsonify(success=False, error='op is required'), 400
+
+    try:
+        result = user_admin(
+            op,
+            username=payload.get('username') or payload.get('name'),
+            password=payload.get('password'),
+            roles=payload.get('roles'),
+            character_uid=payload.get('character_uid') or payload.get('character'),
+            spawn=bool(payload.get('spawn', True)),
+        )
+        try:
+            get_current_game().refresh_client_map()
+        except Exception:
+            pass
+        return jsonify(success=True, **result)
+    except UserManagementError as exc:
+        return jsonify(success=False, error=str(exc)), 400
+    except Exception as exc:
+        get_logger().exception('admin_user_management failed')
+        return jsonify(success=False, error=str(exc)), 500
+
+
+@dm_bp.route('/admin/npc_conversation_mode', methods=['GET', 'POST'])
+def admin_npc_conversation_mode():
+    """DM-only: read or set per-NPC conversation mode (llm vs manual)."""
+    if not session.get('username'):
+        return jsonify(error='Unauthorized'), 401
+    if 'dm' not in user_role():
+        return jsonify(error='Forbidden'), 403
+
+    from webapp.npc_conversation_mode import (
+        npc_conversation_mode_payload,
+        set_npc_conversation_mode,
+    )
+
+    current_game = get_current_game()
+    game_session = current_game.game_session
+
+    if request.method == 'GET':
+        entity_id = (request.args.get('entity_id') or '').strip()
+        if not entity_id:
+            return jsonify(success=False, error='entity_id is required'), 400
+        entity = current_game.get_entity_by_uid(entity_id)
+        if entity is None:
+            return jsonify(success=False, error='Entity not found'), 404
+        if not (callable(getattr(entity, 'is_npc', None)) and entity.is_npc()):
+            return jsonify(success=False, error='Conversation mode applies to NPCs only'), 400
+        return jsonify(success=True, **npc_conversation_mode_payload(current_game, game_session, entity))
+
+    payload = request.get_json(silent=True) or {}
+    entity_id = str(payload.get('entity_id') or '').strip()
+    mode = payload.get('mode')
+    if not entity_id or not mode:
+        return jsonify(success=False, error='entity_id and mode are required'), 400
+    entity = current_game.get_entity_by_uid(entity_id)
+    if entity is None:
+        return jsonify(success=False, error='Entity not found'), 404
+    if not (callable(getattr(entity, 'is_npc', None)) and entity.is_npc()):
+        return jsonify(success=False, error='Conversation mode applies to NPCs only'), 400
+    try:
+        normalized = set_npc_conversation_mode(game_session, entity_id, mode)
+    except ValueError as exc:
+        return jsonify(success=False, error=str(exc)), 400
+    return jsonify(
+        success=True,
+        entity_uid=entity_id,
+        conversation_mode=normalized,
+        **npc_conversation_mode_payload(current_game, game_session, entity),
+    )

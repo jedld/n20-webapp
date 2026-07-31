@@ -46,6 +46,49 @@ except ImportError:  # pragma: no cover - guard for missing dep
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROOT = (SCRIPT_DIR / ".." / "static").resolve()
 DEFAULT_MANIFEST = SCRIPT_DIR / ".asset_manifest.json"
+REPO_ROOT = SCRIPT_DIR.parents[2]
+CAMPAIGN_ROOT = REPO_ROOT / "user_levels"
+
+OPTIMIZATION_PROFILES = {
+    "web": [
+        {
+            "label": "general",
+            "roots": [DEFAULT_ROOT],
+            "max_dim": 1024,
+            "manifest": DEFAULT_MANIFEST,
+            "force": False,
+        },
+        {
+            "label": "ui-icons",
+            "roots": [
+                DEFAULT_ROOT / "actions",
+                DEFAULT_ROOT / "spells",
+                DEFAULT_ROOT / "assets" / "effect",
+                DEFAULT_ROOT / "assets" / "items",
+            ],
+            "max_dim": 256,
+            "manifest": SCRIPT_DIR / ".asset_manifest_ui.json",
+            "force": True,
+        },
+        {
+            "label": "assets",
+            "roots": [DEFAULT_ROOT / "assets"],
+            "max_dim": 512,
+            "manifest": SCRIPT_DIR / ".asset_manifest_assets.json",
+            "force": True,
+            "min_bytes": 200_000,
+        },
+    ],
+    "campaign": [
+        {
+            "label": "campaign",
+            "roots": [CAMPAIGN_ROOT],
+            "max_dim": 2048,
+            "manifest": SCRIPT_DIR / ".asset_manifest_campaigns.json",
+            "force": False,
+        },
+    ],
+}
 
 SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # Skip outputs we generated previously and any third-party libs we shouldn't touch.
@@ -211,8 +254,8 @@ def make_webp_companion(src: Path, max_dim: int, quality: int) -> tuple[Path, in
         raise exc
 
 
-def optimize_one(path: Path, max_dim: int, quality: int, dry_run: bool) -> tuple[int, int]:
-    """Return (bytes_before, bytes_after). Raises on failure."""
+def optimize_one(path: Path, max_dim: int, quality: int, dry_run: bool) -> tuple[int, int, bool]:
+    """Return (bytes_before, bytes_after, replaced). Raises on failure."""
     ext = path.suffix.lower()
     before = path.stat().st_size
 
@@ -221,28 +264,39 @@ def optimize_one(path: Path, max_dim: int, quality: int, dry_run: bool) -> tuple
     ) as tmp:
         tmp_path = Path(tmp.name)
 
+    resized = False
     try:
         if ext == ".png":
+            with Image.open(path) as im:
+                im.load()
+                _, resized = downscale_if_needed(im, max_dim)
             optimize_png(path, tmp_path, max_dim)
         elif ext in (".jpg", ".jpeg"):
+            with Image.open(path) as im:
+                im.load()
+                _, resized = downscale_if_needed(im, max_dim)
             optimize_jpeg(path, tmp_path, max_dim, quality)
         elif ext == ".webp":
+            with Image.open(path) as im:
+                im.load()
+                _, resized = downscale_if_needed(im, max_dim)
             optimize_webp(path, tmp_path, max_dim, quality)
         elif ext == ".gif":
+            with Image.open(path) as im:
+                im.load()
+                _, resized = downscale_if_needed(im, max_dim)
             optimize_gif(path, tmp_path, max_dim)
         else:
             raise ValueError(f"unsupported extension: {ext}")
 
         after = tmp_path.stat().st_size
-        # Only replace if we actually saved bytes.
-        if after < before and not dry_run:
+        should_replace = after < before or (resized and after <= before)
+        if should_replace and not dry_run:
             shutil.copystat(path, tmp_path)
             os.replace(tmp_path, path)
             tmp_path = None
-            return before, after
-        if after >= before:
-            return before, before
-        return before, after
+            return before, after, True
+        return before, before, False
     finally:
         if tmp_path is not None and tmp_path.exists():
             try:
@@ -268,26 +322,50 @@ def fmt_bytes(n: int) -> str:
     return f"{n:.1f}TB"
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("roots", nargs="*", type=Path, help="Folders to scan (default: webapp/static)")
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="Path to JSON manifest tracking optimized files")
-    parser.add_argument("--max-dim", type=int, default=1024, help="Downscale images whose largest side exceeds this (px). 0 disables resizing.")
-    parser.add_argument("--quality", type=int, default=85, help="JPEG/WebP quality (1-100)")
-    parser.add_argument("--webp", action="store_true", help="Also create .webp companions for PNG/JPEG sources")
-    parser.add_argument("--webp-quality", type=int, default=82, help="Quality for generated .webp companions")
-    parser.add_argument("--force", action="store_true", help="Re-optimize files even if the manifest says they're current")
-    parser.add_argument("--dry-run", action="store_true", help="Report what would change without modifying files")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
-    args = parser.parse_args(argv)
+@dataclass
+class PassConfig:
+    label: str
+    roots: list[Path]
+    max_dim: int
+    manifest: Path
+    force: bool = False
+    min_bytes: int = 0
 
-    roots = [r.resolve() for r in (args.roots or [DEFAULT_ROOT])]
-    manifest_path = args.manifest.resolve()
+
+def run_optimization_pass(
+    cfg: PassConfig,
+    *,
+    quality: int,
+    webp: bool,
+    webp_quality: int,
+    dry_run: bool,
+    verbose: bool,
+) -> Stats:
+    roots = [r.resolve() for r in cfg.roots if r.exists()]
+    if not roots:
+        print(f"warn: no roots for pass {cfg.label}", file=sys.stderr)
+        return Stats()
+
+    manifest_path = cfg.manifest.resolve()
     manifest = load_manifest(manifest_path)
     stats = Stats()
+    print(f"\n== Pass: {cfg.label} (max_dim={cfg.max_dim}) ==")
 
     for asset in iter_assets(roots):
         stats.scanned += 1
+        try:
+            file_size = asset.stat().st_size
+        except OSError as exc:
+            stats.failed += 1
+            stats.errors.append(f"{asset}: {exc}")
+            continue
+
+        if cfg.min_bytes and file_size < cfg.min_bytes:
+            stats.skipped += 1
+            if verbose:
+                print(f"skip   {asset} (under {cfg.min_bytes} bytes)")
+            continue
+
         rel = str(asset.resolve())
         try:
             current = fingerprint(asset)
@@ -298,22 +376,28 @@ def main(argv: list[str] | None = None) -> int:
 
         prior = manifest.get(rel)
         already_done = (
-            not args.force
+            not cfg.force
             and prior is not None
             and prior.get("sha1") == current["sha1"]
         )
         if already_done:
             stats.skipped += 1
-            if args.verbose:
+            if verbose:
                 print(f"skip   {asset}")
             continue
 
         try:
-            before, after = optimize_one(asset, args.max_dim, args.quality, args.dry_run)
+            before, after, replaced = optimize_one(asset, cfg.max_dim, quality, dry_run)
         except Exception as exc:
             stats.failed += 1
             stats.errors.append(f"{asset}: {exc}")
             print(f"fail   {asset}: {exc}", file=sys.stderr)
+            continue
+
+        if not replaced and before == after:
+            stats.skipped += 1
+            if verbose:
+                print(f"skip   {asset} (no improvement)")
             continue
 
         stats.optimized += 1
@@ -321,50 +405,126 @@ def main(argv: list[str] | None = None) -> int:
         stats.bytes_after += after
         savings = before - after
         pct = (savings / before * 100.0) if before else 0.0
-        action = "would optimize" if args.dry_run else "optimized"
+        action = "would optimize" if dry_run else "optimized"
         print(f"{action}: {asset}  {fmt_bytes(before)} -> {fmt_bytes(after)} ({pct:.1f}% saved)")
 
-        if args.webp and asset.suffix.lower() in (".png", ".jpg", ".jpeg") and not args.dry_run:
+        if webp and asset.suffix.lower() in (".png", ".jpg", ".jpeg") and not dry_run:
             try:
-                result = make_webp_companion(asset, args.max_dim, args.webp_quality)
+                result = make_webp_companion(asset, cfg.max_dim, webp_quality)
                 if result is not None:
                     companion, size = result
                     stats.webp_created += 1
                     stats.webp_bytes += size
-                    if args.verbose:
+                    if verbose:
                         print(f"  +webp {companion} ({fmt_bytes(size)})")
             except Exception as exc:
                 stats.errors.append(f"{asset} (webp): {exc}")
                 print(f"warn webp companion failed for {asset}: {exc}", file=sys.stderr)
 
-        if not args.dry_run:
+        if not dry_run:
             try:
                 manifest[rel] = fingerprint(asset)
             except OSError as exc:
                 stats.errors.append(f"{asset}: manifest update failed: {exc}")
 
-    if not args.dry_run:
+    if not dry_run:
         try:
             save_manifest(manifest_path, manifest)
         except OSError as exc:
             print(f"warn: could not save manifest {manifest_path}: {exc}", file=sys.stderr)
 
+    return stats
+
+
+def profile_passes(profile: str) -> list[PassConfig]:
+    if profile == "full":
+        names = ["web", "campaign"]
+    else:
+        names = [profile]
+    passes: list[PassConfig] = []
+    for name in names:
+        for entry in OPTIMIZATION_PROFILES.get(name, []):
+            passes.append(PassConfig(**entry))
+    return passes
+
+
+def print_summary(stats: Stats, *, verbose: bool) -> None:
     saved = stats.bytes_before - stats.bytes_after
     print()
     print("Summary")
     print(f"  scanned:    {stats.scanned}")
-    print(f"  skipped:    {stats.skipped} (already optimized)")
+    print(f"  skipped:    {stats.skipped}")
     print(f"  optimized:  {stats.optimized}")
     print(f"  failed:     {stats.failed}")
     if stats.optimized:
         print(f"  size:       {fmt_bytes(stats.bytes_before)} -> {fmt_bytes(stats.bytes_after)} (saved {fmt_bytes(saved)})")
     if stats.webp_created:
         print(f"  webp:       {stats.webp_created} companions ({fmt_bytes(stats.webp_bytes)} total)")
-    if stats.errors and args.verbose:
+    if stats.errors and verbose:
         print("  errors:")
         for line in stats.errors:
             print(f"    - {line}")
 
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("roots", nargs="*", type=Path, help="Folders to scan (default: webapp/static)")
+    parser.add_argument(
+        "--profile",
+        choices=sorted(set(OPTIMIZATION_PROFILES) | {"full"}),
+        help="Run preset optimization passes (web, campaign, or full)",
+    )
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="Path to JSON manifest tracking optimized files")
+    parser.add_argument("--max-dim", type=int, default=1024, help="Downscale images whose largest side exceeds this (px). 0 disables resizing.")
+    parser.add_argument("--quality", type=int, default=85, help="JPEG/WebP quality (1-100)")
+    parser.add_argument("--webp", action="store_true", help="Also create .webp companions for PNG/JPEG sources")
+    parser.add_argument("--webp-quality", type=int, default=82, help="Quality for generated .webp companions")
+    parser.add_argument("--force", action="store_true", help="Re-optimize files even if the manifest says they're current")
+    parser.add_argument("--min-bytes", type=int, default=0, help="Only optimize files at least this large (bytes)")
+    parser.add_argument("--dry-run", action="store_true", help="Report what would change without modifying files")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    args = parser.parse_args(argv)
+
+    if args.profile:
+        total = Stats()
+        for cfg in profile_passes(args.profile):
+            pass_stats = run_optimization_pass(
+                cfg,
+                quality=args.quality,
+                webp=args.webp,
+                webp_quality=args.webp_quality,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+            total.scanned += pass_stats.scanned
+            total.skipped += pass_stats.skipped
+            total.optimized += pass_stats.optimized
+            total.failed += pass_stats.failed
+            total.bytes_before += pass_stats.bytes_before
+            total.bytes_after += pass_stats.bytes_after
+            total.webp_created += pass_stats.webp_created
+            total.webp_bytes += pass_stats.webp_bytes
+            total.errors.extend(pass_stats.errors)
+        print_summary(total, verbose=args.verbose)
+        return 0 if total.failed == 0 else 1
+
+    cfg = PassConfig(
+        label="custom",
+        roots=[r.resolve() for r in (args.roots or [DEFAULT_ROOT])],
+        max_dim=args.max_dim,
+        manifest=args.manifest.resolve(),
+        force=args.force,
+        min_bytes=args.min_bytes,
+    )
+    stats = run_optimization_pass(
+        cfg,
+        quality=args.quality,
+        webp=args.webp,
+        webp_quality=args.webp_quality,
+        dry_run=args.dry_run,
+        verbose=args.verbose,
+    )
+    print_summary(stats, verbose=args.verbose)
     return 0 if stats.failed == 0 else 1
 
 

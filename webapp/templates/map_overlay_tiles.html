@@ -92,6 +92,13 @@
           {% endif %}
           <div class="brightness-overlay" style="opacity: {{ tile['opacity'] }};"></div>
           {% if tile.get('id') and tile.get('entity') %}
+            {% set jrpg_talkable = not tile.get('dead') and not tile.get('unconscious') and (not pov_entity or pov_entity.entity_uid != tile.id) %}
+            {% set jrpg_dialog_entity = tile.get('dialog') or (viewer_is_dm and tile.get('is_npc')) %}
+            {% if jrpg_talkable and jrpg_dialog_entity and (viewer_is_dm or (pov_entity and within_talking_distance(tile.id))) %}
+            <div class="dialog-bubble hover-only{% if viewer_is_dm and tile.get('is_npc') and not tile.get('dialog') %} dialog-bubble-dm{% endif %}" data-id="{{ tile.id }}" data-name="{{ tile.get('name', tile.get('label', '')) }}">
+              <i class="glyphicon glyphicon-comment"></i>
+            </div>
+            {% endif %}
             <div class="entity" data-id="{{ tile['id'] }}" data-label="{{ tile.get('label', '')|e }}">
               {% set entity_size = tile.get('entity_size', 'medium') %}
               {% set multiplier = 2 if entity_size == 'large' else 1 %}

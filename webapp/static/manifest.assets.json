@@ -26,12 +26,12 @@
   },
   "versions": {
     "combat-log.min.js": "a8e282849c",
-    "edit_mode.min.js": "401f9ffaef",
+    "edit_mode.min.js": "6172d9bf17",
     "edit_properties.min.js": "be9c81ebb1",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "c6071296f1",
+    "engine.min.js": "707f46c3c1",
     "inert-polyfill.min.js": "fcce9c44c6",
-    "map_annotations_edit.min.js": "bd1aeff27b",
+    "map_annotations_edit.min.js": "0d9efc0e2b",
     "map_graph.min.js": "cde7317c95",
     "path_compute.min.js": "ccc22663d8",
     "perf.min.js": "7305880b63",
@@ -39,16 +39,16 @@
     "sheet.min.js": "e5c4af0da3",
     "spell_effects.min.js": "5f6ebcbdf2",
     "status_effects.min.js": "960a5f58ea",
-    "utils.min.js": "28a0fd45e4",
+    "utils.min.js": "aadf463f55",
     "utils_optimized.min.js": "86e4a30d63",
     "js/character_builder.min.js": "523ea05623",
     "js/character_builder_images.min.js": "a63f979b68",
-    "js/chat.min.js": "abf7945237",
+    "js/chat.min.js": "8c2a17c6dd",
     "js/local_conversation.min.js": "6cf3759906",
-    "js/tts_player.min.js": "69253b63fa",
+    "js/tts_player.min.js": "ad1f664ee2",
     "sheet.min.css": "87e9ef1852",
-    "styles.min.css": "00484880f2"
+    "styles.min.css": "8b25d64035"
   },
-  "generatedAt": "2026-07-29T21:35:25.440Z",
-  "buildVersion": "b58dab1e53e1"
+  "generatedAt": "2026-07-31T07:51:06.754Z",
+  "buildVersion": "dcf8465ba778"
 }

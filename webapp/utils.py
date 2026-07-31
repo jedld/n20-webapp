@@ -2224,6 +2224,10 @@ class GameManagement:
                             _src = result_item.get("source")
                             _src_uid = getattr(_src, "entity_uid", None) if _src is not None else None
                             self.socketio.emit('message', {"type": "message_toaster", "source": _json_safe_uid(_src_uid), "message": result_item["message"], "position": result_item["position"]})
+                    elif result_item.get("type") == "contextual_sound":
+                        if not suppress_ui:
+                            from webapp.blueprints.helpers.contextual_sound_ui import emit_contextual_sound_payload
+                            emit_contextual_sound_payload(self.socketio, result_item, suppress_ui=suppress_ui)
                     elif result_item.get('type') == 'use_item':
                         request_map_refresh = True
                     elif result_item.get('refresh_map'):

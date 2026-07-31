@@ -1411,7 +1411,12 @@ def login():
             return jsonify(status='ok')
         return jsonify(error="Invalid Login Credentials")
 
-    return render_template('login.html', title=TITLE, background=LOGIN_BACKGROUND)
+    from webapp.blueprints.helpers.login_ui import build_login_page_context
+
+    return render_template(
+        'login.html',
+        **build_login_page_context(title=TITLE, index_data=index_data),
+    )
 
 @app.route('/character_selection', methods=['GET'])
 def character_selection():
@@ -2280,16 +2285,10 @@ def character_journal_delete(character_name, entry_id):
 def pov_entities():
     global current_game
     if 'dm' in user_role():
-        # get all maps
-        pov_entities = []
-        for map in current_game.maps.values():
-            for e in map.entities:
-                if isinstance(e, PlayerCharacter):
-                    if e not in pov_entities:
-                        pov_entities.append(e)
-    else:
-        pov_entities = entities_controlled_by(session['username'])
-    return pov_entities
+        battle_map = current_game.get_map_for_user(session['username'])
+        from webapp.pov_utils import dm_pov_portrait_entities
+        return dm_pov_portrait_entities(current_game, battle_map)
+    return entities_controlled_by(session['username'])
 
 
 def render_pov_entities():
@@ -2905,8 +2904,9 @@ def refresh_portraits():
     username = session.get('username')
     if not username:
         return "", 200
-    current_pov_entity = current_game.get_pov_entity_for_user(username)
-    return render_template('floating_portraits.html', pov_entities=pov_entities(), current_pov_entity=current_pov_entity)
+    from webapp.pov_utils import build_portrait_render_context
+    portrait_ctx = build_portrait_render_context(current_game, username, user_role())
+    return render_template('floating_portraits.html', **portrait_ctx)
 
 @app.route('/start', methods=['POST'])
 def start_battle():
@@ -3894,56 +3894,6 @@ def manual_roll():
     )
   
     return jsonify(roll_result=roll_result.result(), roll_explaination=str(roll_result))
-
-@app.route('/switch_pov', methods=['POST'])
-def switch_pov():
-    global current_game
-    battle_map = current_game.get_map_for_user(session['username'])
-    entity_id = request.form['entity_uid']
-    entity = current_game.get_entity_by_uid(entity_id)
-    entity_battle_map = current_game.get_map_for_entity(entity)
-    current_game.set_pov_entity_for_user(session['username'], entity)
-    # Switch the user's current map BEFORE resolving the background so a POV
-    # change to an entity on a different map returns that map's background
-    # (otherwise the previous map's background is returned and the client UI
-    # appears stuck on the old map until a manual refresh).
-    map_changed = battle_map != entity_battle_map
-    if map_changed:
-        current_game.switch_map_for_user(session['username'], entity_battle_map.name)
-    background = current_game.get_background_image_for_user(session['username'])
-    map_width, map_height = entity_battle_map.size
-    tiles_dimension_height = map_height * TILE_PX
-    tiles_dimension_width = map_width * TILE_PX
-    dm_active = False
-    # Include map default effect and whether DM has an active override
-    map_default = None
-    map_defaults = []
-    if map_changed:
-        try:
-            map_defaults = map_default_effect_payloads(entity_battle_map)
-            map_default = map_defaults[0] if map_defaults else None
-        except Exception:
-            map_default = None
-
-        try:
-            game_key = getattr(current_game.game_session, 'root_path', None) or getattr(game_session, 'root_path', None) or LEVEL
-            dm_active = has_enabled_effect_payloads(active_effects.get(game_key, {}).values())
-            try:
-                dm_active = dm_active or has_enabled_effect_payloads(active_effects_map.get(game_key, {}).get(entity_battle_map.name, {}).values())
-            except Exception:
-                pass
-        except Exception:
-            dm_active = False
-    return jsonify(background=f"assets/{background}",
-        name=entity_battle_map.name,
-        pov_entity=entity_id,
-        image_offset_px=entity_battle_map.image_offset_px,
-        height=tiles_dimension_height,
-        width=tiles_dimension_width,
-        map_default_effect=map_default,
-        map_default_effects=map_defaults,
-        dm_active=dm_active,
-        special_effects_enabled=special_effects_enabled())
 
 @app.route('/read_letter', methods=['POST'])
 def read_letter():
@@ -5925,18 +5875,17 @@ def ai_initialize():
 
 @app.route('/ai/initialize-from-env', methods=['POST'])
 def ai_initialize_from_env():
-    """Re-apply ``LLM_PROVIDER`` / API keys to the shared handler (same as NPC/dialog LLM)."""
+    """Re-apply ``LLM_PROVIDER`` / ``NPC_*`` env vars to the shared handler."""
     if 'dm' not in user_role():
         return jsonify({'success': False, 'error': 'DM access required'}), 403
     try:
-        # Avoid blocking HTTP calls to Ollama/llama.cpp again if startup already succeeded.
-        if getattr(llm_handler, 'current_provider', None):
-            info = llm_handler.get_provider_info()
-            return jsonify({'success': bool(info.get('initialized')), 'info': info})
-        ok = configure_llm_handler_from_environment(llm_handler)
+        dm_ok = configure_llm_handler_from_environment(llm_handler)
+        npc_ok = configure_npc_provider_from_environment(llm_handler)
         info = llm_handler.get_provider_info()
+        info['npc_provider'] = llm_handler.get_npc_provider_info()
         return jsonify({
-            'success': bool(ok and info.get('initialized')),
+            'success': bool(dm_ok and info.get('initialized')),
+            'npc_provider_ready': bool(npc_ok),
             'info': info,
         })
     except Exception as e:
@@ -6211,6 +6160,7 @@ def ai_get_provider_info():
     
     try:
         info = llm_handler.get_provider_info()
+        info['npc_provider'] = llm_handler.get_npc_provider_info()
         return jsonify({'success': True, 'info': info})
         
     except Exception as e:

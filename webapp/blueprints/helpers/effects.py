@@ -436,6 +436,9 @@ def register_effect_listeners(record_narration_fn):
     event_manager.register_event_listener('control_override_removed', _on_control_override_removed)
     event_manager.register_event_listener('turn_skipped', _on_turn_skipped)
 
+    from webapp.room_service_buzzer import register_room_service_listeners
+    register_room_service_listeners(event_manager)
+
     # Battle-end narration is registered on current_game, not event_manager
     def _on_battle_end_narrate_wrapped(game_manager, session):
         return _on_battle_end_narrate(game_manager, session, record_narration_fn)

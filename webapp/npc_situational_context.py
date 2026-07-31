@@ -7,6 +7,10 @@ from typing import Any, Dict, List, Optional
 from natural20.entity import Entity
 from natural20.player_character import PlayerCharacter
 from natural20.utils.conversation import entity_label, mention_handle_for
+from natural20.map_annotations import (
+    current_location_annotations_at_position,
+    format_current_location_for_llm,
+)
 from natural20.utils.conversation_offers import (
     OFFER_STATE_KEY,
     has_completed_item_offer,
@@ -120,8 +124,23 @@ def build_npc_situational_context(
         except Exception:
             pass
     map_name = getattr(battle_map, 'name', None) if battle_map is not None else None
-    if position is not None:
+    if position is not None and battle_map is not None:
         lines.append(f"Your position: {position} on map {map_name or 'unknown'}.")
+        try:
+            location_anns = current_location_annotations_at_position(
+                battle_map.properties,
+                int(position[0]),
+                int(position[1]),
+            )
+            location_line = format_current_location_for_llm(
+                location_anns,
+                map_name=map_name,
+                position=(int(position[0]), int(position[1])),
+            )
+            if location_line:
+                lines.append(location_line)
+        except Exception:
+            pass
     elif map_name:
         lines.append(f"Your map: {map_name}.")
 
@@ -214,6 +233,7 @@ def build_npc_situational_context(
 
     lines.append(
         "If you have led the guest to the correct door and given them the key, "
-        "speak briefly to the guest, emit [GOAL_COMPLETE], and stop interacting with the door."
+        "speak briefly to the guest, emit [GOAL_COMPLETE], and stop interacting with the door. "
+        "Then include [MOVE: target=taproom, distance=5] to return behind the bar."
     )
     return '\n'.join(lines)

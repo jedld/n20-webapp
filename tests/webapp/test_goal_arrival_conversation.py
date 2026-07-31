@@ -23,6 +23,7 @@ class TestGoalArrivalConversationManager(unittest.TestCase):
 
         self.conversation_service = Mock()
         self.conversation_service._sids_for_username.return_value = []
+        self.conversation_service.entity_rag_handler = None
         self.manager = GoalArrivalConversationManager(
             self.current_game,
             conversation_service_getter=lambda: self.conversation_service,
@@ -62,6 +63,18 @@ class TestGoalArrivalConversationManager(unittest.TestCase):
         completed = self.manager.maybe_complete_after_npc_reply(self.npc, 'All set. [GOAL_COMPLETE]')
         self.assertTrue(completed)
         self.assertIsNone(self.manager.active_state())
+
+    @patch.object(GoalArrivalConversationManager, '_emit_to_participants')
+    def test_on_player_passive_ack_finishes_escort(self, _emit):
+        self.current_game.get_short_term_goal.return_value = {'goal': 'Escort', 'status': 'active'}
+        rag = Mock()
+        self.conversation_service.entity_rag_handler = rag
+        self.manager.start(self.npc, self.pc, goal_state={'goal': 'Escort', 'status': 'active'})
+        self.current_game.get_entity_by_uid.return_value = self.npc
+        self.assertTrue(self.manager.on_player_passive_ack(self.pc))
+        self.assertIsNone(self.manager.active_state())
+        self.current_game.complete_short_term_goal.assert_called_once()
+        rag._finalize_npc_errand.assert_called_once_with(self.npc, peaceful=True)
 
 
 class TestNpcSituationalContext(unittest.TestCase):

@@ -81,6 +81,9 @@ from webapp.npc_item_exchange import (
     resolve_inventory_container_slug,
     retrieve_from_container,
     retrieve_from_inventory_container,
+    STAFF_CROSS_MAP_RETRIEVE,
+    actor_is_container_staff,
+    container_workplace_landmark,
     store_in_container,
     store_in_inventory_container,
 )
@@ -2626,14 +2629,46 @@ class EntityRAGHandler:
                 return ann, map_obj
         return None, None
 
+    def current_location_prompt_for_entity(self, entity: Entity) -> str:
+        battle_map = self.current_game.get_map_for_entity(entity)
+        if battle_map is None:
+            return ''
+        try:
+            pos = battle_map.position_of(entity)
+            x, y = int(pos[0]), int(pos[1])
+        except Exception:
+            return ''
+        from natural20.map_annotations import (
+            current_location_annotations_at_position,
+            format_current_location_for_llm,
+        )
+        annotations = current_location_annotations_at_position(battle_map.properties, x, y)
+        if not annotations:
+            return ''
+        map_name = getattr(battle_map, 'name', None) or getattr(battle_map, 'map_id', None)
+        return format_current_location_for_llm(
+            annotations,
+            map_name=map_name,
+            position=(x, y),
+        )
+
     def map_landmarks_prompt_for_entity(self, entity: Entity) -> str:
         battle_map = self.current_game.get_map_for_entity(entity)
         if battle_map is None:
             return ''
 
-        from natural20.map_annotations import format_annotation_for_llm
+        from natural20.map_annotations import (
+            current_location_annotations_at_position,
+            format_annotation_for_llm,
+        )
+
+        header_lines: List[str] = []
+        location_prompt = self.current_location_prompt_for_entity(entity)
+        if location_prompt:
+            header_lines.append(location_prompt)
 
         lines: List[str] = []
+        current_ids: set = set()
         known_ids = set()
         props = getattr(entity, 'properties', None) or {}
         for raw_id in props.get('known_places') or props.get('known_landmarks') or []:
@@ -2650,27 +2685,37 @@ class EntityRAGHandler:
 
         try:
             pos = battle_map.position_of(entity)
-            for ann in battle_map.map_annotations_at(int(pos[0]), int(pos[1])):
-                if ann.get('id') in known_ids:
+            x, y = int(pos[0]), int(pos[1])
+            current_ids = {
+                ann.get('id')
+                for ann in current_location_annotations_at_position(
+                    battle_map.properties, x, y
+                )
+                if ann.get('id')
+            }
+            for ann in battle_map.map_annotations_at(x, y):
+                if ann.get('id') in known_ids or ann.get('id') in current_ids:
                     continue
                 lines.append(f"- (here) {format_annotation_for_llm(ann)}")
         except Exception:
             pass
 
         for ann in battle_map.map_annotations():
-            if ann.get('id') in known_ids:
+            if ann.get('id') in known_ids or ann.get('id') in current_ids:
                 continue
             if len(lines) >= 12:
                 break
             lines.append(f"- {format_annotation_for_llm(ann)}")
 
-        if not lines:
+        if not lines and not header_lines:
             return ''
-        return (
+        body = (
             "Map landmarks (use as [MOVE: target=<id>] or [MOVE: target=@label]; "
             "descriptions are staff/local knowledge):\n"
             + '\n'.join(lines[:12])
-        )
+        ) if lines else ''
+        parts = header_lines + ([body] if body else [])
+        return '\n'.join(parts)
 
     def resolve_escort_landmark_id(self, actor: Entity, text: str) -> Optional[str]:
         """Pick a known landmark id when NPC/player text implies escort navigation."""
@@ -3633,6 +3678,51 @@ class EntityRAGHandler:
                 manager.end(peaceful=peaceful)
         except Exception:
             pass
+        try:
+            self._schedule_npc_return_to_post(actor)
+        except Exception:
+            logger.exception('Failed to schedule NPC return to post for %s', entity_label(actor))
+
+    def _schedule_npc_return_to_post(self, actor: Entity) -> bool:
+        """Walk staff NPCs back to a known home landmark after errands."""
+        if actor is None:
+            return False
+        props = getattr(actor, 'properties', None) or {}
+        if not isinstance(props, dict):
+            props = {}
+        known = [
+            str(item).strip()
+            for item in (props.get('known_places') or props.get('known_landmarks') or [])
+            if str(item).strip()
+        ]
+        if not known:
+            return False
+
+        preferred = ('taproom', 'stockroom', 'amphail_market')
+        home_id = None
+        for candidate in preferred:
+            if candidate in known:
+                home_id = candidate
+                break
+        if home_id is None:
+            home_id = known[0]
+
+        target_info = self.parse_move_target_info(actor, {'target': home_id})
+        if target_info is None:
+            return False
+        if self.movement_helper.movement_reached(actor, target_info, distance_ft=5):
+            return False
+
+        scheduled = self.current_game.schedule_npc_move_to(
+            actor,
+            target_info,
+            distance_ft=5,
+        )
+        if scheduled is not None:
+            self._trigger_immediate_npc_movement(actor)
+            self._log_conversation_plan(actor, f'returning to {home_id}')
+            return True
+        return False
 
     def _maybe_trigger_goal_arrival_debrief(
         self,
@@ -4053,6 +4143,162 @@ class EntityRAGHandler:
             legacy.append({'kind': 'offer_item', **offer_item})
         return legacy
 
+    def _serialize_pending_item_exchange(
+        self,
+        entries: List[Dict[str, Any]],
+        container,
+        speaker: Entity = None,
+    ) -> List[Dict[str, Any]]:
+        serialized: List[Dict[str, Any]] = []
+        for entry in entries or []:
+            item = dict(entry)
+            kind = item.get('kind')
+            if kind == 'retrieve' and not isinstance(item.get('container'), str):
+                item['container_uid'] = getattr(container, 'entity_uid', None) or item.get('container_uid')
+                item.pop('container', None)
+            target = item.get('target')
+            if target is not None and hasattr(target, 'entity_uid'):
+                item['target_uid'] = getattr(target, 'entity_uid', None)
+                item.pop('target', None)
+            elif kind == 'offer_item' and speaker is not None and not item.get('target_uid'):
+                item['target_uid'] = getattr(speaker, 'entity_uid', None)
+            serialized.append(item)
+        return serialized
+
+    def _hydrate_pending_item_exchange(
+        self,
+        pending: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        hydrated: List[Dict[str, Any]] = []
+        for entry in pending or []:
+            item = dict(entry)
+            container_uid = item.pop('container_uid', None)
+            if container_uid and item.get('kind') == 'retrieve':
+                try:
+                    item['container'] = self.game_session.entity_by_uid(container_uid)
+                except Exception:
+                    item['container'] = None
+            target_uid = item.pop('target_uid', None)
+            if target_uid and item.get('kind') == 'offer_item':
+                try:
+                    item['target'] = self.game_session.entity_by_uid(target_uid)
+                except Exception:
+                    item['target'] = None
+            hydrated.append(item)
+        return hydrated
+
+    def _staff_resume_target_after_exchange(self, actor: Entity, speaker: Entity = None):
+        if speaker is not None:
+            return {
+                'kind': 'entity',
+                'target': speaker,
+                'target_spec': getattr(speaker, 'entity_uid', None),
+            }
+        return None
+
+    def _queue_staff_workplace_item_exchange(
+        self,
+        actor: Entity,
+        container,
+        exchange_entries: List[Dict[str, Any]],
+        speaker: Entity,
+        result: Dict[str, Any],
+        *,
+        kick_movement: bool = False,
+    ) -> bool:
+        if actor is None or container is None or not exchange_entries:
+            return False
+
+        actor_map = self.current_game.get_map_for_entity(actor)
+        container_map = self.current_game.get_map_for_entity(container)
+        if actor_map is not None and container_map is not None and actor_map is container_map:
+            target_info = {
+                'kind': 'object',
+                'target': container,
+                'target_spec': getattr(container, 'entity_uid', None),
+            }
+            return self._schedule_approach_to_target_info(
+                actor,
+                target_info,
+                speaker,
+                result,
+                kick_movement=kick_movement,
+            )
+
+        workplace = container_workplace_landmark(container)
+        target_info = self.parse_move_target_info(actor, {'target': workplace}, speaker=speaker)
+        if target_info is None:
+            target_info = {
+                'kind': 'object',
+                'target': container,
+                'target_spec': getattr(container, 'entity_uid', None),
+            }
+
+        pending = self._serialize_pending_item_exchange(exchange_entries, container, speaker=speaker)
+        resume_target = self._staff_resume_target_after_exchange(actor, speaker)
+
+        task = self.current_game.get_npc_movement_task(actor)
+        if task is not None and task.get('status') == 'active':
+            if resume_target and not task.get('resume_target_info'):
+                task['resume_target_info'] = dict(task.get('target_info') or {})
+            task['pending_item_exchange'] = pending
+            task['target_info'] = dict(target_info)
+            movement_manager = getattr(self.current_game, 'movement_manager', None)
+            if movement_manager is not None:
+                task['target_uid'] = movement_manager._target_uid_from_info(target_info)
+            task['mode'] = 'move_to'
+            task['status'] = 'active'
+            task['next_run_at'] = time.time()
+        else:
+            scheduled = self.current_game.schedule_npc_move_to(
+                actor,
+                target_info,
+                distance_ft=5,
+                speaker=speaker,
+            )
+            if scheduled is None:
+                return False
+            scheduled['pending_item_exchange'] = pending
+            if resume_target:
+                scheduled['resume_target_info'] = resume_target
+
+        if kick_movement:
+            self._trigger_immediate_npc_movement(actor)
+        result.setdefault('executed_actions', []).append('staff_workplace_exchange')
+        self._log_conversation_plan(
+            actor,
+            f'heading to {workplace} to fetch stock for room service',
+        )
+        return True
+
+    def _apply_pending_item_exchange(
+        self,
+        actor: Entity,
+        task: Dict[str, Any],
+        speaker: Entity = None,
+    ) -> bool:
+        pending = task.get('pending_item_exchange')
+        if not pending:
+            return False
+        if speaker is None:
+            requester_uid = task.get('requester_uid')
+            if requester_uid:
+                try:
+                    speaker = self.game_session.entity_by_uid(requester_uid)
+                except Exception:
+                    speaker = None
+        plan = {'action_sequence': self._hydrate_pending_item_exchange(pending)}
+        exchange_result = {'executed_actions': []}
+        self._apply_item_exchange_directives(
+            plan,
+            actor,
+            speaker=speaker,
+            result=exchange_result,
+            kick_movement=False,
+        )
+        task.pop('pending_item_exchange', None)
+        return bool(exchange_result.get('executed_actions'))
+
     def _apply_item_exchange_directives(
         self,
         plan: Dict[str, Any],
@@ -4064,7 +4310,8 @@ class EntityRAGHandler:
         skip: Optional[set] = None,
         kick_movement: bool = False,
     ) -> None:
-        for entry in self._item_exchange_action_sequence(plan):
+        sequence = self._item_exchange_action_sequence(plan)
+        for idx, entry in enumerate(sequence):
             kind = entry.get('kind')
             if kind == 'retrieve' and entry.get('item') and self._directive_enabled('retrieve', only, skip):
                 container = entry.get('container')
@@ -4090,9 +4337,37 @@ class EntityRAGHandler:
                     result['executed_actions'].append('retrieve')
                     self._log_witnessed_offer_outcome(actor, actor, message)
                 else:
+                    message_text = str(message or '')
+                    remaining_entries = list(sequence[idx:])
                     if (
                         not isinstance(container, str)
-                        and 'not within reach' in str(message or '').lower()
+                        and container is not None
+                        and remaining_entries
+                        and (
+                            message_text == STAFF_CROSS_MAP_RETRIEVE
+                            or (
+                                actor_is_container_staff(actor, container)
+                                and 'cannot see that container' in message_text.lower()
+                            )
+                        )
+                        and self._queue_staff_workplace_item_exchange(
+                            actor,
+                            container,
+                            remaining_entries,
+                            speaker,
+                            result,
+                            kick_movement=kick_movement,
+                        )
+                    ):
+                        logger.info(
+                            'Queued staff workplace exchange for %s (%s)',
+                            entity_label(actor),
+                            entry['item'],
+                        )
+                        return
+                    elif (
+                        not isinstance(container, str)
+                        and 'not within reach' in message_text.lower()
                     ):
                         target_info = {
                             'kind': 'object',
@@ -4110,12 +4385,13 @@ class EntityRAGHandler:
                                 entity_label(container),
                                 entry['item'],
                             )
-                    logger.info(
-                        'Retrieve suppressed for %s (%s): %s',
-                        entity_label(actor),
-                        entry['item'],
-                        message,
-                    )
+                    else:
+                        logger.info(
+                            'Retrieve suppressed for %s (%s): %s',
+                            entity_label(actor),
+                            entry['item'],
+                            message,
+                        )
             elif kind == 'store' and entry.get('item') and self._directive_enabled('store', only, skip):
                 container = entry.get('container')
                 if isinstance(container, str):
@@ -4910,6 +5186,31 @@ class EntityRAGHandler:
                 requester = self.game_session.entity_by_uid(requester_uid)
             except Exception:
                 requester = None
+        if task.get('pending_item_exchange'):
+            try:
+                self._apply_pending_item_exchange(entity, task, requester)
+            except Exception as exc:
+                logger.warning(
+                    'Pending staff item exchange failed for %s: %s',
+                    entity_label(entity),
+                    exc,
+                )
+        resume_target = task.pop('resume_target_info', None)
+        if resume_target and requester is not None:
+            try:
+                self.current_game.schedule_npc_move_to(
+                    entity,
+                    resume_target,
+                    distance_ft=int(task.get('distance_ft') or 5),
+                    speaker=requester,
+                )
+                self._trigger_immediate_npc_movement(entity)
+            except Exception as exc:
+                logger.warning(
+                    'Failed to resume staff movement for %s: %s',
+                    entity_label(entity),
+                    exc,
+                )
         self._maybe_trigger_goal_arrival_debrief(entity, task, requester=requester)
         self.current_game.record_npc_movement_history(entity, {
             'time': self.game_session.game_time,
@@ -6329,6 +6630,15 @@ class EntityRAGHandler:
                 context['merchant_llm_pricing'] = bool(cfg.get('llm_pricing', True))
         except Exception:
             context['is_merchant'] = False
+
+        context['is_npc'] = bool(callable(getattr(entity, 'is_npc', None)) and entity.is_npc())
+        if context['is_npc'] and viewer_is_dm:
+            try:
+                from webapp.npc_conversation_mode import npc_conversation_mode_payload
+                context.update(npc_conversation_mode_payload(self.current_game, self.game_session, entity))
+            except Exception:
+                context['conversation_mode'] = 'llm'
+                context['partner_candidates'] = []
 
         # Add position information
         try:

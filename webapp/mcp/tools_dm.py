@@ -1446,6 +1446,65 @@ def register(registry: ToolRegistry) -> None:
 
         raise tool_error("op must be one of: list, upsert, delete")
 
+    @tool(
+        registry,
+        name='dm.user_admin',
+        description='Manage campaign logins and player-character assignments. '
+                    'op: list | create | update | delete | assign_character | unassign_character. '
+                    'Persists logins and default_controllers to campaign index.json.',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {
+                    'type': 'string',
+                    'enum': [
+                        'list',
+                        'create',
+                        'update',
+                        'delete',
+                        'assign_character',
+                        'unassign_character',
+                    ],
+                },
+                'username': {'type': 'string'},
+                'password': {'type': 'string'},
+                'roles': {
+                    'type': 'array',
+                    'items': {'type': 'string', 'enum': ['player', 'dm']},
+                },
+                'character_uid': {'type': 'string'},
+                'spawn': {'type': 'boolean', 'default': True},
+            },
+        },
+        category='dm',
+    )
+    def user_admin(
+        context: MCPContext,
+        op: str,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        roles: Optional[List[str]] = None,
+        character_uid: Optional[str] = None,
+        spawn: bool = True,
+    ):
+        from webapp.user_management import UserManagementError, user_admin as _user_admin
+
+        try:
+            result = _user_admin(
+                op,
+                username=username,
+                password=password,
+                roles=roles,
+                character_uid=character_uid,
+                spawn=spawn,
+            )
+        except UserManagementError as exc:
+            raise tool_error(str(exc)) from exc
+        context.log_dm(f"DM user_admin {op} username={username or ''} character={character_uid or ''}")
+        context.emit_refresh()
+        return result
+
 
 def _resolve(context: MCPContext, entity_uid: str):
     ent = context.resolve_entity(entity_uid)

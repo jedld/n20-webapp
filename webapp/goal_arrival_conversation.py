@@ -76,6 +76,7 @@ class GoalArrivalConversationManager:
             f'Your active goal: {goal_text}' if goal_text else '',
             'Speak to the guest in character. Confirm whether your errand is complete.',
             'If the guest has the key and is at the suite door, use [GOAL_COMPLETE] and stop trying to unlock the door.',
+            'After [GOAL_COMPLETE], include [MOVE: target=taproom, distance=5] so you return behind the bar.',
             'You may use [GOAL_GIVE_UP] if the errand cannot be finished.',
             situational,
         ]
@@ -123,13 +124,35 @@ class GoalArrivalConversationManager:
         return True
 
     def on_player_no_response(self, speaker) -> bool:
+        return self.on_player_passive_ack(speaker)
+
+    def on_player_passive_ack(self, speaker) -> bool:
         active = self.active_state()
         if not active or speaker is None:
             return False
         if str(getattr(speaker, 'entity_uid', '')) != str(active.get('requester_uid', '')):
             return False
-        self.end(peaceful=True)
+        npc_uid = active.get('npc_uid')
+        npc = self.game_manager.get_entity_by_uid(npc_uid) if npc_uid else None
+        self._finish_escort_debrief(npc, peaceful=True)
         return True
+
+    def _finish_escort_debrief(self, npc, *, peaceful: bool = True) -> None:
+        service = self.conversation_service
+        rag = getattr(service, 'entity_rag_handler', None) if service is not None else None
+        if npc is not None and rag is not None:
+            try:
+                goal_state = self.game_manager.get_short_term_goal(npc)
+                if isinstance(goal_state, dict) and goal_state.get('status') == 'active':
+                    self.game_manager.complete_short_term_goal(
+                        npc,
+                        status='completed',
+                        reason='Guest acknowledged escort debrief',
+                    )
+            except Exception:
+                pass
+            rag._finalize_npc_errand(npc, peaceful=peaceful)
+        self.end(peaceful=peaceful)
 
     def maybe_complete_after_npc_reply(self, npc, response: str) -> bool:
         active = self.active_state()
@@ -139,7 +162,8 @@ class GoalArrivalConversationManager:
             return False
         text = str(response or '')
         if '[GOAL_COMPLETE]' in text or '[GOAL_GIVE_UP]' in text:
-            self.end(peaceful=True)
+            if self.active_state() is not None:
+                self._finish_escort_debrief(npc, peaceful=True)
             return True
         return False
 

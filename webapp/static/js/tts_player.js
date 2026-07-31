@@ -27,6 +27,7 @@ window.TTSPlayer = (function () {
     var _userGestureUnlocked = false;
     var _playedReplyIds = new Set();
     var _streamDeliveredReplyIds = new Set();
+    var _pendingAutoplayReplyIds = new Set();
     var _pendingStreamStarts = [];
     var _playbackIdleWaiters = [];
 
@@ -141,6 +142,27 @@ window.TTSPlayer = (function () {
             return;
         }
         getDeferredStreamBuffer(replyId).end = data;
+    }
+
+    function hasBufferedStreamChunks(replyId) {
+        if (!replyId) {
+            return false;
+        }
+        var buffer = _deferredStreamBuffers[replyId];
+        return !!(buffer && buffer.chunks && buffer.chunks.length);
+    }
+
+    function shouldSuppressStreamWavAutoplay(replyKey) {
+        if (!replyKey || getDeliveryMode() !== 'stream') {
+            return false;
+        }
+        if (hasReplyPlayed(replyKey) || streamDeliveredAudio(replyKey)) {
+            return true;
+        }
+        if (_streams[replyKey] || hasBufferedStreamChunks(replyKey)) {
+            return true;
+        }
+        return false;
     }
 
     function flushDeferredStreamBuffer(replyId) {
@@ -260,7 +282,11 @@ window.TTSPlayer = (function () {
         }
         unlockAudioForPlayback();
         var replyId = data.reply_id || data.replyId;
+        var replyKey = replyId ? String(replyId) : '';
         if (!replyId) {
+            return;
+        }
+        if (replyKey && hasReplyPlayed(replyKey) && !hasBufferedStreamChunks(replyKey)) {
             return;
         }
         if (_streams[replyId]) {
@@ -392,23 +418,40 @@ window.TTSPlayer = (function () {
     /**
      * Autoplay a finalized reply exactly once (socket + poll may both fire).
      */
-    function playReplyAudio(data) {
+    function playReplyAudio(data, options) {
         data = data || {};
+        options = options || {};
         var replyId = data.reply_id || data.replyId;
+        var replyKey = replyId ? String(replyId) : '';
         var audioUrl = data.audio_url || data.audioUrl;
         if (!audioUrl) {
             return false;
         }
         applyTtsReadyUi(data);
-        if (replyId && (hasReplyPlayed(replyId) || streamDeliveredAudio(replyId))) {
-            markReplyPlayed(replyId);
+        if (!options.streamWavFallback && shouldSuppressStreamWavAutoplay(replyKey)) {
+            markReplyPlayed(replyKey);
             return false;
+        }
+        if (replyKey) {
+            if (hasReplyPlayed(replyKey) || streamDeliveredAudio(replyKey)) {
+                markReplyPlayed(replyKey);
+                return false;
+            }
+            if (_pendingAutoplayReplyIds.has(replyKey)) {
+                return false;
+            }
         }
         if (!shouldAutoPlayAfterReady()) {
             return false;
         }
         if (isPlaybackActive()) {
+            if (replyKey) {
+                _pendingAutoplayReplyIds.add(replyKey);
+            }
             whenPlaybackIdle(function () {
+                if (replyKey) {
+                    _pendingAutoplayReplyIds.delete(replyKey);
+                }
                 playReplyAudio(data);
             });
             return false;
@@ -438,6 +481,7 @@ window.TTSPlayer = (function () {
 
         if (!stream) {
             bufferStreamEnd(data);
+            applyTtsReadyUi(data);
             return;
         }
 
@@ -459,7 +503,7 @@ window.TTSPlayer = (function () {
         // Live stream failed entirely — one-shot WAV fallback (never stack on PCM).
         if (audioUrl && chunksPlayed === 0) {
             unlockAudioForPlayback();
-            playReplyAudio(data);
+            playReplyAudio(data, { streamWavFallback: true });
         }
 
         if (replyId && !audioUrl) {
@@ -575,7 +619,20 @@ window.TTSPlayer = (function () {
      * Handle async TTS completion — upgrade pending speak buttons.
      */
     function onTtsReady(data) {
-        playReplyAudio(data || {});
+        data = data || {};
+        // Stream mode: live PCM handles autoplay; tts_ready WAV is replay-only unless PCM never arrived.
+        if (getDeliveryMode() === 'stream') {
+            applyTtsReadyUi(data);
+            var replyId = data.reply_id || data.replyId;
+            var replyKey = replyId ? String(replyId) : '';
+            if (shouldSuppressStreamWavAutoplay(replyKey)) {
+                markReplyPlayed(replyId);
+                return;
+            }
+            playReplyAudio(data, { streamWavFallback: true });
+            return;
+        }
+        playReplyAudio(data);
     }
 
     function shouldAutoplay() {

@@ -20,9 +20,9 @@ def npc_llm_request_timeout(provider_name: str) -> int:
 
 
 def configure_llm_handler_from_environment(handler):
-    """Apply ``LLM_PROVIDER`` and related env vars to an existing handler.
+    """Apply ``LLM_PROVIDER`` and related env vars to the DM assistant provider.
 
-    Used at process startup and when the DM UI asks to sync from server config.
+    NPC conversations use ``configure_npc_provider_from_environment`` instead.
     Returns True if a provider was initialized successfully.
     """
     llm_provider = os.environ.get('LLM_PROVIDER', 'llama_cpp').lower()

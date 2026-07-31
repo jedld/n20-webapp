@@ -58,6 +58,19 @@
         <i class="glyphicon glyphicon-comment">Talk</i>
       </button>
     </td>
+    {% elif is_dm and entity.is_npc() and entity.conscious() %}
+    <td>
+      <button class="jrpg-dialog-action button text-center" data-entity-name="{{ entity.label()|e }}" title="Open JRPG dialog">
+        <i class="glyphicon glyphicon-comment"> Talk</i>
+      </button>
+    </td>
+    {% endif %}
+    {% if is_dm and entity.conscious() %}
+    <td>
+      <button class="set-pov-action button text-center" title="Focus camera on this token">
+        <i class="glyphicon glyphicon-screenshot"> Focus</i>
+      </button>
+    </td>
     {% endif %}
   </td>
   {% if battle and battle.current_turn() == entity %}
