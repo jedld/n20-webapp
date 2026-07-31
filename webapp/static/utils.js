@@ -715,6 +715,80 @@ const Utils = {
     };
   },
 
+  /**
+   * Prefer the overlay-floor tile for an entity in stack-composite view.
+   * Base tiles also render a projected copy at world coords, which breaks
+   * pathfinding and viewport centering if selected first.
+   */
+  getEntityTile: function (entityUid) {
+    if (!entityUid) {
+      return $();
+    }
+    const $all = $(`.tile[data-coords-id="${entityUid}"]`);
+    if (!$all.length) {
+      return $(`.entity[data-id="${entityUid}"]`).closest('.tile');
+    }
+    const stackOff = Utils.getStackCompositeOffset();
+    if (stackOff && stackOff.active) {
+      const $overlay = $all.filter(function () {
+        return $(this).closest('.map-stack-overlay').length > 0;
+      });
+      if ($overlay.length) {
+        return $overlay.first();
+      }
+    }
+    const $primary = $all.filter(function () {
+      return $(this).attr('data-stack-overlay-entity') !== '1';
+    });
+    return ($primary.length ? $primary : $all).first();
+  },
+
+  /** Map-local coordinates for /path (overlay floor uses local grid). */
+  pathCoordsFromTile: function ($tile) {
+    if (!$tile || !$tile.length) {
+      return null;
+    }
+    if ($tile.closest('.map-stack-overlay').length) {
+      return {
+        x: Number($tile.data('coords-x')),
+        y: Number($tile.data('coords-y')),
+      };
+    }
+    const stackOff = Utils.getStackCompositeOffset();
+    if (stackOff && stackOff.active && $tile.attr('data-stack-overlay-entity') === '1') {
+      const wx = Number($tile.data('coords-x'));
+      const wy = Number($tile.data('coords-y'));
+      return { x: wx - stackOff.x, y: wy - stackOff.y };
+    }
+    return {
+      x: Number($tile.data('coords-x')),
+      y: Number($tile.data('coords-y')),
+    };
+  },
+
+  /** World/base-grid coordinates for viewport panning. */
+  viewportCoordsFromTile: function ($tile) {
+    if (!$tile || !$tile.length) {
+      return null;
+    }
+    let x = Number($tile.data('coords-x'));
+    let y = Number($tile.data('coords-y'));
+    if ($tile.closest('.map-stack-overlay').length) {
+      const stackOff = Utils.getStackCompositeOffset();
+      if (stackOff && stackOff.active) {
+        x += stackOff.x;
+        y += stackOff.y;
+      }
+    } else if ($tile.data('world-x') !== undefined && $tile.data('world-y') !== undefined) {
+      x = Number($tile.data('world-x'));
+      y = Number($tile.data('world-y'));
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+    return { x, y };
+  },
+
   // Compute and cache the tile grid origin in viewport coords. Tiles are laid
   // out at (x+1)*tile_size, (y+1)*tile_size relative to .tiles-container
   // (see templates/map.html), so we only need ONE getBoundingClientRect on

@@ -8,6 +8,7 @@ including inventory queries, observation requests, and language parsing.
 import re
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -15,6 +16,7 @@ from collections.abc import Mapping
 from typing import List, Tuple, Dict, Any, Optional
 from natural20.action import Action
 from natural20.actions.interact_action import InteractAction
+from natural20.actions.use_item_action import UseItemAction
 from natural20.entity import Entity
 from natural20.player_character import PlayerCharacter
 from natural20.session import Session
@@ -58,14 +60,17 @@ from webapp.npc_item_exchange import (
     adjudicate_item_exchange_with_dm_llm,
     apply_transfer_payload,
     find_container_with_item,
+    find_inventory_container_with_item,
     format_container_contents,
     format_container_list_summary,
+    format_inventory_container_contents,
     give_from_container_to_entity,
     container_interaction_range_ft,
     container_is_accessible,
     human_controlled_usernames,
     is_human_controlled,
     is_map_container,
+    inventory_container_item_qty,
     nearby_ground_items,
     nearby_map_containers,
     open_item_transfer_dialog,
@@ -73,8 +78,11 @@ from webapp.npc_item_exchange import (
     has_active_npc_gift_transfer,
     pop_npc_gift_transfer_session,
     register_npc_gift_transfer_session,
+    resolve_inventory_container_slug,
     retrieve_from_container,
+    retrieve_from_inventory_container,
     store_in_container,
+    store_in_inventory_container,
 )
 from natural20.npc_memory_store import NpcMemoryStore
 from natural20.utils.outward_appearance import resolve_outward_appearance
@@ -93,14 +101,31 @@ CONTROL_DIRECTIVE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ACTION_DIRECTIVE_PATTERN = re.compile(
-    r'\[(approach|move|follow|stop_move|stop_follow|remember|recall|interact|request_check|set_goal|goal_complete|goal_give_up|offer_item|pickup|trade|open_shop|request_item|accept_gift|retrieve|store)(?:\s*:\s*([^\]]*))?\]',
+    r'\[(approach|move|follow|stop_move|stop_follow|remember|recall|interact|use_item|request_check|set_goal|goal_complete|goal_give_up|offer_item|pickup|trade|open_shop|request_item|accept_gift|retrieve|store|stow|locate|targets)(?:\s*:\s*([^\]]*))?\]',
     re.IGNORECASE,
 )
+TARGETS_DIRECTIVE_PATTERN = re.compile(r'\[TARGETS(?:\s*:\s*([^\]]*))?\]', re.IGNORECASE)
+LOCATE_DIRECTIVE_PATTERN = re.compile(r'\[LOCATE(?:\s*:\s*([^\]]*))?\]', re.IGNORECASE)
 LIST_CONTAINER_PATTERN = re.compile(r'\[LIST_CONTAINER(?:\s*:\s*([^\]]*))?\]', re.IGNORECASE)
 ANNOTATIONS_PATTERN = re.compile(r'\[ANNOTATIONS(?:\s*:\s*([^\]]*))?\]', re.IGNORECASE)
 RECALL_DIRECTIVE_PATTERN = re.compile(r'\[recall(?:\s*:\s*([^\]]*))?\]', re.IGNORECASE)
 
 SOCIAL_APPROACH_MAX_FT = 5
+
+_ESCORT_PLAYER_REQUEST = re.compile(
+    r'\b(?:'
+    r'suite|guest\s+room|upstairs|second\s+floor|private\s+room|'
+    r'show\s+me|lead\s+me|take\s+me|escort|where\s+is\s+the|meet\s+me\s+up'
+    r')\b',
+    re.IGNORECASE,
+)
+_ESCORT_NPC_AGREE = re.compile(
+    r'\b(?:'
+    r'follow\s+me|upstairs|up\s+in|right\s+this\s+way|show\s+you|come\s+with|'
+    r'lead\s+you|head\s+up|meet\s+you\s+up|suite|guest\s+room'
+    r')\b',
+    re.IGNORECASE,
+)
 
 PERCEPTION_EMPTY_DESCRIPTION = (
     'You study the scene, but nothing new stands out to you right now.'
@@ -636,6 +661,7 @@ class EntityRAGHandler:
             'remember': None,
             'recall': None,
             'interact': None,
+            'use_item': None,
             'request_check': None,
             'offer_item': None,
             'pickup': None,
@@ -697,6 +723,7 @@ class EntityRAGHandler:
             'remember': action_directives['remember'],
             'recall': action_directives['recall'],
             'interact': action_directives['interact'],
+            'use_item': action_directives['use_item'],
             'request_check': action_directives['request_check'],
             'offer_item': action_directives['offer_item'],
             'pickup': action_directives['pickup'],
@@ -704,6 +731,8 @@ class EntityRAGHandler:
             'open_shop': action_directives['open_shop'],
             'request_item': action_directives['request_item'],
             'accept_gift': action_directives['accept_gift'],
+            'locate': action_directives['locate'],
+            'targets_refresh': action_directives['targets_refresh'],
             'set_goal': action_directives['set_goal'],
             'goal_complete': action_directives['goal_complete'],
             'goal_give_up': action_directives['goal_give_up'],
@@ -719,6 +748,9 @@ class EntityRAGHandler:
                 plan.get('stop_move'),
                 plan.get('stop_follow'),
                 plan.get('interact'),
+                plan.get('use_item'),
+                plan.get('locate'),
+                plan.get('targets_refresh'),
                 plan.get('action_sequence'),
             ])
             if not has_non_speech_directives:
@@ -1186,6 +1218,9 @@ class EntityRAGHandler:
                 'move_to',
                 'follow',
                 'interact',
+                'use_item',
+                'locate',
+                'targets_refresh',
                 'remember',
                 'recall',
                 'set_goal',
@@ -1527,7 +1562,12 @@ class EntityRAGHandler:
                     target_info['annotation_map'] = annotation_map
                 return target_info
 
-        target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=True)
+        target = self.resolve_action_target(
+            actor,
+            target_spec,
+            speaker=speaker,
+            include_objects=True,
+        )
         if target is None:
             return None
 
@@ -1555,6 +1595,7 @@ class EntityRAGHandler:
             'remember': None,
             'recall': None,
             'interact': None,
+            'use_item': None,
             'request_check': None,
             'offer_item': None,
             'pickup': None,
@@ -1564,6 +1605,8 @@ class EntityRAGHandler:
             'accept_gift': None,
             'retrieve': None,
             'store': None,
+            'locate': None,
+            'targets_refresh': False,
             'set_goal': None,
             'goal_complete': False,
             'goal_give_up': False,
@@ -1596,7 +1639,7 @@ class EntityRAGHandler:
             elif directive == 'follow':
                 params = self._parse_named_params(value, positional_keys=('target', 'distance'))
                 target_spec = params.get('target') or params.get('entity') or 'speaker'
-                target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=False)
+                target = self.resolve_action_target(actor, target_spec, speaker=speaker)
                 try:
                     distance_ft = int(float(params.get('distance', params.get('distance_ft', 5))))
                 except (TypeError, ValueError):
@@ -1634,17 +1677,38 @@ class EntityRAGHandler:
             elif directive == 'interact':
                 params = self._parse_named_params(value, positional_keys=('target', 'action'))
                 target_spec = params.get('target') or params.get('entity') or params.get('object')
-                target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=True)
+                target = self.resolve_interact_target(actor, target_spec, speaker=speaker)
                 directives['interact'] = {
                     'target': target,
                     'target_spec': target_spec,
                     'action': params.get('action'),
                 }
+            elif directive == 'use_item':
+                params = self._parse_named_params(value, positional_keys=('item', 'target'))
+                item_raw = (params.get('item') or params.get('name') or '').strip()
+                if item_raw:
+                    target_spec = params.get('target') or params.get('entity')
+                    target = None
+                    if target_spec:
+                        lowered = str(target_spec).strip().lower()
+                        if lowered in {'self', 'me'}:
+                            target = actor
+                        else:
+                            target = self.resolve_action_target(
+                                actor,
+                                target_spec,
+                                speaker=speaker,
+                            )
+                    directives['use_item'] = {
+                        'item': self._canonical_item_slug(item_raw),
+                        'target': target,
+                        'target_spec': target_spec,
+                    }
             elif directive == 'request_check':
                 params = self._parse_named_params(value, positional_keys=('skill', 'target'))
                 skill = (params.get('skill') or params.get('check') or '').strip().lower()
                 target_spec = params.get('target') or params.get('entity') or 'speaker'
-                target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=False)
+                target = self.resolve_action_target(actor, target_spec, speaker=speaker)
                 try:
                     dc = int(params['dc']) if params.get('dc') is not None else None
                 except (TypeError, ValueError):
@@ -1661,7 +1725,7 @@ class EntityRAGHandler:
                 item_raw = (params.get('item') or params.get('name') or '').strip()
                 if item_raw:
                     target_spec = params.get('target') or params.get('entity') or 'speaker'
-                    target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=False)
+                    target = self.resolve_action_target(actor, target_spec, speaker=speaker)
                     if target is None and speaker is not None:
                         target = speaker
                     item_slug = self._canonical_item_slug(item_raw)
@@ -1699,7 +1763,7 @@ class EntityRAGHandler:
             elif directive == 'trade':
                 params = self._parse_named_params(value, positional_keys=('target',))
                 target_spec = params.get('target') or params.get('entity') or 'speaker'
-                target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=False)
+                target = self.resolve_action_target(actor, target_spec, speaker=speaker)
                 if target is None and speaker is not None:
                     target = speaker
                 if target is not None:
@@ -1710,7 +1774,7 @@ class EntityRAGHandler:
             elif directive in ('open_shop', 'open_merchant'):
                 params = self._parse_named_params(value, positional_keys=('target',))
                 target_spec = params.get('target') or params.get('entity') or 'speaker'
-                target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=False)
+                target = self.resolve_action_target(actor, target_spec, speaker=speaker)
                 if target is None and speaker is not None:
                     target = speaker
                 if target is not None:
@@ -1723,7 +1787,7 @@ class EntityRAGHandler:
                 item_raw = (params.get('item') or params.get('name') or '').strip()
                 if item_raw:
                     target_spec = params.get('target') or params.get('entity') or 'speaker'
-                    target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=False)
+                    target = self.resolve_action_target(actor, target_spec, speaker=speaker)
                     if target is None and speaker is not None:
                         target = speaker
                     directives['request_item'] = {
@@ -1734,7 +1798,7 @@ class EntityRAGHandler:
             elif directive == 'accept_gift':
                 params = self._parse_named_params(value, positional_keys=('target', 'item'))
                 target_spec = params.get('target') or params.get('entity') or 'speaker'
-                target = self.resolve_named_target(actor, target_spec, speaker=speaker, include_objects=False)
+                target = self.resolve_action_target(actor, target_spec, speaker=speaker)
                 if target is None and speaker is not None:
                     target = speaker
                 item_raw = (params.get('item') or params.get('name') or '').strip()
@@ -1749,49 +1813,61 @@ class EntityRAGHandler:
                 item_raw = (params.get('item') or params.get('name') or '').strip()
                 target_spec = params.get('target') or params.get('container') or params.get('entity')
                 if item_raw and target_spec:
-                    container = self.resolve_named_target(
-                        actor,
-                        target_spec,
-                        speaker=speaker,
-                        include_objects=True,
-                    )
+                    container = self._resolve_container_target(actor, target_spec, speaker=speaker)
                     try:
                         qty = int(params.get('qty') or 1)
                     except (TypeError, ValueError):
                         qty = 1
-                    if container is not None and is_map_container(container):
-                        directives['retrieve'] = {
+                    if container is not None:
+                        retrieve_payload = {
                             'item': self._canonical_item_slug(item_raw),
                             'container': container,
                             'target_spec': target_spec,
                             'qty': max(1, qty),
                         }
+                        directives['retrieve'] = retrieve_payload
                         directives['action_sequence'].append({
                             'kind': 'retrieve',
-                            **directives['retrieve'],
+                            **retrieve_payload,
                         })
-            elif directive == 'store':
+            elif directive in ('store', 'stow'):
                 params = self._parse_named_params(value, positional_keys=('item', 'target', 'qty'))
                 item_raw = (params.get('item') or params.get('name') or '').strip()
                 target_spec = params.get('target') or params.get('container') or params.get('entity')
                 if item_raw and target_spec:
-                    container = self.resolve_named_target(
-                        actor,
-                        target_spec,
-                        speaker=speaker,
-                        include_objects=True,
-                    )
+                    container = self._resolve_container_target(actor, target_spec, speaker=speaker)
                     try:
                         qty = int(params.get('qty') or 1)
                     except (TypeError, ValueError):
                         qty = 1
-                    if container is not None and is_map_container(container):
-                        directives['store'] = {
+                    if container is not None:
+                        store_payload = {
                             'item': self._canonical_item_slug(item_raw),
                             'container': container,
                             'target_spec': target_spec,
                             'qty': max(1, qty),
                         }
+                        directives['store'] = store_payload
+                        directives['action_sequence'].append({
+                            'kind': 'store',
+                            **store_payload,
+                        })
+            elif directive == 'locate':
+                params = self._parse_named_params(value, positional_keys=('target', 'query'))
+                query = params.get('target') or params.get('query') or value
+                if query:
+                    located = self.locate_perceivable_target(
+                        actor,
+                        query,
+                        speaker=speaker,
+                        include_objects=True,
+                    )
+                    directives['locate'] = {
+                        'query': query,
+                        'target': located,
+                    }
+            elif directive == 'targets':
+                directives['targets_refresh'] = True
             elif directive == 'set_goal' and value:
                 directives['set_goal'] = value.strip()
             elif directive == 'goal_complete':
@@ -1859,6 +1935,228 @@ class EntityRAGHandler:
     def _canonical_item_slug(self, item_slug: str) -> str:
         return canonical_item_slug(item_slug, merged_offer_configs(self._game_properties()))
 
+    def _resolve_container_target(
+        self,
+        actor: Entity,
+        target_spec: Optional[str],
+        speaker: Entity = None,
+    ):
+        if actor is None or not target_spec:
+            return None
+        map_container = self.resolve_named_target(
+            actor,
+            target_spec,
+            speaker=speaker,
+            include_objects=True,
+        )
+        if map_container is not None and is_map_container(map_container):
+            return map_container
+        return resolve_inventory_container_slug(actor, target_spec, self.game_session)
+
+    def _pull_item_from_inventory_container(self, actor: Entity, item_slug: str, qty: int = 1) -> bool:
+        container_slug = find_inventory_container_with_item(actor, item_slug, self.game_session)
+        if not container_slug:
+            return False
+        ok, _message = retrieve_from_inventory_container(
+            self.game_session,
+            actor,
+            container_slug,
+            item_slug,
+            qty=qty,
+        )
+        return ok
+
+    def _collect_usable_item_entries(self, entity: Entity) -> List[Dict[str, Any]]:
+        if entity is None or not hasattr(entity, 'usable_items'):
+            return []
+        entries: List[Dict[str, Any]] = []
+        seen = set()
+
+        def add_entry(slug: str, label: str, *, location: Optional[str] = None) -> None:
+            if not slug or slug in seen:
+                return
+            seen.add(slug)
+            entries.append({
+                'name': slug,
+                'label': label,
+                'location': location,
+            })
+
+        try:
+            for entry in entity.usable_items() or []:
+                slug = str(entry.get('name') or '').strip()
+                if not slug:
+                    continue
+                add_entry(slug, str(entry.get('label') or slug))
+        except Exception:
+            pass
+
+        if not hasattr(entity, 'is_container'):
+            return entries
+
+        for container_name, meta in (getattr(entity, 'inventory', {}) or {}).items():
+            try:
+                container_qty = int((meta or {}).get('qty') or 0)
+            except (TypeError, ValueError):
+                container_qty = 0
+            if container_qty <= 0 or not entity.is_container(container_name, self.game_session):
+                continue
+            for content in entity.get_container_contents(container_name) or []:
+                content_type = content.get('type') or content.get('item')
+                if not content_type:
+                    continue
+                try:
+                    content_qty = int(content.get('qty') or 0)
+                except (TypeError, ValueError):
+                    content_qty = 0
+                if content_qty <= 0:
+                    continue
+                try:
+                    item_details = self.game_session.load_equipment(content_type)
+                except Exception:
+                    item_details = None
+                if not item_details or not item_details.get('usable'):
+                    continue
+                add_entry(
+                    str(content_type),
+                    str(item_details.get('label') or content_type),
+                    location=container_name,
+                )
+        return entries
+
+    def inventory_containers_guidance_for_entity(self, entity: Entity) -> str:
+        if entity is None or not hasattr(entity, 'is_container'):
+            return ''
+        lines = []
+        for container_name, meta in (getattr(entity, 'inventory', {}) or {}).items():
+            try:
+                qty = int((meta or {}).get('qty') or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0 or not entity.is_container(container_name, self.game_session):
+                continue
+            try:
+                status = entity.container_status(container_name, self.game_session)
+                label = status.get('label') or container_name
+            except Exception:
+                label = container_name
+            stock = format_inventory_container_contents(entity, container_name, self.game_session)
+            lines.append(f"- {label} (`{container_name}`): {stock}")
+        if not lines:
+            return ''
+        return (
+            "Personal containers (manage with "
+            "[RETRIEVE: item=<slug>, target=<container_slug>] / "
+            "[STORE: item=<slug>, target=<container_slug>] or [STOW: ...]):\n"
+            + '\n'.join(lines)
+        )
+
+    def resolve_interact_target(
+        self,
+        actor: Entity,
+        target_spec: Optional[str],
+        speaker: Entity = None,
+    ):
+        if not target_spec:
+            return None
+        target = self.resolve_named_target(
+            actor,
+            target_spec,
+            speaker=speaker,
+            include_objects=True,
+        )
+        if target is not None:
+            return target
+
+        lowered = str(target_spec).strip().lower().lstrip('@')
+        for obj_info in self.get_interactable_objects(
+            actor,
+            range_ft=60,
+            require_enabled_actions=False,
+        ):
+            subject = obj_info.get('subject')
+            if subject is None:
+                continue
+            handle = mention_handle_for(subject).lower()
+            label = entity_label(subject).lower()
+            uid = str(getattr(subject, 'entity_uid', '') or '').lower()
+            obj_type = str(getattr(subject, 'type', '') or '').lower()
+            obj_name = str(getattr(subject, '_name', '') or getattr(subject, 'name', '') or '').lower()
+            aliases = {
+                lowered,
+                lowered.replace(' ', '_'),
+                lowered.replace('_', ' '),
+            }
+            if aliases & {handle, label, uid, obj_type, obj_name, obj_name.replace(' ', '_')}:
+                return subject
+        return None
+
+    def usable_items_guidance_for_entity(self, entity: Entity) -> str:
+        items = self._collect_usable_item_entries(entity)
+        if not items:
+            return ''
+        lines = []
+        for entry in items[:16]:
+            slug = str(entry.get('name') or '').strip()
+            if not slug:
+                continue
+            label = str(entry.get('label') or slug)
+            location = entry.get('location')
+            if location:
+                lines.append(f"- {label} (`{slug}`) in `{location}` — retrieve first or the server pulls one when you [USE_ITEM]")
+            else:
+                lines.append(f"- {label} (`{slug}`)")
+        if not lines:
+            return ''
+        return (
+            "Usable inventory (potions, spell scrolls, etc. — "
+            "[USE_ITEM: item=<slug>, target=self|@handle]; healing potions and scrolls need a target):\n"
+            + '\n'.join(lines)
+        )
+
+    def interactable_objects_guidance_for_entity(self, entity: Entity, *, range_ft: int = 60) -> str:
+        objects = self.get_interactable_objects(entity, range_ft=range_ft)
+        if not objects:
+            return ''
+        lines = []
+        for obj in objects[:10]:
+            actions = ', '.join(obj.get('actions') or []) or 'interact'
+            lines.append(
+                f"- {obj['name']} (@{obj['mention_handle']}) at {obj['distance_ft']}ft; actions: {actions}"
+            )
+        return (
+            "Nearby interactables (use [INTERACT: target=@handle, action=<action>]):\n"
+            + '\n'.join(lines)
+        )
+
+    def _normalize_interaction_name(
+        self,
+        requested: Optional[str],
+        enabled_actions: List[str],
+    ) -> Optional[str]:
+        if not enabled_actions:
+            return None
+        if not requested:
+            return enabled_actions[0]
+        req = str(requested).strip().lower()
+        for name in enabled_actions:
+            if str(name).strip().lower() == req:
+                return name
+        alias_groups = (
+            {'open', 'use'},
+            {'unlock', 'unbar'},
+            {'lock'},
+            {'close', 'shut'},
+            {'lockpick', 'pick'},
+        )
+        for group in alias_groups:
+            if req not in group:
+                continue
+            for name in enabled_actions:
+                if str(name).strip().lower() in group:
+                    return name
+        return None
+
     def resolve_named_target(self, actor: Entity, target_spec: Optional[str], speaker: Entity = None, include_objects: bool = False):
         if not target_spec:
             return None
@@ -1867,6 +2165,8 @@ class EntityRAGHandler:
         lowered = normalized.lower().lstrip('@')
         if lowered in {'speaker', 'you'}:
             return speaker
+        if lowered in {'self', 'me'}:
+            return actor
 
         for uid_candidate in (normalized, lowered):
             try:
@@ -1886,9 +2186,22 @@ class EntityRAGHandler:
         if battle_map is None:
             return None
 
-        candidates = [entity for entity in battle_map.entities if entity != actor]
-        if include_objects:
-            candidates.extend(list(battle_map.interactable_objects.keys()))
+        candidates = []
+        seen_ids = set()
+        for scan_map in self._maps_for_perception_scan(actor, battle_map):
+            for entity in list(getattr(scan_map, 'entities', {}).keys()):
+                entity_id = id(entity)
+                if entity_id in seen_ids or entity == actor:
+                    continue
+                seen_ids.add(entity_id)
+                candidates.append(entity)
+            if include_objects:
+                for obj in list(getattr(scan_map, 'interactable_objects', {}).keys()):
+                    obj_id = id(obj)
+                    if obj_id in seen_ids:
+                        continue
+                    seen_ids.add(obj_id)
+                    candidates.append(obj)
         if speaker is not None and speaker not in candidates and speaker != actor:
             candidates.append(speaker)
 
@@ -1898,14 +2211,344 @@ class EntityRAGHandler:
             candidate_handle = mention_handle_for(candidate).lower()
             candidate_label = entity_label(candidate).lower()
             candidate_uid = str(getattr(candidate, 'entity_uid', ''))
+            candidate_type = str(getattr(candidate, 'type', '') or '').lower()
+            candidate_name = str(
+                getattr(candidate, '_name', '') or getattr(candidate, 'name', '') or ''
+            ).lower()
             if lowered == candidate_handle or normalized == candidate_uid:
                 return candidate
             if candidate_label == normalized.lower():
                 exact_match = candidate
             elif normalized.lower() in candidate_label and partial_match is None:
                 partial_match = candidate
+            elif include_objects and lowered in {
+                candidate_type,
+                candidate_name,
+                candidate_name.replace(' ', '_'),
+            }:
+                return candidate
 
         return exact_match or partial_match
+
+    def resolve_action_target(
+        self,
+        actor: Entity,
+        target_spec: Optional[str],
+        speaker: Entity = None,
+        *,
+        include_objects: bool = False,
+        require_perceivable: bool = True,
+    ):
+        if not target_spec:
+            return None
+        resolved = self.resolve_named_target(
+            actor,
+            target_spec,
+            speaker=speaker,
+            include_objects=include_objects,
+        )
+        if resolved is not None:
+            if not require_perceivable or self._subject_is_perceivable(actor, resolved):
+                return resolved
+        return self.locate_perceivable_target(
+            actor,
+            target_spec,
+            speaker=speaker,
+            include_objects=include_objects,
+        )
+
+    def _maps_for_perception_scan(self, actor: Entity, observer_map=None):
+        if observer_map is None:
+            observer_map = self.current_game.get_map_for_entity(actor)
+        if observer_map is None:
+            return []
+        maps = [observer_map]
+        stack = getattr(observer_map, 'map_stack', None)
+        if stack is not None:
+            floors = getattr(stack, 'floors', None) or []
+            if isinstance(floors, (list, tuple)):
+                for floor in floors:
+                    floor_map = getattr(floor, 'map', None)
+                    if floor_map is not None and floor_map not in maps:
+                        maps.append(floor_map)
+        return maps
+
+    def _battle_for_perception(self):
+        try:
+            return self.current_game.get_current_battle()
+        except Exception:
+            return None
+
+    def _entity_can_perceive(
+        self,
+        observer: Entity,
+        target,
+        *,
+        battle=None,
+        observer_map=None,
+        target_map=None,
+    ) -> bool:
+        if observer is None or target is None:
+            return False
+        if observer == target:
+            return True
+        if observer_map is None:
+            observer_map = self.current_game.get_map_for_entity(observer)
+        if target_map is None:
+            target_map = self.current_game.get_map_for_entity(target)
+        if observer_map is None or target_map is None:
+            return False
+        if battle is None:
+            battle = self._battle_for_perception()
+        try:
+            if battle is not None and hasattr(battle, 'can_see'):
+                return bool(battle.can_see(observer, target))
+            if observer_map == target_map:
+                return bool(observer_map.can_see(observer, target))
+            stack = getattr(observer_map, 'map_stack', None)
+            if stack is not None and getattr(target_map, 'map_stack', None) is stack:
+                from natural20.map_stack_los import stack_can_see
+                return bool(stack_can_see(stack, observer, target, observer_map, target_map, battle=battle))
+        except Exception:
+            return False
+        return False
+
+    def _distance_ft_between(self, observer: Entity, target, observer_map=None, target_map=None) -> float:
+        if observer_map is None:
+            observer_map = self.current_game.get_map_for_entity(observer)
+        if target_map is None:
+            target_map = self.current_game.get_map_for_entity(target)
+        if observer_map is None or target_map is None:
+            return math.inf
+        try:
+            if observer_map == target_map:
+                return float(observer_map.distance(observer, target) * observer_map.feet_per_grid)
+            stack = getattr(observer_map, 'map_stack', None)
+            if stack is not None and getattr(target_map, 'map_stack', None) is stack:
+                from natural20.map_stack_targeting import stack_entity_distance_ft
+                feet_per_grid = getattr(observer_map, 'feet_per_grid', 5) or 5
+                return float(
+                    stack_entity_distance_ft(
+                        stack,
+                        observer,
+                        observer_map,
+                        target,
+                        target_map,
+                        feet_per_grid=feet_per_grid,
+                    )
+                )
+        except Exception:
+            return math.inf
+        return math.inf
+
+    def _subject_is_perceivable(self, observer: Entity, subject, *, range_ft: float = 120) -> bool:
+        if subject is None:
+            return False
+        if not self._entity_can_perceive(observer, subject):
+            return False
+        distance_ft = self._distance_ft_between(observer, subject)
+        return distance_ft <= range_ft
+
+    def collect_perceivable_targets(
+        self,
+        observer: Entity,
+        *,
+        range_ft: float = 120,
+        include_objects: bool = True,
+    ) -> List[Dict[str, Any]]:
+        if observer is None:
+            return []
+        observer_map = self.current_game.get_map_for_entity(observer)
+        if observer_map is None:
+            return []
+
+        battle = self._battle_for_perception()
+        entries: List[Dict[str, Any]] = []
+        seen_ids = set()
+
+        for scan_map in self._maps_for_perception_scan(observer, observer_map):
+            entities = getattr(scan_map, 'entities', None) or {}
+            if not isinstance(entities, dict):
+                continue
+            for other in list(entities.keys()):
+                if other == observer or id(other) in seen_ids:
+                    continue
+                distance_ft = self._distance_ft_between(observer, other, observer_map, scan_map)
+                if distance_ft > range_ft:
+                    continue
+                if not self._entity_can_perceive(
+                    observer,
+                    other,
+                    battle=battle,
+                    observer_map=observer_map,
+                    target_map=scan_map,
+                ):
+                    continue
+                seen_ids.add(id(other))
+                position = None
+                try:
+                    position = scan_map.entity_or_object_pos(other)
+                except Exception:
+                    pass
+                entries.append({
+                    'subject': other,
+                    'kind': self._observation_kind_label(other),
+                    'name': entity_label(other),
+                    'mention_handle': mention_handle_for(other),
+                    'distance_ft': int(round(distance_ft)),
+                    'position': position,
+                    'map_name': getattr(scan_map, 'name', None),
+                    'reachable_now': distance_ft <= 30,
+                })
+
+        if include_objects:
+            for obj in self.get_interactable_objects(observer, range_ft=min(range_ft, 60)):
+                subject = obj.get('subject')
+                if subject is None or id(subject) in seen_ids:
+                    continue
+                seen_ids.add(id(subject))
+                entries.append({
+                    'subject': subject,
+                    'kind': 'object',
+                    'name': obj.get('name') or entity_label(subject),
+                    'mention_handle': obj.get('mention_handle') or mention_handle_for(subject),
+                    'distance_ft': int(round(obj.get('distance_ft') or 0)),
+                    'position': obj.get('position'),
+                    'map_name': getattr(observer_map, 'name', None),
+                    'actions': list(obj.get('actions') or []),
+                    'reachable_now': True,
+                })
+
+        entries.sort(key=lambda row: row.get('distance_ft', 9999))
+        return entries
+
+    def locate_perceivable_target(
+        self,
+        observer: Entity,
+        query: Optional[str],
+        speaker: Entity = None,
+        *,
+        include_objects: bool = False,
+        range_ft: float = 120,
+    ):
+        if not query:
+            return None
+        normalized = str(query).strip()
+        lowered = normalized.lower().lstrip('@')
+        if lowered in {'speaker', 'you'}:
+            return speaker
+        if lowered in {'self', 'me'}:
+            return observer
+
+        targets = self.collect_perceivable_targets(
+            observer,
+            range_ft=range_ft,
+            include_objects=include_objects,
+        )
+        exact = None
+        partial = None
+        query_tokens = {
+            lowered,
+            lowered.replace(' ', '_'),
+            lowered.replace('_', ' '),
+        }
+        for entry in targets:
+            subject = entry.get('subject')
+            if subject is None:
+                continue
+            handle = str(entry.get('mention_handle') or '').lower()
+            label = str(entry.get('name') or '').lower()
+            uid = str(getattr(subject, 'entity_uid', '') or '').lower()
+            obj_type = str(getattr(subject, 'type', '') or '').lower()
+            aliases = query_tokens | {handle, label, uid, obj_type}
+            if lowered == handle or normalized == getattr(subject, 'entity_uid', ''):
+                return subject
+            if label in query_tokens or any(token in label for token in query_tokens if len(token) >= 3):
+                if exact is None:
+                    exact = subject
+            elif partial is None and any(token in label for token in query_tokens):
+                partial = subject
+        return exact or partial
+
+    def perceivable_targets_guidance_for_entity(
+        self,
+        entity: Entity,
+        *,
+        range_ft: float = 120,
+        limit: int = 14,
+    ) -> str:
+        targets = self.collect_perceivable_targets(entity, range_ft=range_ft, include_objects=True)
+        if not targets:
+            return ''
+        lines = []
+        for entry in targets[:limit]:
+            handle = entry.get('mention_handle') or 'target'
+            name = entry.get('name') or 'unknown'
+            distance_ft = entry.get('distance_ft', 0)
+            kind = entry.get('kind') or 'entity'
+            position = entry.get('position')
+            map_name = entry.get('map_name')
+            parts = [f"@{handle}", f"{name}", f"{distance_ft}ft", f"kind={kind}"]
+            if position is not None:
+                parts.append(f"at {position}")
+            if map_name and map_name != getattr(self.current_game.get_map_for_entity(entity), 'name', None):
+                parts.append(f"map={map_name}")
+            if entry.get('actions'):
+                parts.append(f"actions={', '.join(entry['actions'])}")
+            lines.append('- ' + '; '.join(parts))
+        return (
+            "Perceivable targets (chain actions with @handle — e.g. "
+            "[LOCATE: target=barmaid] then [APPROACH: target=@handle] / [USE_ITEM: ...] / [INTERACT: ...]):\n"
+            + '\n'.join(lines)
+        )
+
+    def build_targets_summary(
+        self,
+        observer: Entity,
+        *,
+        range_ft: float = 120,
+        query: Optional[str] = None,
+    ) -> str:
+        if query:
+            located = self.locate_perceivable_target(
+                observer,
+                query,
+                include_objects=True,
+                range_ft=range_ft,
+            )
+            if located is None:
+                return f"[LOCATE] No perceivable target matches '{query}' within {range_ft}ft."
+            handle = mention_handle_for(located)
+            label = entity_label(located)
+            distance_ft = int(round(self._distance_ft_between(observer, located)))
+            position = None
+            target_map = self.current_game.get_map_for_entity(located)
+            if target_map is not None:
+                try:
+                    position = target_map.entity_or_object_pos(located)
+                except Exception:
+                    pass
+            parts = [f"@{handle}", label, f"{distance_ft}ft away"]
+            if position is not None:
+                parts.append(f"at {position}")
+            return '[LOCATE] ' + '; '.join(parts)
+
+        lines = ['[TARGETS]']
+        targets = self.collect_perceivable_targets(observer, range_ft=range_ft, include_objects=True)
+        if not targets:
+            lines.append('No perceivable targets within range.')
+            return '\n'.join(lines)
+        for entry in targets[:20]:
+            handle = entry.get('mention_handle') or 'target'
+            name = entry.get('name') or 'unknown'
+            distance_ft = entry.get('distance_ft', 0)
+            position = entry.get('position')
+            kind = entry.get('kind') or 'entity'
+            row = f"- @{handle}; {name}; {distance_ft}ft; kind={kind}"
+            if position is not None:
+                row += f"; at {position}"
+            lines.append(row)
+        return '\n'.join(lines)
 
     def _find_map_annotation_by_spec(
         self,
@@ -2029,6 +2672,113 @@ class EntityRAGHandler:
             + '\n'.join(lines[:12])
         )
 
+    def resolve_escort_landmark_id(self, actor: Entity, text: str) -> Optional[str]:
+        """Pick a known landmark id when NPC/player text implies escort navigation."""
+        if actor is None or not text:
+            return None
+        known = self.movement_helper._actor_known_landmark_ids(actor)
+        if not known:
+            return None
+        lowered = str(text).lower()
+        if 'suite' in lowered and 'tavern_suite_room' in known:
+            return 'tavern_suite_room'
+        if re.search(r'guest\s+room', lowered, re.IGNORECASE):
+            for landmark_id in (
+                'landmark_standard_room_1',
+                'landmark_standard_room_2',
+                'landmark_tavern_room_3',
+                'landmark_standard_room_4',
+            ):
+                if landmark_id in known:
+                    return landmark_id
+        if re.search(r'upstairs|second\s+floor|\bup\b', lowered, re.IGNORECASE):
+            if 'tavern_suite_room' in known and re.search(
+                r'suite|private|guest\s+room', lowered, re.IGNORECASE
+            ):
+                return 'tavern_suite_room'
+            if 'landmark_hallway' in known:
+                return 'landmark_hallway'
+        return None
+
+    def message_suggests_escort(self, *texts: str) -> bool:
+        combined = '\n'.join(str(t or '') for t in texts if t)
+        if not combined.strip():
+            return False
+        return bool(
+            _ESCORT_PLAYER_REQUEST.search(combined)
+            or _ESCORT_NPC_AGREE.search(combined)
+        )
+
+    def escort_navigation_inject_note(self, actor: Entity, player_message: str) -> str:
+        if actor is None or not _ESCORT_PLAYER_REQUEST.search(player_message or ''):
+            return ''
+        landmark_id = self.resolve_escort_landmark_id(actor, player_message)
+        if not landmark_id:
+            return ''
+        return (
+            'The player is asking to be shown or led somewhere in the tavern. '
+            f'If you agree to take them there, include [MOVE: target={landmark_id}, distance=5] '
+            'in the same reply. Do not use [APPROACH: target=speaker] for escorting — '
+            'that only steps toward the person talking to you, not toward a destination.'
+        )
+
+    def maybe_promote_escort_approach_to_move(
+        self,
+        plan: Dict[str, Any],
+        actor: Entity,
+        *,
+        speaker: Entity = None,
+        player_message: str = '',
+    ) -> bool:
+        """When APPROACH-to-speaker would do nothing, retarget escort replies to a landmark."""
+        approach = plan.get('approach')
+        if not approach or plan.get('move_to'):
+            return False
+
+        target_info = approach.get('target_info')
+        if not target_info or target_info.get('kind') != 'entity':
+            return False
+        target = target_info.get('target')
+        if target is None or speaker is None or target is not speaker:
+            return False
+
+        distance_ft = int(
+            approach.get('distance_ft', SOCIAL_APPROACH_MAX_FT) or SOCIAL_APPROACH_MAX_FT
+        )
+        if not self.movement_helper.movement_reached(actor, target_info, distance_ft=distance_ft):
+            return False
+
+        combined = '\n'.join(
+            part
+            for part in (
+                player_message,
+                plan.get('message') or '',
+                ' '.join(plan.get('narrative') or []),
+            )
+            if part
+        )
+        if not self.message_suggests_escort(combined):
+            return False
+
+        landmark_id = self.resolve_escort_landmark_id(actor, combined)
+        if not landmark_id:
+            return False
+
+        move_info = self.parse_move_target_info(actor, {'target': landmark_id})
+        if not move_info:
+            return False
+
+        plan['approach'] = None
+        plan['move_to'] = {
+            'target_info': move_info,
+            'distance_ft': 5,
+        }
+        self._log_conversation_plan(
+            actor,
+            f'promoted APPROACH speaker to MOVE {landmark_id}',
+        )
+        return True
+
     def get_interactable_objects(
         self,
         entity: Entity,
@@ -2041,7 +2791,10 @@ class EntityRAGHandler:
             return []
 
         objects = []
-        for obj in list(battle_map.interactable_objects.keys()):
+        interactable_objects = getattr(battle_map, 'interactable_objects', None) or {}
+        if not isinstance(interactable_objects, dict):
+            return []
+        for obj in list(interactable_objects.keys()):
             try:
                 distance_ft = battle_map.distance(entity, obj) * battle_map.feet_per_grid
             except Exception:
@@ -2346,27 +3099,18 @@ class EntityRAGHandler:
         return llm_handler
 
     def _scan_visible_entities(self, observer: Entity, battle_map, range_ft: int = 30) -> List[Tuple[Entity, float]]:
-        if battle_map is None or observer is None:
-            return []
-
+        del battle_map  # stack-aware scan uses observer map + stack floors
         visible: List[Tuple[Entity, float]] = []
-        for other in list(getattr(battle_map, 'entities', {}).keys()):
-            if other == observer:
+        for entry in self.collect_perceivable_targets(
+            observer,
+            range_ft=range_ft,
+            include_objects=False,
+        ):
+            subject = entry.get('subject')
+            if subject is None:
                 continue
-            try:
-                distance_ft = battle_map.distance(observer, other) * battle_map.feet_per_grid
-            except Exception:
-                continue
-            if distance_ft > range_ft:
-                continue
-            try:
-                if not battle_map.can_see(observer, other):
-                    continue
-            except Exception:
-                continue
-            visible.append((other, distance_ft))
-
-        return sorted(visible, key=lambda item: item[1])
+            visible.append((subject, float(entry.get('distance_ft') or 0)))
+        return visible
 
     def build_observation_summary(self, observer: Entity, range_ft: int = 30) -> str:
         battle_map = self.current_game.get_map_for_entity(observer)
@@ -2470,7 +3214,14 @@ class EntityRAGHandler:
             return None
 
         try:
-            interactions = target.available_interactions(actor, battle=None) or {}
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
+        if battle is not None and not InteractAction.can(actor, battle):
+            return None
+
+        try:
+            interactions = target.available_interactions(actor, battle=battle) or {}
         except Exception:
             interactions = {}
 
@@ -2481,11 +3232,9 @@ class EntityRAGHandler:
         if not enabled_actions:
             return None
 
-        selected_action = action_name
-        if selected_action and selected_action not in enabled_actions:
+        selected_action = self._normalize_interaction_name(action_name, enabled_actions)
+        if action_name and selected_action is None:
             return None
-        if not selected_action:
-            selected_action = enabled_actions[0]
 
         interact = InteractAction(self.game_session, actor, 'interact')
         interact.target = target
@@ -2496,6 +3245,138 @@ class EntityRAGHandler:
         if isinstance(built_action, Action):
             return built_action
         return None
+
+    def build_use_item_action(
+        self,
+        actor: Entity,
+        item_slug: str,
+        target: Entity = None,
+        *,
+        speaker: Entity = None,
+    ):
+        if actor is None or not item_slug:
+            return None
+
+        item_slug = self._canonical_item_slug(item_slug)
+        if self._inventory_qty(actor, item_slug) <= 0:
+            self._pull_item_from_inventory_container(actor, item_slug)
+        if self._inventory_qty(actor, item_slug) <= 0:
+            return None
+
+        try:
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
+        if battle is not None and not UseItemAction.can(actor, battle):
+            return None
+
+        try:
+            item_details = self.game_session.load_equipment(item_slug)
+        except Exception:
+            item_details = None
+        if not item_details or not item_details.get('usable'):
+            return None
+
+        try:
+            built = UseItemAction.build(self.game_session, actor)
+            step = built['next'](item_slug)
+            final_action = self._resolve_use_item_build_step(
+                step,
+                actor,
+                target=target,
+                speaker=speaker,
+            )
+        except Exception:
+            return None
+
+        if final_action is None:
+            return None
+        if isinstance(final_action, dict):
+            final_action = final_action.get('action')
+        if not isinstance(final_action, Action):
+            return None
+        return final_action
+
+    def _resolve_use_item_build_step(
+        self,
+        step,
+        actor: Entity,
+        *,
+        target: Entity = None,
+        speaker: Entity = None,
+        spell_choice: Optional[str] = None,
+    ):
+        if isinstance(step, Action):
+            if target is not None and getattr(step, 'target', None) is None:
+                step.target = target
+            return step
+
+        if not isinstance(step, dict):
+            return None
+
+        params = step.get('param') or []
+        if not isinstance(params, list) or not params:
+            return step.get('action')
+
+        param = params[0] if isinstance(params[0], dict) else {}
+        param_type = param.get('type')
+        next_fn = step.get('next')
+        if not callable(next_fn):
+            return step.get('action')
+
+        if param_type == 'select_target':
+            target_types = [str(t).strip().lower() for t in (param.get('target_types') or [])]
+            if target is not None:
+                resolved_target = target
+            elif target_types == ['self']:
+                resolved_target = actor
+            elif 'self' in target_types and speaker is None:
+                resolved_target = actor
+            else:
+                resolved_target = target or speaker or actor
+            return self._resolve_use_item_build_step(
+                next_fn(resolved_target),
+                actor,
+                target=resolved_target,
+                speaker=speaker,
+                spell_choice=spell_choice,
+            )
+        if param_type == 'select_choice':
+            choices = param.get('choices') or []
+            choice = spell_choice
+            if choice is None and choices:
+                choice = choices[0][1] if isinstance(choices[0], (list, tuple)) else choices[0]
+            if choice is None:
+                return None
+            return self._resolve_use_item_build_step(
+                next_fn(choice),
+                actor,
+                target=target,
+                speaker=speaker,
+                spell_choice=choice,
+            )
+        if param_type in ('select_spell', 'cone', 'cube', 'select_target_square'):
+            # Targeted spells/items need explicit coordinates or entities from the LLM.
+            if target is not None:
+                return self._resolve_use_item_build_step(
+                    next_fn(target),
+                    actor,
+                    target=target,
+                    speaker=speaker,
+                    spell_choice=spell_choice,
+                )
+            return None
+
+        try:
+            return self._resolve_use_item_build_step(
+                next_fn(actor),
+                actor,
+                target=target,
+                speaker=speaker,
+                spell_choice=spell_choice,
+            )
+        except TypeError:
+            return next_fn()
 
     def _directive_enabled(self, name: str, only: Optional[set] = None, skip: Optional[set] = None) -> bool:
         if only is not None and name not in only:
@@ -2624,6 +3505,8 @@ class EntityRAGHandler:
         actor: Entity,
         route_blocker: Optional[Dict[str, Any]],
         target_info: Dict[str, Any],
+        *,
+        task: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Open or unlock a blocking door when the NPC is already adjacent."""
         blocker = self._hydrate_route_blocker(actor, route_blocker, target_info)
@@ -2633,6 +3516,19 @@ class EntityRAGHandler:
         door_obj = blocker.get('object')
         if door_obj is None:
             return False
+
+        battle_map = self.current_game.get_map_for_entity(actor)
+        if self._door_route_blocker_cleared(actor, door_obj, battle_map):
+            return True
+
+        door_uid = str(getattr(door_obj, 'entity_uid', '') or id(door_obj))
+        if task is not None:
+            attempts = dict(task.get('door_interact_attempts') or {})
+            prior = int(attempts.get(door_uid) or 0)
+            if prior >= 3:
+                return False
+            attempts[door_uid] = prior + 1
+            task['door_interact_attempts'] = attempts
 
         available_actions = list(blocker.get('available_actions') or [])
         for action_name in ('unlock', 'open'):
@@ -2645,6 +3541,141 @@ class EntityRAGHandler:
             self.current_game.commit_and_update(execution_username, interact_action, [actor])
             return True
         return False
+
+    def _door_route_blocker_cleared(self, actor: Entity, door_obj, battle_map) -> bool:
+        if door_obj is None or battle_map is None:
+            return False
+        try:
+            opened_fn = getattr(door_obj, 'opened', None)
+            if callable(opened_fn) and opened_fn() is True:
+                return True
+        except Exception:
+            pass
+        try:
+            actor_pos = battle_map.position_of(actor)
+            passable_fn = getattr(door_obj, 'passable', None)
+            if callable(passable_fn) and actor_pos is not None and passable_fn(actor_pos) is True:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def build_movement_situational_context(self, actor: Entity, task: Optional[Dict[str, Any]] = None) -> str:
+        from webapp.npc_situational_context import build_npc_situational_context
+
+        requester = None
+        requester_uid = (task or {}).get('requester_uid')
+        if requester_uid:
+            try:
+                requester = self.game_session.entity_by_uid(requester_uid)
+            except Exception:
+                requester = None
+        return build_npc_situational_context(
+            self.game_session,
+            self.current_game,
+            actor,
+            task=task,
+            requester=requester,
+            movement_helper=self.movement_helper,
+        )
+
+    def _movement_arrival_satisfied(
+        self,
+        actor: Entity,
+        target_info: Dict[str, Any],
+        task: Dict[str, Any],
+        route_blocker: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        distance_ft = task.get('distance_ft', 5)
+        if self.movement_helper.movement_reached(actor, target_info, distance_ft=distance_ft):
+            return True
+        if route_blocker and self._adjacent_to_route_blocker(actor, route_blocker):
+            return True
+        hydrated = self._hydrate_route_blocker(actor, route_blocker, target_info)
+        if hydrated and self._adjacent_to_route_blocker(actor, hydrated):
+            return True
+        if route_blocker and task:
+            door_attempts = dict(task.get('door_interact_attempts') or {})
+            blocker_uid = str(route_blocker.get('entity_uid') or '')
+            if blocker_uid and int(door_attempts.get(blocker_uid) or 0) >= 3:
+                if self._adjacent_to_route_blocker(actor, hydrated or route_blocker):
+                    return True
+        return False
+
+    def _adjacent_to_route_blocker(self, actor: Entity, route_blocker: Dict[str, Any]) -> bool:
+        battle_map = self.current_game.get_map_for_entity(actor)
+        if battle_map is None:
+            return False
+        door_obj = route_blocker.get('object')
+        if door_obj is None:
+            return False
+        try:
+            distance_ft = battle_map.distance(actor, door_obj) * battle_map.feet_per_grid
+            return distance_ft <= max(5, int(getattr(battle_map, 'feet_per_grid', 5) or 5))
+        except Exception:
+            return False
+
+    def _finalize_npc_errand(self, actor: Entity, *, peaceful: bool = True) -> None:
+        """Stop escort movement and close goal-arrival debrief when an errand ends."""
+        try:
+            movement_task = self.current_game.get_npc_movement_task(actor)
+            if movement_task is not None and movement_task.get('status') == 'active':
+                self.current_game.complete_npc_movement(
+                    actor,
+                    status='completed',
+                    reason='Errand marked complete',
+                )
+        except Exception:
+            pass
+        try:
+            manager = getattr(self.current_game, 'goal_arrival_manager', None)
+            if manager is not None and manager.active_state() is not None:
+                manager.end(peaceful=peaceful)
+        except Exception:
+            pass
+
+    def _maybe_trigger_goal_arrival_debrief(
+        self,
+        entity: Entity,
+        task: Optional[Dict[str, Any]],
+        requester: Entity = None,
+    ) -> None:
+        if entity is None or task is None:
+            return
+        try:
+            goal_state = self.current_game.get_short_term_goal(entity)
+        except Exception:
+            goal_state = None
+        has_active_goal = isinstance(goal_state, dict) and goal_state.get('status') == 'active'
+        if not has_active_goal and not task.get('requester_uid'):
+            return
+        if isinstance(goal_state, dict) and goal_state.get('arrival_debrief_done'):
+            return
+        if isinstance(task, dict) and task.get('arrival_debrief_done'):
+            return
+
+        if requester is None:
+            requester_uid = goal_state.get('requester_uid') or task.get('requester_uid')
+            if requester_uid:
+                try:
+                    requester = self.game_session.entity_by_uid(requester_uid)
+                except Exception:
+                    requester = None
+
+        if requester is None:
+            return
+
+        from natural20.player_character import PlayerCharacter
+        if not isinstance(requester, PlayerCharacter):
+            return
+
+        manager = getattr(self.current_game, 'goal_arrival_manager', None)
+        if manager is None:
+            return
+        try:
+            manager.start(entity, requester, goal_state=goal_state, task=task)
+        except Exception as exc:
+            logger.warning('Goal arrival debrief failed for %s: %s', entity_label(entity), exc)
 
     def _trigger_immediate_npc_movement(self, entity: Entity, llm_conversation_handler=None) -> None:
         """Queue a movement tick on a worker thread (never block the /talk request)."""
@@ -2855,15 +3886,38 @@ class EntityRAGHandler:
             if created is not None:
                 result['executed_actions'].append('remember')
 
+        locate_directive = plan.get('locate')
+        if locate_directive and locate_directive.get('query') and self._directive_enabled('locate', only, skip):
+            located = locate_directive.get('target')
+            if located is None:
+                located = self.locate_perceivable_target(
+                    actor,
+                    locate_directive['query'],
+                    speaker=speaker,
+                    include_objects=True,
+                )
+            if located is not None:
+                result['executed_actions'].append('locate')
+                result['located_target'] = located
+                self._log_conversation_plan(
+                    actor,
+                    f"located {entity_label(located)} (@{mention_handle_for(located)})",
+                )
+        if plan.get('targets_refresh') and self._directive_enabled('targets', only, skip):
+            result['executed_actions'].append('targets')
+            result['targets_summary'] = self.build_targets_summary(actor)
+
         if plan.get('set_goal') and self._directive_enabled('set_goal', only, skip):
             result['scheduled_goal'] = self.current_game.schedule_short_term_goal(actor, plan['set_goal'], speaker=speaker)
 
         if plan.get('goal_complete') and self._directive_enabled('goal_complete', only, skip):
             result['goal_status'] = 'completed'
             self.current_game.complete_short_term_goal(actor, status='completed', reason='Marked complete by LLM')
+            self._finalize_npc_errand(actor, peaceful=True)
         elif plan.get('goal_give_up') and self._directive_enabled('goal_give_up', only, skip):
             result['goal_status'] = 'abandoned'
             self.current_game.complete_short_term_goal(actor, status='abandoned', reason='Abandoned by LLM')
+            self._finalize_npc_errand(actor, peaceful=True)
 
         self._apply_exploration_movement_directives(
             plan,
@@ -2913,10 +3967,15 @@ class EntityRAGHandler:
             ):
                 result['executed_actions'].append('accept_gift')
 
-        if self.current_game.get_current_battle() is None:
-            execution_username = self._execution_username_for(actor)
-            pov_entities = [actor]
+        execution_username = self._execution_username_for(actor)
+        pov_entities = [actor]
+        battle = None
+        try:
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
 
+        if battle is None:
             request_check = plan.get('request_check')
             if request_check and request_check.get('target') is not None and self._directive_enabled('request_check', only, skip):
                 self._log_requested_check(
@@ -2927,18 +3986,30 @@ class EntityRAGHandler:
                 )
                 result['executed_actions'].append('request_check')
 
-            interact_directive = plan.get('interact')
-            if interact_directive and interact_directive.get('target') is not None and self._directive_enabled('interact', only, skip):
-                interact_action = self.build_interact_action(
-                    actor,
-                    interact_directive['target'],
-                    action_name=interact_directive.get('action'),
-                )
-                if interact_action is not None:
-                    self.current_game.commit_and_update(execution_username, interact_action, pov_entities)
-                    result['executed_actions'].append('interact')
+        interact_directive = plan.get('interact')
+        if interact_directive and interact_directive.get('target') is not None and self._directive_enabled('interact', only, skip):
+            interact_action = self.build_interact_action(
+                actor,
+                interact_directive['target'],
+                action_name=interact_directive.get('action'),
+            )
+            if interact_action is not None:
+                self.current_game.commit_and_update(execution_username, interact_action, pov_entities)
+                result['executed_actions'].append('interact')
 
-        if advance_time and self.current_game.get_current_battle() is None:
+        use_item_directive = plan.get('use_item')
+        if use_item_directive and use_item_directive.get('item') and self._directive_enabled('use_item', only, skip):
+            use_item_action = self.build_use_item_action(
+                actor,
+                use_item_directive['item'],
+                target=use_item_directive.get('target'),
+                speaker=speaker,
+            )
+            if use_item_action is not None:
+                self.current_game.commit_and_update(execution_username, use_item_action, pov_entities)
+                result['executed_actions'].append('use_item')
+
+        if advance_time and battle is None:
             self.current_game.advance_world_time(
                 seconds=6,
                 trigger_environment=not result['executed_actions'],
@@ -2955,6 +4026,8 @@ class EntityRAGHandler:
 
     def _actor_has_offer_source(self, actor: Entity, item_slug: str) -> bool:
         if self._inventory_qty(actor, item_slug) > 0:
+            return True
+        if find_inventory_container_with_item(actor, item_slug, self.game_session):
             return True
         if self._find_offerable_map_object(actor, item_slug) is not None:
             return True
@@ -2995,7 +4068,15 @@ class EntityRAGHandler:
             kind = entry.get('kind')
             if kind == 'retrieve' and entry.get('item') and self._directive_enabled('retrieve', only, skip):
                 container = entry.get('container')
-                if container is not None:
+                if isinstance(container, str):
+                    ok, message = retrieve_from_inventory_container(
+                        self.game_session,
+                        actor,
+                        container,
+                        entry['item'],
+                        qty=entry.get('qty') or 1,
+                    )
+                elif container is not None:
                     ok, message = retrieve_from_container(
                         self.current_game,
                         actor,
@@ -3003,36 +4084,49 @@ class EntityRAGHandler:
                         entry['item'],
                         qty=entry.get('qty') or 1,
                     )
-                    if ok:
-                        result['executed_actions'].append('retrieve')
-                        self._log_witnessed_offer_outcome(actor, actor, message)
-                    else:
-                        if 'not within reach' in str(message or '').lower():
-                            target_info = {
-                                'kind': 'object',
-                                'target': container,
-                            }
-                            if self._schedule_approach_to_target_info(
-                                actor,
-                                target_info,
-                                speaker,
-                                result,
-                                kick_movement=kick_movement,
-                            ):
-                                logger.info(
-                                    'Scheduled approach to %s after out-of-reach retrieve for %s',
-                                    entity_label(container),
-                                    entry['item'],
-                                )
-                        logger.info(
-                            'Retrieve suppressed for %s (%s): %s',
-                            entity_label(actor),
-                            entry['item'],
-                            message,
-                        )
+                else:
+                    ok, message = False, 'No container specified.'
+                if ok:
+                    result['executed_actions'].append('retrieve')
+                    self._log_witnessed_offer_outcome(actor, actor, message)
+                else:
+                    if (
+                        not isinstance(container, str)
+                        and 'not within reach' in str(message or '').lower()
+                    ):
+                        target_info = {
+                            'kind': 'object',
+                            'target': container,
+                        }
+                        if self._schedule_approach_to_target_info(
+                            actor,
+                            target_info,
+                            speaker,
+                            result,
+                            kick_movement=kick_movement,
+                        ):
+                            logger.info(
+                                'Scheduled approach to %s after out-of-reach retrieve for %s',
+                                entity_label(container),
+                                entry['item'],
+                            )
+                    logger.info(
+                        'Retrieve suppressed for %s (%s): %s',
+                        entity_label(actor),
+                        entry['item'],
+                        message,
+                    )
             elif kind == 'store' and entry.get('item') and self._directive_enabled('store', only, skip):
                 container = entry.get('container')
-                if container is not None:
+                if isinstance(container, str):
+                    ok, message = store_in_inventory_container(
+                        self.game_session,
+                        actor,
+                        container,
+                        entry['item'],
+                        qty=entry.get('qty') or 1,
+                    )
+                elif container is not None:
                     ok, message = store_in_container(
                         self.current_game,
                         actor,
@@ -3040,16 +4134,18 @@ class EntityRAGHandler:
                         entry['item'],
                         qty=entry.get('qty') or 1,
                     )
-                    if ok:
-                        result['executed_actions'].append('store')
-                        self._log_witnessed_offer_outcome(actor, actor, message)
-                    else:
-                        logger.info(
-                            'Store suppressed for %s (%s): %s',
-                            entity_label(actor),
-                            entry['item'],
-                            message,
-                        )
+                else:
+                    ok, message = False, 'No container specified.'
+                if ok:
+                    result['executed_actions'].append('store')
+                    self._log_witnessed_offer_outcome(actor, actor, message)
+                else:
+                    logger.info(
+                        'Store suppressed for %s (%s): %s',
+                        entity_label(actor),
+                        entry['item'],
+                        message,
+                    )
             elif kind == 'pickup' and entry.get('item') and self._directive_enabled('pickup', only, skip):
                 ok, message = pickup_ground_item(
                     self.current_game,
@@ -3734,6 +4830,10 @@ class EntityRAGHandler:
             "- [STOP_FOLLOW] to cancel follow mode.\n"
             "- [APPROACH: target=@handle, distance=5] for a single immediate step instead of a persistent task.\n"
             f"{door_lines}"
+            "- [INTERACT: target=@handle, action=open|unlock|...] to use a nearby object blocking your route.\n"
+            "- [USE_ITEM: item=<slug>, target=self|@handle] to use inventory items when appropriate.\n"
+            "- [TARGETS] to list everyone and objects you can perceive; [LOCATE: target=<name>] to resolve one @handle.\n"
+            f"{self.perceivable_targets_guidance_for_entity(entity, range_ft=90)}\n"
             "- [NO_RESPONSE] if you do not say anything aloud this tick.\n"
         )
 
@@ -3766,6 +4866,58 @@ class EntityRAGHandler:
             )
         finally:
             in_progress.discard(entity_uid)
+
+    @staticmethod
+    def _movement_task_is_follow(task: Optional[Dict[str, Any]]) -> bool:
+        return (task or {}).get('mode') == 'follow'
+
+    def _handle_destination_reached(
+        self,
+        entity: Entity,
+        task: Dict[str, Any],
+        target_info: Dict[str, Any],
+        directive_result: Dict[str, Any],
+        *,
+        response=None,
+        triggered_by_follow: bool = False,
+        llm_conversation_handler=None,
+    ) -> Optional[Dict[str, Any]]:
+        """Complete move_to tasks; keep follow tasks active while in trailing range."""
+        if self._movement_task_is_follow(task):
+            task['stuck_ticks'] = 0
+            directive_result['movement_status'] = 'active'
+            self.current_game.record_npc_movement_history(entity, {
+                'time': self.game_session.game_time,
+                'response': response,
+                'executed_actions': list(directive_result.get('executed_actions') or []),
+                'movement_status': 'active',
+                'triggered_by_follow': triggered_by_follow,
+                'in_follow_range': True,
+            })
+            return directive_result
+
+        self.current_game.complete_npc_movement(
+            entity,
+            status='completed',
+            reason='Destination reached',
+        )
+        directive_result['movement_status'] = 'completed'
+        self._clear_movement_llm_conversation(entity, llm_conversation_handler)
+        requester = None
+        requester_uid = task.get('requester_uid')
+        if requester_uid:
+            try:
+                requester = self.game_session.entity_by_uid(requester_uid)
+            except Exception:
+                requester = None
+        self._maybe_trigger_goal_arrival_debrief(entity, task, requester=requester)
+        self.current_game.record_npc_movement_history(entity, {
+            'time': self.game_session.game_time,
+            'response': response,
+            'executed_actions': list(directive_result.get('executed_actions') or []),
+            'movement_status': 'completed',
+        })
+        return directive_result
 
     def _execute_scheduled_movement_impl(
         self,
@@ -3852,28 +5004,42 @@ class EntityRAGHandler:
             task.pop('route_blocker', None)
 
         skip_auto_move = False
-        if route_blocker is not None and self.try_clear_route_blocking_door(entity, route_blocker, target_info):
+        if route_blocker is not None and self.try_clear_route_blocking_door(
+            entity,
+            route_blocker,
+            target_info,
+            task=task,
+        ):
             directive_result['executed_actions'].append('interact')
             task.pop('route_blocker', None)
             route_blocker = None
             target_info = dict(task.get('target_info') or target_info)
+        elif route_blocker is not None and self._door_route_blocker_cleared(
+            entity,
+            (self._hydrate_route_blocker(entity, route_blocker, target_info) or {}).get('object'),
+            self.current_game.get_map_for_entity(entity),
+        ):
+            task.pop('route_blocker', None)
+            route_blocker = None
+
+        try:
+            battle_map = self.current_game.get_map_for_entity(entity)
+            if battle_map is not None:
+                task['last_position'] = battle_map.entity_or_object_pos(entity)
+        except Exception:
+            pass
 
         distance_ft = task.get('distance_ft', 5)
-        if self.movement_helper.movement_reached(entity, target_info, distance_ft=distance_ft):
-            self.current_game.complete_npc_movement(
+        if self._movement_arrival_satisfied(entity, target_info, task, route_blocker):
+            return self._handle_destination_reached(
                 entity,
-                status='completed',
-                reason='Destination reached',
+                task,
+                target_info,
+                directive_result,
+                response=response,
+                triggered_by_follow=triggered_by_follow,
+                llm_conversation_handler=llm_conversation_handler,
             )
-            directive_result['movement_status'] = 'completed'
-            self._clear_movement_llm_conversation(entity, llm_conversation_handler)
-            self.current_game.record_npc_movement_history(entity, {
-                'time': self.game_session.game_time,
-                'response': response,
-                'executed_actions': list(directive_result.get('executed_actions') or []),
-                'movement_status': 'completed',
-            })
-            return directive_result
 
         if int(task.get('attempts') or 0) >= _NPC_MOVEMENT_MAX_ATTEMPTS:
             self.current_game.complete_npc_movement(
@@ -3886,21 +5052,16 @@ class EntityRAGHandler:
             return directive_result
 
         moved = self._try_commit_npc_move_step(entity, task, target_info, directive_result)
-        if moved and self.movement_helper.movement_reached(entity, target_info, distance_ft=distance_ft):
-            self.current_game.complete_npc_movement(
+        if moved and self._movement_arrival_satisfied(entity, target_info, task, route_blocker):
+            return self._handle_destination_reached(
                 entity,
-                status='completed',
-                reason='Destination reached',
+                task,
+                target_info,
+                directive_result,
+                response=response,
+                triggered_by_follow=triggered_by_follow,
+                llm_conversation_handler=llm_conversation_handler,
             )
-            directive_result['movement_status'] = 'completed'
-            self._clear_movement_llm_conversation(entity, llm_conversation_handler)
-            self.current_game.record_npc_movement_history(entity, {
-                'time': self.game_session.game_time,
-                'response': response,
-                'executed_actions': list(directive_result.get('executed_actions') or []),
-                'movement_status': 'completed',
-            })
-            return directive_result
 
         if moved:
             if (
@@ -4016,25 +5177,21 @@ class EntityRAGHandler:
         if task is None or task.get('status') != 'active':
             return directive_result
 
-        if self.movement_helper.movement_reached(
+        if self._movement_arrival_satisfied(
             entity,
             target_info,
-            distance_ft=task.get('distance_ft', 5),
+            task,
+            route_blocker,
         ):
-            self.current_game.complete_npc_movement(
+            return self._handle_destination_reached(
                 entity,
-                status='completed',
-                reason='Destination reached',
+                task,
+                target_info,
+                directive_result,
+                response=response,
+                triggered_by_follow=triggered_by_follow,
+                llm_conversation_handler=llm_conversation_handler,
             )
-            directive_result['movement_status'] = 'completed'
-            self._clear_movement_llm_conversation(entity, llm_conversation_handler)
-            self.current_game.record_npc_movement_history(entity, {
-                'time': self.game_session.game_time,
-                'response': response,
-                'executed_actions': list(directive_result.get('executed_actions') or []),
-                'movement_status': 'completed',
-            })
-            return directive_result
 
         moved_this_tick = False
         if not skip_auto_move:
@@ -4069,21 +5226,26 @@ class EntityRAGHandler:
             )
 
         refreshed_task = self.current_game.get_npc_movement_task(entity)
+        refreshed_blocker = (refreshed_task or {}).get('route_blocker')
         if (
             refreshed_task is not None
             and refreshed_task.get('status') == 'active'
-            and self.movement_helper.movement_reached(
+            and self._movement_arrival_satisfied(
                 entity,
                 target_info,
-                distance_ft=refreshed_task.get('distance_ft', 5),
+                refreshed_task,
+                refreshed_blocker,
             )
         ):
-            self.current_game.complete_npc_movement(
+            return self._handle_destination_reached(
                 entity,
-                status='completed',
-                reason='Destination reached',
+                refreshed_task,
+                target_info,
+                directive_result,
+                response=response,
+                triggered_by_follow=triggered_by_follow,
+                llm_conversation_handler=llm_conversation_handler,
             )
-            directive_result['movement_status'] = 'completed'
 
         self.current_game.record_npc_movement_history(entity, {
             'time': self.game_session.game_time,
@@ -4108,7 +5270,8 @@ class EntityRAGHandler:
             "- [MOVE: target=<landmark_id>] to path toward a named map landmark (see landmarks list).\n"
             "- [FOLLOW: target=@handle, distance=5] to trail someone and move whenever they move.\n"
             "- [STOP_MOVE] or [STOP_FOLLOW] to end movement tasks.\n"
-            "- [INTERACT: target=<name or @handle>, action=<interaction>] to use an interactable object.\n"
+            "- [INTERACT: target=<name or @handle>, action=<interaction>] to use doors, containers, and other map objects.\n"
+            "- [USE_ITEM: item=<item_slug>, target=self|@handle] to consume or activate inventory items.\n"
             "- [INSIGHT: target=speaker] or [INSIGHT: target=@handle] to privately assess whether someone seems truthful before responding.\n"
             "- [REQUEST_CHECK: skill=persuasion|intimidation|arcana|investigation|..., target=speaker|@handle, dc=optional] to ask for a skill check.\n"
             "- [OFFER_ITEM: item=<item_slug>, target=speaker] to offer an item you possess or can serve from a nearby open container (triggers Accept Item Yes/No once per item per listener).\n"
@@ -4116,18 +5279,23 @@ class EntityRAGHandler:
             "- [LIST_CONTAINER: target=@handle] or [LIST_CONTAINER] to inspect bar stock or other nearby containers before deciding.\n"
             "- [ANNOTATIONS: target=@handle] or [ANNOTATIONS] to read staff-only markings you notice on objects (NPC-only; not visible to players).\n"
             "- [RETRIEVE: item=<item_slug>, target=@container, qty=1] to take items from an open container into your inventory.\n"
-            "- [STORE: item=<item_slug>, target=@container, qty=2] to deposit items into an open container.\n"
+            "- [STORE: item=<item_slug>, target=@container, qty=2] or [STOW: item=<slug>, target=backpack] to deposit items into a container (map chest or your backpack).\n"
             "- [TRADE: target=speaker|@handle] to open a full item trade.\n"
             "- [OPEN_SHOP: target=speaker|@handle] when you are a merchant with wares — opens your priced shop UI for the customer (use after welcoming them or when they ask to buy).\n"
             "- [REQUEST_ITEM: item=<item_slug>, target=speaker|@handle] to ask someone to hand you an item.\n"
             "- [ACCEPT_GIFT: target=speaker|@handle] when the speaker offers to give you something (or performs a hand-over action). Opens the player's give-item transfer dialog.\n"
             f"{self.campaign_setting_prompt()}\n"
             f"{self.map_landmarks_prompt_for_entity(entity)}\n"
+            f"{self.interactable_objects_guidance_for_entity(entity)}\n"
+            f"{self.usable_items_guidance_for_entity(entity)}\n"
+            f"{self.inventory_containers_guidance_for_entity(entity)}\n"
+            f"{self.perceivable_targets_guidance_for_entity(entity, range_ft=120)}\n"
             f"{self.offer_item_guidance_for_conversation(entity, requester)}\n"
             f"{self.animal_communication_guidance_for_conversation(entity, speaker=requester)}\n"
             "- [SET_GOAL: new short goal] to replace your current short-term goal.\n"
             "- [GOAL_COMPLETE] when the current goal is done.\n"
             "- [GOAL_GIVE_UP] when the current goal cannot be completed or is no longer worth pursuing.\n"
+            "- [TARGETS] lists perceivable entities/objects with @handles; [LOCATE: target=<name>] resolves one target for chaining.\n"
             "- [OBSERVE] or [INVENTORY] if you need refreshed world state before deciding.\n"
             "- [LIST_CONTAINER: target=@tavern_bar] to read bar stock when working behind the counter.\n"
             "- [REMEMBER: title=..., summary=..., body=...] to store a lasting memory.\n"
@@ -4137,8 +5305,7 @@ class EntityRAGHandler:
 
     def goal_turn_snapshot(self, entity: Entity, goal_state: Dict[str, Any], requester: Entity = None) -> str:
         context = self.get_entity_context(entity)
-        nearby_entities = self.get_nearby_entities(entity, range_ft=60, include_extended=True)
-        interactable_objects = self.get_interactable_objects(entity, range_ft=60)
+        perceivable_targets = self.collect_perceivable_targets(entity, range_ft=120, include_objects=True)
         history_entries = goal_state.get('history', [])[-3:]
 
         lines = [
@@ -4154,26 +5321,34 @@ class EntityRAGHandler:
             f"Your position: {context.get('position')}",
             f"Requester: {entity_label(requester) if requester is not None else 'none'}",
             f"Attempts so far: {goal_state.get('attempts', 0)}",
-            "Nearby entities:",
+            "Perceivable targets (use @handle in action tags):",
         ])
 
-        if nearby_entities:
-            for nearby in nearby_entities[:8]:
-                lines.append(
-                    f"- {nearby['name']} (@{nearby['mention_handle']}) at {nearby['distance']}ft; reachable_now={nearby['reachable_now']}"
-                )
+        if perceivable_targets:
+            for entry in perceivable_targets[:12]:
+                handle = entry.get('mention_handle') or 'target'
+                name = entry.get('name') or 'unknown'
+                distance_ft = entry.get('distance_ft', 0)
+                kind = entry.get('kind') or 'entity'
+                position = entry.get('position')
+                row = f"- @{handle} ({name}) at {distance_ft}ft; kind={kind}"
+                if position is not None:
+                    row += f"; pos={position}"
+                lines.append(row)
         else:
             lines.append("- none")
 
-        lines.append("Visible interactable objects:")
-        if interactable_objects:
-            for obj in interactable_objects[:8]:
-                actions = ', '.join(obj['actions'])
-                lines.append(
-                    f"- {obj['name']} (@{obj['mention_handle']}) at {obj['distance_ft']}ft; actions={actions}"
-                )
-        else:
-            lines.append("- none")
+        usable_items_text = self.usable_items_guidance_for_entity(entity)
+        if usable_items_text:
+            lines.append(usable_items_text)
+
+        inventory_containers_text = self.inventory_containers_guidance_for_entity(entity)
+        if inventory_containers_text:
+            lines.append(inventory_containers_text)
+
+        situational = self.build_movement_situational_context(entity)
+        if situational:
+            lines.append(situational)
 
         lines.append("Recent goal history:")
         if history_entries:
@@ -4308,6 +5483,12 @@ class EntityRAGHandler:
         # Handle observation requests
         if "[OBSERVE" in response:
             return self._handle_observation_request(receiver, llm_conversation_handler)
+
+        if "[TARGETS" in response:
+            return self._handle_targets_request(receiver, llm_conversation_handler)
+
+        if "[LOCATE" in response:
+            return self._handle_locate_request(response, receiver, llm_conversation_handler)
 
         # Handle insight requests
         if "[INSIGHT" in response:
@@ -5037,6 +6218,36 @@ class EntityRAGHandler:
         except Exception as e:
             logger.error(f"Error handling observation request: {e}")
             return ""
+
+    def _handle_targets_request(self, receiver: Entity, llm_conversation_handler) -> str:
+        try:
+            system_response = self.build_targets_summary(receiver)
+            llm_conversation_handler.add_message(receiver.entity_uid, 'system', system_response)
+            response = llm_conversation_handler.generate_response(receiver.entity_uid)
+            if response:
+                _language, response = self.parse_language_from_response(response)
+                return response
+            return ''
+        except Exception as e:
+            logger.error(f"Error handling targets request: {e}")
+            return ''
+
+    def _handle_locate_request(self, response: str, receiver: Entity, llm_conversation_handler) -> str:
+        try:
+            match = LOCATE_DIRECTIVE_PATTERN.search(response or '')
+            raw_value = (match.group(1) or '').strip() if match else ''
+            params = self._parse_named_params(raw_value, positional_keys=('target', 'query'))
+            query = params.get('target') or params.get('query') or raw_value
+            system_response = self.build_targets_summary(receiver, query=query or None)
+            llm_conversation_handler.add_message(receiver.entity_uid, 'system', system_response)
+            regenerated = llm_conversation_handler.generate_response(receiver.entity_uid)
+            if regenerated:
+                _language, regenerated = self.parse_language_from_response(regenerated)
+                return regenerated
+            return ''
+        except Exception as e:
+            logger.error(f"Error handling locate request: {e}")
+            return ''
     
     def get_entity_context(self, entity: Entity, *, viewer_is_dm: bool = True) -> Dict[str, Any]:
         """

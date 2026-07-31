@@ -30,6 +30,7 @@ let globalCanvas = null;
 let globalCtx = null;
 let talkToEntityMode = false; // Flag to track when user is talking to an entity
 let forcedConversationMode = false; // Blocks movement/actions during scripted confrontations
+let goalArrivalConversationMode = false; // NPC-initiated arrival debrief; lighter than forced mode
 function isInteractionLocked() {
   return talkToEntityMode || forcedConversationMode;
 }
@@ -51,6 +52,26 @@ function exitForcedConversationMode() {
     $('#jrpgDialogPanel').hide();
   }
 }
+
+function enterGoalArrivalConversationMode(entityId, entityName) {
+  goalArrivalConversationMode = true;
+  $('body').addClass('goal-arrival-active');
+  $('#dialogNoResponse').show();
+  if (entityId && typeof handleDialogBubbleClick === 'function') {
+    handleDialogBubbleClick(entityId, entityName, { goalArrival: true });
+  }
+}
+
+function exitGoalArrivalConversationMode() {
+  goalArrivalConversationMode = false;
+  $('body').removeClass('goal-arrival-active');
+  $('#dialogNoResponse').hide();
+  if (!talkToEntityMode && !forcedConversationMode) {
+    $('#jrpgDialogPanel').hide();
+  }
+}
+window.enterGoalArrivalConversationMode = enterGoalArrivalConversationMode;
+window.exitGoalArrivalConversationMode = exitGoalArrivalConversationMode;
 window.enterForcedConversationMode = enterForcedConversationMode;
 window.exitForcedConversationMode = exitForcedConversationMode;
 let dialogMessageProcessing = false; // Flag to track if a dialog message is being processed
@@ -344,6 +365,33 @@ function resolveStackTargetCoords($tile) {
     return { x: Number(peekX), y: Number(peekY), localX, localY };
   }
   return { x: localX, y: localY, localX, localY };
+}
+
+/** Map-local coords for movement/path APIs (not peek-through descent targets). */
+function resolveStackPathCoords($tile) {
+  if (Utils.pathCoordsFromTile) {
+    const coords = Utils.pathCoordsFromTile($tile);
+    if (coords) {
+      return {
+        x: coords.x,
+        y: coords.y,
+        localX: coords.x,
+        localY: coords.y,
+      };
+    }
+  }
+  return resolveStackMovementDest($tile);
+}
+
+function getEntityTile(entityUid) {
+  if (Utils.getEntityTile) {
+    return Utils.getEntityTile(entityUid);
+  }
+  const $tile = $(`.tile[data-coords-id="${entityUid}"]`);
+  if ($tile.length) {
+    return $tile.first();
+  }
+  return $(`.entity[data-id="${entityUid}"]`).closest('.tile');
 }
 
 function setStackTargetPointerEvents(active) {
@@ -1209,13 +1257,39 @@ class EventQueue {
           try {
             const entityId = data.entity_id || data.entity_uid;
             const entityName = data.entity_name || entityId;
-            if (entityId && data.forced && typeof enterForcedConversationMode === 'function') {
+            if (entityId && data.goal_arrival && typeof enterGoalArrivalConversationMode === 'function') {
+              enterGoalArrivalConversationMode(entityId, entityName);
+            } else if (entityId && data.forced && typeof enterForcedConversationMode === 'function') {
               enterForcedConversationMode(entityId, entityName);
             } else if (entityId && typeof handleDialogBubbleClick === 'function') {
               handleDialogBubbleClick(entityId, entityName);
             }
           } catch (e) {
             console.warn('open_entity_dialog failed', e, data);
+          }
+          resolve();
+          break;
+        }
+        case "goal_arrival_start": {
+          try {
+            const entityId = data.entity_id || data.entity_uid;
+            const entityName = data.entity_name || entityId;
+            if (entityId && typeof enterGoalArrivalConversationMode === 'function') {
+              enterGoalArrivalConversationMode(entityId, entityName);
+            }
+          } catch (e) {
+            console.warn('goal_arrival_start failed', e, data);
+          }
+          resolve();
+          break;
+        }
+        case "goal_arrival_end": {
+          try {
+            if (typeof exitGoalArrivalConversationMode === 'function') {
+              exitGoalArrivalConversationMode();
+            }
+          } catch (e) {
+            console.warn('goal_arrival_end failed', e, data);
           }
           resolve();
           break;
@@ -1696,7 +1770,7 @@ class EventQueue {
               let attempts = 0;
               const maxAttempts = 20; // ~1s total
               const tryCenter = () => {
-                const $tile = $(`.tile[data-coords-id="${targetUid}"]`);
+                const $tile = getEntityTile(targetUid);
                 if ($tile.length) {
                   try { centerOnEntityId(targetUid); } catch (e) {
                     console.warn('Could not center on entity after map switch', e);
@@ -2130,7 +2204,7 @@ class EventQueue {
       // Try to resolve the entity tile with a brief retry window to tolerate DOM refresh/map switches
       const tryResolveTile = (attemptsLeft = 6) => {
         // Primary: tile is indexed by coords-id matching entity uid (usual case)
-        let $tile = $(`.tile[data-coords-id="${entity_uid}"]`);
+        let $tile = getEntityTile(entity_uid);
         // Fallback: find the entity DOM and climb to its containing tile
         if (!$tile.length) {
           const $entityNode = $(`.entity[data-id="${entity_uid}"]`).closest('.tile');
@@ -2651,7 +2725,7 @@ const switchPOV = (entity_uid, canvas) => {
         // Avoid resetting .tile positioning globally; some layouts rely on absolute positioning per tile
         // If needed, specific animated tiles should clear transition in the animation handler itself
         try { updateDraggableEntityClasses(); } catch (e) { }
-        const $tile = $(`.tile[data-coords-id="${entity_uid}"]`);
+        const $tile = getEntityTile(entity_uid);
         createGlobalCanvas();
         centerOnTile($tile);
         try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { }
@@ -3526,16 +3600,17 @@ function command(cmd) {
 
 // Centers the viewport on a given tile and (optionally) highlights it.
 function centerOnTile(tile, highlight = false) {
-  if (!tile.length) return;
-  
-  // Support both jQuery objects and plain objects with data properties
-  const tileX = typeof tile.data === 'function' ? tile.data('coords-x') : tile['coords-x'];
-  const tileY = typeof tile.data === 'function' ? tile.data('coords-y') : tile['coords-y'];
+  const $tile = (tile && typeof tile.jquery !== 'undefined') ? tile : $(tile);
+  if (!$tile.length) return;
+
+  const viewportCoords = Utils.viewportCoordsFromTile
+    ? Utils.viewportCoordsFromTile($tile)
+    : null;
+  const tileX = viewportCoords ? viewportCoords.x : $tile.data('coords-x');
+  const tileY = viewportCoords ? viewportCoords.y : $tile.data('coords-y');
 
   $(".tile .entity").removeClass("focus-highlight");
-  if (typeof tile.find === 'function') {
-    tile.find(".entity").addClass("focus-highlight");
-  }
+  $tile.find(".entity").addClass("focus-highlight");
 
   // Use viewport centering if coordinates are available
   if (tileX !== undefined && tileY !== undefined) {
@@ -3543,13 +3618,13 @@ function centerOnTile(tile, highlight = false) {
   }
   
   // Visual feedback
-  if (typeof tile.fadeOut === 'function') {
-    tile.fadeOut(150).fadeIn(150);
+  if (typeof $tile.fadeOut === 'function') {
+    $tile.fadeOut(150).fadeIn(150);
   }
   if (highlight) {
     $(".tile").removeClass("focus-highlight-red");
-    if (typeof tile.addClass === 'function') {
-      tile.addClass("focus-highlight-red");
+    if (typeof $tile.addClass === 'function') {
+      $tile.addClass("focus-highlight-red");
     }
   }
 }
@@ -3560,8 +3635,7 @@ const centerOnTileXY = (x, y, highlight = false) => {
 };
 
 const centerOnEntityId = (id) => {
-  const $tile = $(`.tile[data-coords-id="${id}"]`);
-  centerOnTile($tile);
+  centerOnTile(getEntityTile(id));
 };
 
 // Function to show target selection modal
@@ -3838,14 +3912,14 @@ function handleDirectWSADMovement(event) {
     return; // No entity in focus
   }
 
-  // Find the entity's current tile
-  const $entityTile = $(`.tile[data-coords-id="${entity_uid}"]`);
+  const $entityTile = getEntityTile(entity_uid);
   if (!$entityTile.length) {
     return; // Entity not found on map
   }
 
-  const coordsx = $entityTile.data('coords-x');
-  const coordsy = $entityTile.data('coords-y');
+  const pathCoords = resolveStackPathCoords($entityTile);
+  const coordsx = pathCoords.x;
+  const coordsy = pathCoords.y;
 
   // Initiate move mode if not already active, using the entity's current position as source
   if (!moveMode && !keyboardMovementMode) {
@@ -4942,8 +5016,9 @@ $(document).ready(() => {
     }
     const $tile = $(this);
     const targetCoords = resolveStackTargetCoords($tile);
-    const coordsx = targetCoords.x;
-    const coordsy = targetCoords.y;
+    const pathCoords = resolveStackPathCoords($tile);
+    const coordsx = targetMode ? targetCoords.x : pathCoords.x;
+    const coordsy = targetMode ? targetCoords.y : pathCoords.y;
     const cacheKey = `${coordsx}-${coordsy}`;
 
     if (targetMode) {
@@ -7193,7 +7268,7 @@ $(document).ready(() => {
     ) {
       const povUid = $('body').attr('data-pov-entity');
       if (povUid) {
-        const $povTile = $(`.tile[data-coords-id="${povUid}"]`).first();
+        const $povTile = getEntityTile(povUid);
         if ($povTile.length) {
           e.preventDefault();
           // Reuse the normal tile-click flow so we get the same occupant
@@ -7539,6 +7614,11 @@ $(document).ready(() => {
       forcedConversationMode = true;
       $('body').addClass('forced-conversation-active');
       $('#close-dialog').hide();
+      $('#dialogNoResponse').hide();
+    } else if (opts.goalArrival) {
+      goalArrivalConversationMode = true;
+      $('body').addClass('goal-arrival-active');
+      $('#dialogNoResponse').show();
     }
 
     // Show the JRPG dialog panel
@@ -7582,10 +7662,12 @@ $(document).ready(() => {
 
   function updateMerchantDialogButton(entityInfo) {
     const $btn = $('#dialogBrowseShop');
+    const $profilePanel = $('#dialogEntityProfilePanel');
     const buyerUid = Chat.getCurrentPovEntity();
     const merchantUid = $('#dialogEntityName').data('entity-id');
     const show = !!(entityInfo && entityInfo.is_merchant && buyerUid && merchantUid && buyerUid !== merchantUid);
     $btn.toggle(show);
+    $profilePanel.toggleClass('has-merchant-shop', show);
     if (show && entityInfo.merchant_shop_title) {
       $btn.attr('title', `Browse ${entityInfo.merchant_shop_title}`);
     }
@@ -7775,6 +7857,10 @@ $(document).ready(() => {
     // Handle send message button
     $('#dialogSendMessage').off('click').on('click', function () {
       sendDialogMessage(entityId);
+    });
+
+    $('#dialogNoResponse').off('click').on('click', function () {
+      sendDialogNoResponse(entityId);
     });
 
     // Handle Enter key in chat input
@@ -8037,6 +8123,66 @@ $(document).ready(() => {
     });
   }
   window.sendDialogSkillCheck = sendDialogSkillCheck;
+
+  function sendDialogNoResponse(npcEntityId) {
+    if (!goalArrivalConversationMode || dialogMessageProcessing) {
+      return;
+    }
+    const currentPovEntity = Chat.getCurrentPovEntity();
+    if (!currentPovEntity || !npcEntityId) {
+      return;
+    }
+
+    dialogMessageProcessing = true;
+    window.__n20_dialogMessageProcessing = true;
+
+    const $input = $('#dialogChatInput');
+    const $sendButton = $('#dialogSendMessage');
+    const $noResponseButton = $('#dialogNoResponse');
+    const $languageSelect = $('#dialogLanguageSelect');
+    const $inputContainer = $('.chat-input-container');
+
+    $input.prop('disabled', true);
+    $sendButton.prop('disabled', true);
+    $noResponseButton.prop('disabled', true);
+    $languageSelect.prop('disabled', true);
+    $inputContainer.addClass('disabled');
+
+    $.ajax({
+      url: '/talk',
+      type: 'POST',
+      timeout: 30000,
+      contentType: 'application/json',
+      data: JSON.stringify({
+        entity_id: currentPovEntity,
+        no_response: true,
+        targets: [npcEntityId],
+      }),
+      success: (data) => {
+        if (typeof clearDialogWaitingState === 'function') {
+          clearDialogWaitingState();
+        }
+        Chat.addDialogMessage('system', 'You give no response.', 'system');
+        exitGoalArrivalConversationMode();
+        talkToEntityMode = false;
+        $('#jrpgDialogPanel').hide();
+      },
+      error: (xhr) => {
+        const errText = (xhr.responseJSON && xhr.responseJSON.error) || 'Could not dismiss conversation.';
+        Chat.addDialogMessage('system', errText, 'system');
+      },
+      complete: () => {
+        dialogMessageProcessing = false;
+        window.__n20_dialogMessageProcessing = false;
+        $input.prop('disabled', false);
+        $sendButton.prop('disabled', false).html('<i class="glyphicon glyphicon-send"></i> Send');
+        $noResponseButton.prop('disabled', false);
+        $languageSelect.prop('disabled', false);
+        $inputContainer.removeClass('disabled');
+      },
+    });
+  }
+  window.sendDialogNoResponse = sendDialogNoResponse;
 
   function sendDialogMessage(entityId) {
     const rawMessage = $('#dialogChatInput').val().trim();
@@ -8324,6 +8470,9 @@ $(document).ready(() => {
   $('#close-dialog').on('click', function () {
     if (forcedConversationMode) {
       return;
+    }
+    if (goalArrivalConversationMode) {
+      exitGoalArrivalConversationMode();
     }
     $('#jrpgDialogPanel').hide();
     talkToEntityMode = false;

@@ -1569,6 +1569,11 @@
             </div>
           </div>
         </div>
+        <div class="entity-actions-bar">
+          <button class="btn btn-success btn-block" id="dialogBrowseShop" title="Browse wares" style="display: none;">
+            <i class="glyphicon glyphicon-shopping-cart"></i> Shop
+          </button>
+        </div>
       </div>
       
       <!-- Chat Interface (Right Side) -->
@@ -1588,14 +1593,14 @@
             <div class="input-group">
               <input type="text" class="form-control" id="dialogChatInput" placeholder="Say something, or *describe an action*" maxlength="200">
               <span class="input-group-btn">
-                <button class="btn btn-success" type="button" id="dialogBrowseShop" title="Browse wares" style="display: none;">
-                  <i class="glyphicon glyphicon-shopping-cart"></i> Shop
-                </button>
                 <button class="btn btn-default" type="button" id="dialogPerceptionCheck" title="Study the scene (Perception)">
                   <i class="glyphicon glyphicon-search"></i>
                 </button>
                 <button class="btn btn-primary" type="button" id="dialogSendMessage">
                   <i class="glyphicon glyphicon-send"></i> Send
+                </button>
+                <button class="btn btn-default" type="button" id="dialogNoResponse" title="Decline to respond" style="display: none;">
+                  No Response
                 </button>
               </span>
             </div>
@@ -1829,3 +1834,4 @@
     {% endif %}
 </body>
 </html>
+s

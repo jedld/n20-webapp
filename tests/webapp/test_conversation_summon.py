@@ -117,6 +117,35 @@ def test_select_npc_chain_responders_includes_explicit_reply_targets():
     assert responders == [sheep]
 
 
+def test_select_npc_chain_responders_skips_whisper_replies():
+    service = ConversationService.__new__(ConversationService)
+    pip = FakeReceiver('pip_barmaid')
+    henrik = Mock()
+    henrik.entity_uid = 'henrik_patron'
+    henrik.label = Mock(return_value='Henrik (Regular)')
+    henrik.is_npc = Mock(return_value=True)
+    henrik.dialog = True
+    aldric = FakeSpeaker('aldric')
+
+    battle_map = Mock()
+    battle_map.entities = [pip, henrik, aldric]
+    current_game = Mock()
+    current_game.get_map_for_entity.return_value = battle_map
+    service._current_game_getter = lambda: current_game
+
+    responders = service.select_npc_chain_responders(
+        [(henrik, 'secret', [aldric])],
+        pip,
+        {
+            'message': 'Henrik! Aldric wants a word with you.',
+            'targets': [aldric, henrik],
+            'volume': 'whisper',
+        },
+        player_speaker=aldric,
+    )
+    assert responders == []
+
+
 def test_message_invites_listener_approach():
     assert ConversationService.message_invites_listener_approach(
         'by the way tell henrik to come over here will ya',

@@ -386,21 +386,34 @@ class NpcMovementHelper:
 
         target = target_info.get('target')
         if target is None:
-            spec = str(target_info.get('target_spec') or '').strip()
-            if spec:
-                return False, f'Unknown movement target: {spec}'
             return False, 'Movement target missing'
 
         target_map = self.current_game.get_map_for_entity(target)
         if target_map is None:
             return False, f'{entity_label(target)} is not on the map'
         if target_map is not battle_map:
-            actor_map_name = getattr(battle_map, 'name', 'unknown')
-            target_map_name = getattr(target_map, 'name', 'unknown')
-            return (
-                False,
-                f'{entity_label(target)} is on {target_map_name} (actor on {actor_map_name})',
+            try:
+                source_x, source_y = battle_map.position_of(actor)
+                target_pos = target_map.position_of(target)
+            except Exception:
+                return False, 'Cannot determine positions for cross-map follow'
+            plan = PathCompute(None, battle_map, actor, ignore_opposing=True).compute_cross_map_path(
+                battle_map,
+                int(source_x),
+                int(source_y),
+                target_map,
+                int(target_pos[0]),
+                int(target_pos[1]),
+                door_navigation=True,
             )
+            if not plan:
+                actor_map_name = getattr(battle_map, 'name', 'unknown')
+                target_map_name = getattr(target_map, 'name', 'unknown')
+                return (
+                    False,
+                    f'No route to {entity_label(target)} on {target_map_name} (actor on {actor_map_name})',
+                )
+            return True, ''
 
         try:
             battle_map.distance(actor, target)
@@ -472,6 +485,10 @@ class NpcMovementHelper:
         if target is None:
             return True
 
+        target_map = self.current_game.get_map_for_entity(target)
+        if target_map is not None and target_map is not battle_map:
+            return False
+
         try:
             current_distance_ft = battle_map.distance(actor, target) * feet_per_grid
         except Exception:
@@ -516,11 +533,13 @@ class NpcMovementHelper:
                 battle_map=battle_map,
             )
         if kind in ('entity', 'object'):
+            # Entity follow/approach often routes through doors (stairs, guest rooms).
+            entity_door_nav = True
             return self._build_move_toward_target(
                 actor,
                 target_info.get('target'),
                 distance_ft=distance_ft,
-                door_navigation=self.should_use_door_navigation(actor, target_info),
+                door_navigation=entity_door_nav,
             )
         return None
 
@@ -639,6 +658,51 @@ class NpcMovementHelper:
 
         return self._finalize_move_action(actor, trimmed_path)
 
+    def _immediate_entity_square(
+        self,
+        actor: Entity,
+        target,
+        *,
+        door_navigation: bool = False,
+    ) -> Optional[Tuple[int, int]]:
+        """Return the next square to path toward on the actor's current map."""
+        battle_map = self.current_game.get_map_for_entity(actor)
+        target_map = self.current_game.get_map_for_entity(target)
+        if battle_map is None or target_map is None:
+            return None
+
+        try:
+            target_pos = target_map.position_of(target)
+        except Exception:
+            return None
+
+        dest_x, dest_y = int(target_pos[0]), int(target_pos[1])
+        if target_map is battle_map:
+            return self._resolve_reachable_square(actor, battle_map, (dest_x, dest_y))
+
+        try:
+            source_x, source_y = battle_map.position_of(actor)
+        except Exception:
+            return None
+
+        path_compute = PathCompute(None, battle_map, actor, ignore_opposing=True)
+        plan = path_compute.compute_cross_map_path(
+            battle_map,
+            int(source_x),
+            int(source_y),
+            target_map,
+            dest_x,
+            dest_y,
+            door_navigation=True,
+        )
+        if not plan:
+            return None
+        segment_path = plan[0].get('path') or []
+        if not segment_path:
+            return None
+        portal_x, portal_y = int(segment_path[-1][0]), int(segment_path[-1][1])
+        return self._resolve_reachable_square(actor, battle_map, (portal_x, portal_y))
+
     def _build_move_toward_target(
         self,
         actor: Entity,
@@ -654,8 +718,23 @@ class NpcMovementHelper:
         if battle_map is None:
             return None
 
+        target_map = self.current_game.get_map_for_entity(target)
         feet_per_grid = getattr(battle_map, 'feet_per_grid', 5) or 5
         target_pos = battle_map.entity_or_object_pos(target)
+        if target_pos is None and target_map is not None and target_map is not battle_map:
+            portal_square = self._immediate_entity_square(
+                actor,
+                target,
+                door_navigation=door_navigation,
+            )
+            if portal_square is None:
+                return None
+            return self._build_move_to_square(
+                actor,
+                portal_square,
+                door_navigation=door_navigation,
+                battle_map=battle_map,
+            )
         if target_pos is None:
             return None
 
@@ -826,6 +905,15 @@ class NpcMovementHelper:
             "You may continue with [MOVE: ...] or [FOLLOW: ...], or stop with "
             "[STOP_MOVE] / [STOP_FOLLOW]. Return only control tags plus an optional spoken line."
         )
+        try:
+            from webapp.blueprints.helpers.runtime_state import get_entity_rag_handler
+            rag_handler = get_entity_rag_handler()
+            if rag_handler is not None:
+                extra = rag_handler.build_movement_situational_context(actor, task)
+                if extra:
+                    lines.append(extra)
+        except Exception:
+            pass
         return '\n'.join(lines)
 
 

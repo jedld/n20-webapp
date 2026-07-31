@@ -70,47 +70,12 @@ eval_context = {}
 
 def _battle_map_for_render(current_game, username, *, is_dm=False):
     """Map used for tile rendering — follows the user's active map view."""
-    if is_dm:
-        return current_game.get_map_for_user(username)
     return current_game.get_map_for_user(username)
 
 
 def _sync_stack_pov_to_view_map(current_game, battle_map, pov_entities):
-    """If the user's view is an overlay floor but their token is still downstairs, move them up."""
-    if not pov_entities or battle_map is None:
-        return
-    session = getattr(current_game, 'game_session', None)
-    stack = stack_for_map(session, battle_map) if session else None
-    if stack is None:
-        return
-    floor = stack.floor_for_map(battle_map.name)
-    if floor is None or floor.is_base:
-        return
-
-    pov_list = pov_entities if isinstance(pov_entities, list) else [pov_entities]
-    base_floor = next((f for f in stack.floors if f.is_base), None)
-    if base_floor is None:
-        return
-
-    battle = current_game.get_current_battle()
-    for entity in pov_list:
-        if entity is None or entity in battle_map.entities:
-            continue
-        if entity not in base_floor.map.entities:
-            continue
-        pos = base_floor.map.entity_or_object_pos(entity)
-        if pos is None:
-            continue
-        wx, wy, _ = stack.local_to_world(base_floor.map_name, pos[0], pos[1])
-        local = stack.world_to_local(wx, wy, battle_map.name)
-        if local is None:
-            continue
-        if not (stack.is_stack_opening(wx, wy) or stack.in_overlay_footprint(floor, wx, wy)):
-            continue
-        if battle_map.placeable(entity, local[0], local[1], battle):
-            from natural20.map_stack_movement import transfer_entity_to_map
-            transfer_entity_to_map(entity, base_floor.map, battle_map, local[0], local[1], battle)
-            return
+    """Never relocate POV tokens to match the viewed floor — only the camera may change."""
+    return
 
 
 def _stack_composite_mode(stack_layers):
@@ -495,6 +460,74 @@ def switch_map():
     )
 
 
+def _resolve_path_source(battle_map, battle, username, source_x, source_y):
+    """Resolve the moving entity and map-local path coordinates.
+
+    In stack-composite overlay views the client may send world/base grid
+    coordinates (from a projected base-layer token) while the active map is
+    the overlay floor, which uses local coordinates.
+    """
+    source_x = int(source_x)
+    source_y = int(source_y)
+    entity = battle_map.entity_at(source_x, source_y)
+    if entity is not None:
+        return entity, source_x, source_y
+
+    stack = getattr(battle_map, 'map_stack', None)
+    floor = stack.floor_for_map(battle_map.name) if stack is not None else None
+
+    if floor is not None and not floor.is_base:
+        ax, ay = floor.anchor
+        lx = source_x - int(ax)
+        ly = source_y - int(ay)
+        if 0 <= lx < battle_map.size[0] and 0 <= ly < battle_map.size[1]:
+            entity = battle_map.entity_at(lx, ly)
+            if entity is not None:
+                return entity, lx, ly
+            try:
+                if battle_map.placeable(None, lx, ly, battle, True):
+                    current_game = get_current_game()
+                    pov = current_game.get_pov_entity_for_user(username)
+                    if pov is not None:
+                        return pov, lx, ly
+            except Exception:
+                pass
+
+    current_game = get_current_game()
+    pov = current_game.get_pov_entity_for_user(username)
+    if pov is None:
+        return None, source_x, source_y
+
+    try:
+        pos = battle_map.position_of(pov)
+    except Exception:
+        pos = None
+    if pos is None:
+        return None, source_x, source_y
+
+    if floor is not None and not floor.is_base:
+        return pov, int(pos[0]), int(pos[1])
+
+    if stack is not None:
+        local = stack.world_to_local(source_x, source_y, battle_map.name)
+        if local is not None:
+            lx, ly = local
+            try:
+                at_cell = battle_map.entity_at(lx, ly)
+                if at_cell is pov or battle_map.placeable(pov, lx, ly, battle, True):
+                    return pov, lx, ly
+            except Exception:
+                pass
+
+    try:
+        if battle_map.entity_at(int(pos[0]), int(pos[1])) is pov:
+            return pov, int(pos[0]), int(pos[1])
+    except Exception:
+        pass
+
+    return None, source_x, source_y
+
+
 @navigation_bp.route('/path', methods=['GET'], endpoint='compute_path')
 def compute_path():
     current_game = get_current_game()
@@ -529,6 +562,14 @@ def compute_path():
         accumulated_path = []
 
     entity = battle_map.entity_at(entity_x, entity_y)
+    if entity is None:
+        entity, entity_x, entity_y = _resolve_path_source(
+            battle_map,
+            battle,
+            session.get('username') or 'anonymous',
+            entity_x,
+            entity_y,
+        )
     if entity is None:
         return jsonify(error='No entity at source'), 400
 
@@ -577,8 +618,8 @@ def compute_path():
             battle,
             entity,
             battle_map,
-            int(source['x']),
-            int(source['y']),
+            entity_x,
+            entity_y,
             target_map,
             dest[0],
             dest[1],
@@ -592,16 +633,16 @@ def compute_path():
             return jsonify(stack_plan)
 
     path = path_compute.compute_path(
-        int(source['x']),
-        int(source['y']),
+        entity_x,
+        entity_y,
         dest[0], dest[1],
         accumulated_path=accumulated_path,
         available_movement_cost=available_movement,
     )
     if not path or dest not in path:
         path = path_compute.compute_path(
-            int(source['x']),
-            int(source['y']),
+            entity_x,
+            entity_y,
             dest[0], dest[1],
             accumulated_path=accumulated_path,
             available_movement_cost=available_movement,
@@ -654,6 +695,14 @@ def path_cost_map():
         return jsonify(error='from[x] and from[y] are required'), 400
 
     entity = battle_map.entity_at(source_x, source_y)
+    if entity is None:
+        entity, source_x, source_y = _resolve_path_source(
+            battle_map,
+            battle,
+            session.get('username') or 'anonymous',
+            source_x,
+            source_y,
+        )
     if entity is None:
         return jsonify(error='No entity at source'), 400
 
@@ -743,7 +792,7 @@ def update():
     y = int(request.args.get('y'))
     entity_uid = request.args.get('entity_uid')
     is_pov = request.args.get('pov', 'false') == 'true'
-    battle_map = current_game.get_map_for_user(session['username'])
+    battle_map = _battle_map_for_render(current_game, session['username'])
     battle = current_game.get_current_battle()
 
     entity = battle_map.entity_by_uid(entity_uid) if entity_uid else battle_map.entity_at(x, y)

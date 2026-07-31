@@ -2787,6 +2787,9 @@ body.highlight-doors .tile.tile-door-highlight {
 
 .entity-profile-panel.has-token-portrait .entity-portrait-stage {
   width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .portrait-image {
@@ -2820,6 +2823,7 @@ body.highlight-doors .tile.tile-door-highlight {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .entity-profile-panel.has-full-portrait .entity-portrait-overlay {
@@ -2837,6 +2841,71 @@ body.highlight-doors .tile.tile-door-highlight {
   );
   border-radius: 0 0 8px 8px;
 }
+
+/* Entity Actions Bar (Shop button under portrait) */
+.entity-actions-bar {
+  padding: 12px 15px;
+  border-top: 1px solid rgba(139, 69, 19, 0.4);
+  background: rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+
+.entity-profile-panel:not(.has-merchant-shop) .entity-actions-bar {
+  display: none;
+}
+
+.entity-actions-bar .btn {
+  width: 100%;
+}
+
+.entity-profile-panel.has-token-portrait .entity-actions-bar .btn {
+  background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+  border-color: #8b4513;
+  color: #fff;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.entity-profile-panel.has-token-portrait .entity-actions-bar .btn:hover {
+  background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);
+}
+
+.entity-profile-panel.has-full-portrait .entity-actions-bar {
+  position: relative;
+  bottom: auto;
+  left: auto;
+  right: auto;
+  z-index: 3;
+  padding: 12px;
+  background: linear-gradient(
+    180deg,
+    rgba(20, 24, 32, 0.6) 0%,
+    rgba(12, 14, 20, 0.95) 100%
+  );
+  border-top: 1px solid rgba(139, 69, 19, 0.35);
+}
+
+.entity-profile-panel.has-full-portrait .entity-actions-bar .btn {
+  background: rgba(44, 62, 80, 0.85);
+  border-color: #8b4513;
+  color: #f39c12;
+}
+
+.entity-profile-panel.has-full-portrait .entity-actions-bar .btn:hover {
+  background: rgba(44, 62, 80, 0.95);
+  border-color: #f39c12;
+}
+
+/* Hide shop button when description is hidden on full-portrait layout */
+.entity-profile-panel.has-full-portrait .entity-portrait-overlay.description-hidden ~ .entity-actions-bar,
+.entity-profile-panel.has-full-portrait .entity-portrait-overlay:has(.description-text:empty) ~ .entity-actions-bar {
+  display: none;
+}
+
+.entity-profile-panel.has-full-portrait.has-merchant-shop .entity-portrait-overlay {
+  max-height: calc(100% - 8px);
+}
+
+/* End Entity Actions Bar */
 
 .entity-profile-panel.has-full-portrait .entity-portrait-overlay.description-hidden {
   padding-top: 8px;
@@ -2897,19 +2966,29 @@ body.highlight-doors .tile.tile-door-highlight {
 
 .entity-description {
   flex: 1;
+  min-height: 0;
   background: rgba(0, 0, 0, 0.2);
   border-radius: 8px;
   padding: 10px;
   overflow-y: auto;
 }
 
+.entity-profile-panel.has-token-portrait .entity-description {
+  flex: 1;
+  min-height: 0;
+}
+
 .entity-profile-panel.has-full-portrait .entity-description {
   flex: 0 1 auto;
-  max-height: 42%;
+  max-height: min(42%, 9.5em);
   background: rgba(0, 0, 0, 0.35);
   border-radius: 6px;
   padding: 8px 10px;
   backdrop-filter: blur(2px);
+}
+
+.entity-profile-panel.has-full-portrait.has-merchant-shop .entity-description {
+  max-height: min(36%, 8em);
 }
 
 .description-text {
@@ -2923,8 +3002,8 @@ body.highlight-doors .tile.tile-door-highlight {
 .entity-profile-panel.has-full-portrait .description-text {
   font-size: 11px;
   line-height: 1.45;
-  max-height: 9em;
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
 }
 
 /* Chat Interface Panel */
@@ -4225,4 +4304,8 @@ body.forced-conversation-active #jrpgDialogPanel .dialog-panel-header {
 
 body.forced-conversation-active .tiles-container {
   cursor: not-allowed;
+}
+
+body.goal-arrival-active #jrpgDialogPanel .dialog-panel-header {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.55);
 }

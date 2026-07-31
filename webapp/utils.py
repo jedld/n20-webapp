@@ -648,6 +648,11 @@ class GameManagement:
         )
         self._goal_thread.start()
         self._movement_thread.start()
+        try:
+            from natural20.map_stack_movement import on_entity_relocation
+            on_entity_relocation(self.movement_manager.on_entity_moved)
+        except Exception:
+            pass
 
         if self.soundtracks:
             loaded_soundtracks = []
@@ -725,6 +730,28 @@ class GameManagement:
 
     def get_pov_entity_for_user(self, username):
         return self.entity_registry.get_pov_entity_for_user(username)
+
+    def _pov_entity_for_commit(self, username, pov_entities):
+        """Resolve the POV entity for map-switch tracking during commit_and_update."""
+        pov_entity = self.get_pov_entity_for_user(username)
+        if pov_entity is not None:
+            return pov_entity
+        normalized = str(username or '').strip().lower()
+        if not normalized:
+            return None
+        try:
+            from webapp.blueprints.helpers.template_globals import entity_owners
+        except Exception:
+            entity_owners = None
+        for candidate in pov_entities or []:
+            if candidate is None:
+                continue
+            if entity_owners is None:
+                continue
+            owners = [str(owner).strip().lower() for owner in (entity_owners(candidate) or [])]
+            if normalized in owners:
+                return candidate
+        return None
 
     def set_pov_entity_for_user(self, username, entity):
         self.entity_registry.set_pov_entity_for_user(username, entity)
@@ -1996,8 +2023,14 @@ class GameManagement:
         """
         # Snapshot basic references without holding locks for long
         battle = self.get_current_battle()
-        pov_entity = self.get_pov_entity_for_user(username) or (pov_entities[0] if pov_entities else None)
-        pov_map = self.get_map_for_entity(pov_entity)
+        acting_source = getattr(action, 'source', None)
+        pov_entity = self._pov_entity_for_commit(username, pov_entities)
+        pov_map = self.get_map_for_entity(pov_entity) if pov_entity is not None else None
+        track_map_switch = (
+            acting_source is not None
+            and pov_entity is not None
+            and getattr(acting_source, 'entity_uid', None) == getattr(pov_entity, 'entity_uid', None)
+        )
 
         # An entity may be acting on the field while a battle is in progress
         # without itself being a participant of that battle (e.g. a player
@@ -2106,18 +2139,19 @@ class GameManagement:
         # We still update the user's current map server-side immediately so
         # subsequent server-side queries reflect the new map.
         deferred_map_switch = None
-        try:
-            with self.game_state_lock:
-                new_battle_map = self.get_map_for_entity(pov_entity)
-                if pov_map is not None and new_battle_map is not None and new_battle_map != pov_map:
-                    self.switch_map_for_user(username, new_battle_map.name)
-                    entity_uid = getattr(pov_entity, 'entity_uid', None)
-                    deferred_map_switch = {
-                        'sids': list(self.username_to_sid.get(username, [])),
-                        'payload': {'map': new_battle_map.name, 'entity_uid': _json_safe_uid(entity_uid)},
-                    }
-        except Exception:
-            deferred_map_switch = None
+        if track_map_switch:
+            try:
+                with self.game_state_lock:
+                    new_battle_map = self.get_map_for_entity(pov_entity)
+                    if pov_map is not None and new_battle_map is not None and new_battle_map != pov_map:
+                        self.switch_map_for_user(username, new_battle_map.name)
+                        entity_uid = getattr(pov_entity, 'entity_uid', None)
+                        deferred_map_switch = {
+                            'sids': list(self.username_to_sid.get(username, [])),
+                            'payload': {'map': new_battle_map.name, 'entity_uid': _json_safe_uid(entity_uid)},
+                        }
+            except Exception:
+                deferred_map_switch = None
 
         if treat_as_battle:
             if not suppress_ui:

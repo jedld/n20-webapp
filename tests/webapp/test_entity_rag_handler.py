@@ -9,6 +9,7 @@ from unittest.mock import Mock, MagicMock
 from webapp.entity_rag_handler import EntityRAGHandler, PERCEPTION_EMPTY_DESCRIPTION
 from unittest.mock import patch
 from natural20.player_character import PlayerCharacter
+from natural20.action import Action
 
 
 class TestEntityRAGHandler(unittest.TestCase):
@@ -1688,6 +1689,319 @@ class TestEntityRAGHandler(unittest.TestCase):
         prompt = self.rag_handler.campaign_setting_prompt()
         self.assertIn('Amphail', prompt)
         self.assertIn('Forgotten Realms', prompt)
+
+    def test_parse_action_directives_use_item_self_target(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        actor.inventory = {'healing_potion': {'qty': 2}}
+
+        result = self.rag_handler.parse_action_directives(
+            '[USE_ITEM: item=healing_potion, target=self]',
+            actor,
+            speaker=None,
+        )
+
+        self.assertEqual(result['use_item']['item'], 'healing_potion')
+        self.assertIs(result['use_item']['target'], actor)
+
+    def test_parse_action_directives_interact_resolves_object_target(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        door = Mock()
+        door.entity_uid = 'door-1'
+        door.type = 'tavern_suite_door'
+        door._name = 'Suite Door'
+
+        self.rag_handler.resolve_interact_target = Mock(return_value=door)
+
+        result = self.rag_handler.parse_action_directives(
+            '[INTERACT: target=@tavern_suite_door, action=unlock]',
+            actor,
+            speaker=None,
+        )
+
+        self.rag_handler.resolve_interact_target.assert_called_once()
+        self.assertIs(result['interact']['target'], door)
+        self.assertEqual(result['interact']['action'], 'unlock')
+
+    def test_resolve_interact_target_matches_object_alias(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        door = Mock()
+        door.entity_uid = 'door-1'
+        door.type = 'tavern_suite_door'
+        door._name = 'Suite Door'
+
+        self.rag_handler.get_interactable_objects = Mock(return_value=[{
+            'subject': door,
+            'mention_handle': 'tavern_suite_door',
+            'name': 'Suite Door',
+        }])
+        self.rag_handler.resolve_named_target = Mock(return_value=None)
+
+        resolved = self.rag_handler.resolve_interact_target(actor, 'suite door', speaker=None)
+
+        self.assertIs(resolved, door)
+
+    def test_normalize_interaction_name_aliases(self):
+        self.assertEqual(
+            self.rag_handler._normalize_interaction_name('unlock', ['open', 'unlock']),
+            'unlock',
+        )
+        self.assertEqual(
+            self.rag_handler._normalize_interaction_name('pick', ['lockpick', 'open']),
+            'lockpick',
+        )
+        self.assertIsNone(
+            self.rag_handler._normalize_interaction_name('fly', ['open', 'close']),
+        )
+
+    def test_apply_response_plan_directives_executes_use_item(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        use_action = Mock()
+
+        self.mock_current_game.get_current_battle.return_value = None
+        self.mock_current_game.entity_owners.return_value = []
+        self.rag_handler.build_use_item_action = Mock(return_value=use_action)
+
+        plan = {
+            'set_goal': None,
+            'goal_complete': False,
+            'goal_give_up': False,
+            'approach': None,
+            'interact': None,
+            'use_item': {'item': 'healing_potion', 'target': actor},
+        }
+
+        result = self.rag_handler.apply_response_plan_directives(
+            plan,
+            actor,
+            speaker=None,
+            advance_time=False,
+        )
+
+        self.rag_handler.build_use_item_action.assert_called_once_with(
+            actor,
+            'healing_potion',
+            target=actor,
+            speaker=None,
+        )
+        self.mock_current_game.commit_and_update.assert_called_once()
+        self.assertEqual(result['executed_actions'], ['use_item'])
+
+    def test_apply_response_plan_directives_interact_during_battle(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        door = Mock()
+        interact_action = Mock()
+        battle = Mock()
+
+        self.mock_current_game.get_current_battle.return_value = battle
+        self.mock_current_game.entity_owners.return_value = []
+        self.rag_handler.build_interact_action = Mock(return_value=interact_action)
+
+        plan = {
+            'set_goal': None,
+            'goal_complete': False,
+            'goal_give_up': False,
+            'approach': None,
+            'interact': {'target': door, 'action': 'open'},
+            'use_item': None,
+        }
+
+        result = self.rag_handler.apply_response_plan_directives(
+            plan,
+            actor,
+            speaker=None,
+            advance_time=False,
+        )
+
+        self.rag_handler.build_interact_action.assert_called_once_with(actor, door, action_name='open')
+        self.mock_current_game.commit_and_update.assert_called_once()
+        self.assertEqual(result['executed_actions'], ['interact'])
+
+    @patch('webapp.entity_rag_handler.UseItemAction')
+    def test_build_use_item_action_resolves_targeted_item(self, mock_use_item_action):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        actor.inventory = {'healing_potion': {'qty': 1}}
+        target = Mock()
+        target.entity_uid = 'pc-1'
+
+        final_action = Action(self.mock_game_session, actor, 'use_item')
+        final_action.target = None
+
+        self.mock_current_game.get_current_battle.return_value = None
+        self.mock_game_session.load_equipment.return_value = {
+            'usable': True,
+            'name': 'healing_potion',
+            'item_class': 'HealingPotion',
+        }
+        mock_use_item_action.can.return_value = True
+        mock_use_item_action.build.return_value = {
+            'next': lambda item_slug: {
+                'param': [{'type': 'select_target'}],
+                'next': lambda resolved_target: final_action,
+            },
+        }
+
+        built = self.rag_handler.build_use_item_action(
+            actor,
+            'healing_potion',
+            target=target,
+        )
+
+        self.assertIs(built, final_action)
+        self.assertIs(built.target, target)
+
+    def test_resolve_inventory_container_slug_matches_backpack(self):
+        actor = Mock()
+        actor.inventory = {
+            'backpack': {'qty': 1, 'contents': [{'type': 'healing_potion', 'qty': 2}], 'is_container': True},
+        }
+        actor.is_container = Mock(side_effect=lambda name, session=None: name == 'backpack')
+        actor.get_container_contents = Mock(return_value=[{'type': 'healing_potion', 'qty': 2}])
+        actor._item_definition = Mock(return_value={'label': 'Backpack', 'type': 'container'})
+
+        resolved = self.rag_handler._resolve_container_target(actor, 'backpack', speaker=None)
+
+        self.assertEqual(resolved, 'backpack')
+
+    def test_apply_response_plan_retrieves_from_backpack(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        actor.inventory = {
+            'backpack': {'qty': 1, 'contents': [{'type': 'healing_potion', 'qty': 1}], 'is_container': True},
+        }
+        actor.is_container = Mock(return_value=True)
+        actor.get_container_contents = Mock(return_value=[{'type': 'healing_potion', 'qty': 1}])
+        actor.retrieve_item = Mock(return_value=(True, None))
+        actor.label = Mock(return_value='NPC')
+
+        self.mock_current_game.get_current_battle.return_value = None
+        self.mock_current_game.entity_owners.return_value = []
+
+        plan = {
+            'set_goal': None,
+            'goal_complete': False,
+            'goal_give_up': False,
+            'approach': None,
+            'interact': None,
+            'retrieve': {
+                'item': 'healing_potion',
+                'container': 'backpack',
+                'qty': 1,
+            },
+        }
+
+        result = self.rag_handler.apply_response_plan_directives(
+            plan,
+            actor,
+            speaker=None,
+            advance_time=False,
+        )
+
+        actor.retrieve_item.assert_called_once()
+        self.assertEqual(result['executed_actions'], ['retrieve'])
+
+    def test_build_use_item_action_pulls_potion_from_backpack(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        actor.inventory = {
+            'backpack': {'qty': 1, 'contents': [{'type': 'healing_potion', 'qty': 1}], 'is_container': True},
+        }
+        actor.is_container = Mock(return_value=True)
+        actor.get_container_contents = Mock(return_value=[{'type': 'healing_potion', 'qty': 1}])
+        actor.retrieve_item = Mock(return_value=(True, None))
+
+        final_action = Action(self.mock_game_session, actor, 'use_item')
+        final_action.target = actor
+
+        self.mock_current_game.get_current_battle.return_value = None
+        self.rag_handler._inventory_qty = Mock(side_effect=[0, 1])
+        self.rag_handler._pull_item_from_inventory_container = Mock(return_value=True)
+        self.rag_handler._resolve_use_item_build_step = Mock(return_value=final_action)
+        self.mock_game_session.load_equipment.return_value = {
+            'usable': True,
+            'name': 'healing_potion',
+            'item_class': 'HealingPotion',
+        }
+
+        with patch('webapp.entity_rag_handler.UseItemAction') as mock_use_item_action:
+            mock_use_item_action.can.return_value = True
+            mock_use_item_action.build.return_value = {'next': Mock(return_value={'param': []})}
+            built = self.rag_handler.build_use_item_action(actor, 'healing_potion', target=actor)
+
+        self.rag_handler._pull_item_from_inventory_container.assert_called_once_with(actor, 'healing_potion')
+        self.assertIs(built, final_action)
+
+    def test_locate_perceivable_target_matches_visible_entity(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        target = Mock()
+        target.entity_uid = 'pc-1'
+        target.name = 'Aldric'
+        target.type = 'pc'
+
+        self.rag_handler.collect_perceivable_targets = Mock(return_value=[{
+            'subject': target,
+            'mention_handle': 'aldric',
+            'name': 'Aldric',
+            'distance_ft': 10,
+            'kind': 'player',
+        }])
+
+        located = self.rag_handler.locate_perceivable_target(actor, 'aldric', speaker=None)
+
+        self.assertIs(located, target)
+
+    def test_resolve_action_target_rejects_non_perceivable_match(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        hidden = Mock()
+        hidden.entity_uid = 'hidden-1'
+
+        self.rag_handler.resolve_named_target = Mock(return_value=hidden)
+        self.rag_handler._subject_is_perceivable = Mock(return_value=False)
+        self.rag_handler.locate_perceivable_target = Mock(return_value=None)
+
+        resolved = self.rag_handler.resolve_action_target(actor, '@hidden', speaker=None)
+
+        self.assertIsNone(resolved)
+        self.rag_handler.locate_perceivable_target.assert_called_once()
+
+    def test_parse_action_directives_locate_records_target(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        target = Mock()
+        self.rag_handler.locate_perceivable_target = Mock(return_value=target)
+
+        result = self.rag_handler.parse_action_directives(
+            '[LOCATE: target=aldric]',
+            actor,
+            speaker=None,
+        )
+
+        self.assertIs(result['locate']['target'], target)
+        self.assertEqual(result['locate']['query'], 'aldric')
+
+    def test_build_targets_summary_lists_perceivable_entries(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        self.rag_handler.collect_perceivable_targets = Mock(return_value=[{
+            'mention_handle': 'pip',
+            'name': 'Pip',
+            'distance_ft': 15,
+            'position': (3, 4),
+            'kind': 'npc',
+        }])
+
+        summary = self.rag_handler.build_targets_summary(actor)
+
+        self.assertIn('[TARGETS]', summary)
+        self.assertIn('@pip', summary)
+        self.assertIn('Pip', summary)
 
 
 if __name__ == '__main__':

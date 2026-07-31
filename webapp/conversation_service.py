@@ -1928,6 +1928,9 @@ class ConversationService:
         if speaker_npc is None:
             return []
 
+        if (reply_plan or {}).get('volume') == 'whisper':
+            return []
+
         heard_entities = {
             listener.entity_uid: listener
             for listener, _message, _directed_to in (processed_conversations or [])
@@ -1955,6 +1958,8 @@ class ConversationService:
         )
         for target in chain_targets:
             if target is None or target == speaker_npc:
+                continue
+            if isinstance(player_speaker, PlayerCharacter) and target == player_speaker:
                 continue
             uid = getattr(target, 'entity_uid', None)
             if uid:
@@ -2004,10 +2009,7 @@ class ConversationService:
             except Exception:
                 candidates = []
 
-        extras = unique_entities(
-            resolve_named_targets(message, candidates)
-            + resolve_mention_targets(message, candidates)
-        )
+        extras = unique_entities(resolve_mention_targets(message, candidates))
         if not extras:
             return reply_plan
 
@@ -2328,11 +2330,22 @@ class ConversationService:
             )
             return None
 
+        self.entity_rag_handler.maybe_promote_escort_approach_to_move(
+            reply_plan,
+            receiver,
+            speaker=speaker,
+            player_message=original_player_message,
+        )
+        pre_speech_movement = {'approach'}
+        if reply_plan.get('move_to'):
+            pre_speech_movement.add('move_to')
+        if reply_plan.get('follow'):
+            pre_speech_movement.add('follow')
         self.entity_rag_handler.apply_response_plan_directives(
             reply_plan,
             receiver,
             speaker=speaker,
-            only={'approach'},
+            only=pre_speech_movement,
         )
 
         reply_plan = self.expand_reply_targets_from_message(receiver, reply_plan)
@@ -2444,11 +2457,16 @@ class ConversationService:
                 receiver.label(),
                 exc,
             )
+        post_speech_skip = {'approach'}
+        if reply_plan.get('move_to'):
+            post_speech_skip.add('move_to')
+        if reply_plan.get('follow'):
+            post_speech_skip.add('follow')
         self.entity_rag_handler.apply_response_plan_directives(
             reply_plan,
             receiver,
             speaker=speaker,
-            skip={'approach'},
+            skip=post_speech_skip,
         )
         try:
             forced_manager = getattr(self.current_game, 'forced_conversation_manager', None)
@@ -2458,6 +2476,16 @@ class ConversationService:
         except Exception as exc:
             self.logger.warning(
                 "[Talk] forced conversation resolution failed for %s: %s",
+                receiver.label(),
+                exc,
+            )
+        try:
+            goal_arrival_manager = getattr(self.current_game, 'goal_arrival_manager', None)
+            if goal_arrival_manager is not None:
+                goal_arrival_manager.maybe_complete_after_npc_reply(receiver, response)
+        except Exception as exc:
+            self.logger.warning(
+                "[Talk] goal arrival resolution failed for %s: %s",
                 receiver.label(),
                 exc,
             )
@@ -2500,6 +2528,11 @@ class ConversationService:
         npc_initiated: bool = False,
     ):
         target_entities = self.entity_rag_handler.get_conversation_targets(receiver, speaker=speaker)
+        perceivable_entries = self.entity_rag_handler.collect_perceivable_targets(
+            receiver,
+            range_ft=90,
+            include_objects=False,
+        )
 
         def _languages_for(target, *, understood=False):
             getter_name = 'languages_understood' if understood else 'languages'
@@ -2513,10 +2546,23 @@ class ConversationService:
             return [str(lang).strip() for lang in langs if str(lang).strip()]
 
         target_handles = []
+        seen_handles = set()
+        for entry in perceivable_entries[:14]:
+            handle = entry.get('mention_handle')
+            if not handle or handle in seen_handles:
+                continue
+            seen_handles.add(handle)
+            name = entry.get('name') or 'unknown'
+            distance_ft = entry.get('distance_ft', 0)
+            target_handles.append(f"@{handle} ({name}; {distance_ft}ft)")
         for target in target_entities:
+            handle = mention_handle_for(target)
+            if handle in seen_handles:
+                continue
+            seen_handles.add(handle)
             langs = _languages_for(target)
             lang_note = f" speaks: {', '.join(langs)}" if langs else " speaks: unknown"
-            target_handles.append(f"@{mention_handle_for(target)} ({entity_label(target)};{lang_note})")
+            target_handles.append(f"@{handle} ({entity_label(target)};{lang_note})")
 
         handles_text = ', '.join(target_handles) if target_handles else 'speaker'
 
@@ -2566,6 +2612,14 @@ class ConversationService:
         setting_block = f"\n{setting_text}\n" if setting_text else ''
         container_serving_text = self.entity_rag_handler.container_serving_guidance_for_conversation(receiver)
         container_serving_block = f"{container_serving_text}\n" if container_serving_text else ''
+        usable_items_text = self.entity_rag_handler.usable_items_guidance_for_entity(receiver)
+        usable_items_block = f"{usable_items_text}\n" if usable_items_text else ''
+        inventory_containers_text = self.entity_rag_handler.inventory_containers_guidance_for_entity(receiver)
+        inventory_containers_block = f"{inventory_containers_text}\n" if inventory_containers_text else ''
+        interactables_text = self.entity_rag_handler.interactable_objects_guidance_for_entity(receiver)
+        interactables_block = f"{interactables_text}\n" if interactables_text else ''
+        perceivable_targets_text = self.entity_rag_handler.perceivable_targets_guidance_for_entity(receiver, range_ft=90)
+        perceivable_targets_block = f"{perceivable_targets_text}\n" if perceivable_targets_text else ''
         summon_block = ''
         if summoned:
             summon_block = (
@@ -2615,9 +2669,25 @@ class ConversationService:
             "- You may speak a different language with [in <language>]. Pick a language your intended listeners actually understand. If a listener does not share your current language, switch to a common tongue you both know (typically [in common]) so they can reply, unless you are deliberately keeping them out of the conversation.\n"
             "- You may move toward someone or something with [APPROACH: target=@handle, distance=5]. "
             "Use distance=5 when joining a person (not 10 or 15). The server continues with [MOVE] until you arrive.\n"
+            "- When agreeing to show, lead, or escort someone to a guest room, suite, cellar, or other landmark, "
+            "use [MOVE: target=<landmark_id>, distance=5] — not [APPROACH: target=speaker]. "
+            "[APPROACH] only closes conversational distance; it does not walk you to a destination.\n"
             "- You may keep moving toward a target with [MOVE: target=@handle, distance=5], [MOVE: target=<landmark_id>, distance=5], [MOVE: target=Front Door, distance=10], or [MOVE: x=5, y=10]. Movement continues on each 6-second tick until you arrive or emit [STOP_MOVE].\n"
-            "- You may trail someone with [FOLLOW: target=@handle, distance=5]. You move whenever they move and may reassess each tick; emit [STOP_FOLLOW] to stop.\n"
-            "- You may use an object with [INTERACT: target=<name or @handle>, action=<interaction>].\n"
+            "- You may trail someone with [FOLLOW: target=@handle, distance=5]. "
+            "The server keeps following until you emit [STOP_FOLLOW] or the target is lost — "
+            "you move whenever they move, including upstairs or through doors.\n"
+            "- You may use an object with [INTERACT: target=<name or @handle>, action=<interaction>]. "
+            "Works on doors, containers, levers, and other map objects the same way as for player characters.\n"
+            "- Use [TARGETS] to refresh the list of everyone and objects you can perceive with @handles, "
+            "or [LOCATE: target=<name>] to resolve one target before chaining "
+            "[APPROACH]/[USE_ITEM]/[INTERACT]/[OFFER_ITEM] tags.\n"
+            "- You may use a consumable or charged item from your inventory with "
+            "[USE_ITEM: item=<item_slug>, target=self|@handle]. Healing potions may target yourself or an ally; "
+            "spell scrolls need a valid target for the spell (often self or an enemy). Items in your backpack "
+            "are pulled automatically when you use them.\n"
+            "- You may organize your backpack with "
+            "[RETRIEVE: item=<slug>, target=backpack, qty=1] and "
+            "[STORE: item=<slug>, target=backpack, qty=1] (or [STOW: ...]).\n"
             "- You may offer an item with [OFFER_ITEM: item=<item_slug>, target=speaker|@handle]. This creates an Accept Item Yes/No prompt for the target. You may offer from your inventory or from an open container within reach (for example the bar).\n"
             "- You may pick up a ground item within reach with [PICKUP: item=<item_slug>] or [PICKUP: item=<item_slug>, qty=2].\n"
             "- You may inspect container stock with [LIST_CONTAINER: target=@handle] or [LIST_CONTAINER] for all nearby containers.\n"
@@ -2629,6 +2699,10 @@ class ConversationService:
             "- When the speaker offers to give you an item, hands something over, or otherwise signals a gift, use [ACCEPT_GIFT: target=speaker|@handle] (optional item=<item_slug> hint) to open their give-item transfer dialog. React in character first if you like.\n"
             "- If you choose violence or to attack player characters, include [GO_HOSTILE] in your response (with or without a spoken line). The server will switch you to a hostile faction and may start combat. Only use this when your character would genuinely fight.\n"
             f"{container_serving_block}"
+            f"{usable_items_block}"
+            f"{inventory_containers_block}"
+            f"{perceivable_targets_block}"
+            f"{interactables_block}"
             f"{self.entity_rag_handler.offer_item_guidance_for_conversation(receiver, speaker, player_speaker)}\n"
             f"{animal_comm_block}"
             f"{setting_block}"
@@ -2650,7 +2724,8 @@ class ConversationService:
             f"- Languages you ({entity_label(receiver)}) understand: {receiver_understood_text}.\n"
             f"- {speaker_language_text}\n"
             f"- Languages you share with the speaker: {shared_text}.\n"
-            f"- Nearby handles you can address right now: {handles_text}.\n"
+            f"- Nearby handles you can target right now: {handles_text}.\n"
+            "- Chain targeting: [LOCATE: target=injured guard] then [USE_ITEM: item=healing_potion, target=@<handle from locate>].\n"
             f"\nYour gear and inventory (authoritative; do not contradict):\n{gear_text}\n"
         )
 
@@ -4525,6 +4600,14 @@ class ConversationService:
         if not entity:
             return {'error': 'Entity not found'}, 404
 
+        if data.get('no_response'):
+            if not isinstance(entity, PlayerCharacter):
+                return {'error': 'No Response is only available to player characters'}, 400
+            goal_arrival_manager = getattr(self.current_game, 'goal_arrival_manager', None)
+            if goal_arrival_manager is not None and goal_arrival_manager.on_player_no_response(entity):
+                return {'success': True, 'no_response': True}, 200
+            return {'error': 'No active goal-arrival conversation'}, 400
+
         if dm_impersonate:
             if not self._requester_is_dm(normalized_requesting_username):
                 return {'error': 'DM impersonation requires DM privileges'}, 403
@@ -4795,6 +4878,10 @@ class ConversationService:
                 notes = forced_manager.impatience_notes_for_turn(receiver)
                 if notes:
                     inject_notes = notes
+            escort_note = self.entity_rag_handler.escort_navigation_inject_note(receiver, message)
+            if escort_note:
+                inject_notes = list(inject_notes or [])
+                inject_notes.append(escort_note)
             turn_result = self._run_single_npc_reply_turn(
                 receiver,
                 entity,
@@ -4857,6 +4944,7 @@ class ConversationService:
         *,
         map_name=None,
         forced: bool = False,
+        goal_arrival: bool = False,
     ) -> None:
         """Open the JRPG dialog UI for human-controlled owners of ``target_entities``."""
         from webapp.npc_item_exchange import human_controlled_usernames
@@ -4879,13 +4967,16 @@ class ConversationService:
                     continue
                 seen_usernames.add(username)
                 for sid in self._sids_for_username(username):
-                    self.socketio.emit('message', {
+                    payload = {
                         'type': 'open_entity_dialog',
                         'entity_id': npc.entity_uid,
                         'entity_name': npc.label(),
                         'map_name': map_name,
                         'forced': forced,
-                    }, to=sid)
+                    }
+                    if goal_arrival:
+                        payload['goal_arrival'] = True
+                    self.socketio.emit('message', payload, to=sid)
 
     def initiate_npc_address(
         self,
@@ -4897,6 +4988,7 @@ class ConversationService:
         map_name=None,
         conversation_system_prompt=None,
         forced: bool = False,
+        goal_arrival: bool = False,
     ) -> bool:
         """Have an NPC speak to player character(s) without a player initiating /talk."""
         from webapp.llm_handler import read_npc_system_prompt
@@ -5034,6 +5126,16 @@ class ConversationService:
                 npc.label(),
                 exc,
             )
+        try:
+            goal_arrival_manager = getattr(self.current_game, 'goal_arrival_manager', None)
+            if goal_arrival_manager is not None:
+                goal_arrival_manager.maybe_complete_after_npc_reply(npc, response)
+        except Exception as exc:
+            self.logger.warning(
+                "[Talk] goal arrival resolution failed for %s: %s",
+                npc.label(),
+                exc,
+            )
 
         if open_dialog:
             self._open_entity_dialog_for_targets(
@@ -5041,6 +5143,7 @@ class ConversationService:
                 target_entities,
                 map_name=map_name,
                 forced=forced,
+                goal_arrival=goal_arrival,
             )
 
         self.logger.info(

@@ -379,6 +379,13 @@ current_game.forced_conversation_manager = ForcedConversationManager(
     conversation_service_getter=lambda: conversation_service,
 )
 
+from webapp.goal_arrival_conversation import GoalArrivalConversationManager
+
+current_game.goal_arrival_manager = GoalArrivalConversationManager(
+    current_game,
+    conversation_service_getter=lambda: conversation_service,
+)
+
 # --- TTS Initialization ---
 tts_manager = None
 if os.environ.get('TTS_ENABLED', '0').lower() in ('1', 'true', 'yes'):

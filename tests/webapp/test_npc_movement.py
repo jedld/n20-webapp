@@ -37,7 +37,7 @@ class TestNpcMovementHelper(unittest.TestCase):
         )
         self.assertTrue(reached)
 
-    def test_movement_target_viable_rejects_cross_map_target(self):
+    def test_movement_target_viable_rejects_unreachable_cross_map_target(self):
         actor = Mock()
         target = Mock()
         target.entity_uid = 'sheep-1'
@@ -46,6 +46,8 @@ class TestNpcMovementHelper(unittest.TestCase):
         map_a.name = 'town_market'
         map_b = Mock()
         map_b.name = 'wizard_tower'
+        map_a.position_of.side_effect = lambda ent: (1, 1)
+        map_b.position_of.side_effect = lambda ent: (4, 4)
 
         def map_for_entity(ent):
             if ent is actor:
@@ -56,10 +58,12 @@ class TestNpcMovementHelper(unittest.TestCase):
 
         self.current_game.get_map_for_entity.side_effect = map_for_entity
 
-        viable, reason = self.helper.movement_target_viable(
-            actor,
-            {'kind': 'entity', 'target': target, 'target_spec': '@Wizard sheep'},
-        )
+        with patch('webapp.npc_movement.PathCompute') as mock_pc:
+            mock_pc.return_value.compute_cross_map_path.return_value = None
+            viable, reason = self.helper.movement_target_viable(
+                actor,
+                {'kind': 'entity', 'target': target, 'target_spec': '@Wizard sheep'},
+            )
         self.assertFalse(viable)
         self.assertIn('wizard_tower', reason)
 
@@ -179,6 +183,51 @@ class TestNpcMovementDoorNavigation(unittest.TestCase):
         }
         self.assertFalse(self.helper.movement_reached(npc, target_info, distance_ft=0))
 
+    def test_movement_target_viable_allows_cross_map_entity_follow(self):
+        town = self.session.maps['town_market']
+        upstairs = self.session.maps['tavern_2nd_floor']
+        npc = town.entity_by_uid('pip_barmaid')
+        leader = town.entity_by_uid('henrik_patron')
+        town.place((12, 18), npc)
+        town.remove(leader)
+        upstairs.place((1, 3), leader)
+
+        def map_for_entity(ent):
+            if ent is leader:
+                return upstairs
+            return town
+
+        self.current_game.get_map_for_entity.side_effect = map_for_entity
+
+        viable, reason = self.helper.movement_target_viable(
+            npc,
+            {'kind': 'entity', 'target': leader, 'target_spec': '@henrik'},
+        )
+        self.assertTrue(viable, reason)
+
+    def test_build_move_step_toward_cross_map_follow_target(self):
+        town = self.session.maps['town_market']
+        upstairs = self.session.maps['tavern_2nd_floor']
+        npc = town.entity_by_uid('pip_barmaid')
+        leader = town.entity_by_uid('henrik_patron')
+        town.place((12, 18), npc)
+        town.remove(leader)
+        upstairs.place((1, 3), leader)
+
+        def map_for_entity(ent):
+            if ent is leader:
+                return upstairs
+            return town
+
+        self.current_game.get_map_for_entity.side_effect = map_for_entity
+
+        move = self.helper.build_move_step(
+            npc,
+            {'kind': 'entity', 'target': leader, 'target_spec': '@henrik'},
+            distance_ft=5,
+        )
+        self.assertIsNotNone(move)
+
 
 class TestNpcMovementManager(unittest.TestCase):
     def setUp(self):
@@ -213,6 +262,36 @@ class TestNpcMovementManager(unittest.TestCase):
         task = self.movement_manager.schedule_follow(entity, target, distance_ft=5)
         self.assertEqual(task['mode'], 'follow')
         self.assertEqual(task['target_uid'], 'pc-1')
+
+    def test_on_entity_moved_triggers_follower_tick(self):
+        leader = Mock()
+        leader.entity_uid = 'pc-1'
+        follower = Mock()
+        follower.entity_uid = 'npc-1'
+
+        self.manager.get_current_battle.return_value = None
+        self.manager.npc_movements = {
+            'npc-1': {
+                'status': 'active',
+                'mode': 'follow',
+                'target_uid': 'pc-1',
+                'running': False,
+            },
+        }
+        self.manager.get_entity_by_uid.return_value = follower
+
+        with patch('webapp.blueprints.helpers.runtime_state.get_entity_rag_handler') as get_rag, patch(
+            'webapp.blueprints.helpers.runtime_state.get_llm_conversation_handler'
+        ) as get_llm:
+            rag = Mock()
+            get_rag.return_value = rag
+            get_llm.return_value = Mock()
+            self.movement_manager.on_entity_moved(leader)
+            rag.execute_scheduled_movement.assert_called_once_with(
+                'npc-1',
+                get_llm.return_value,
+                triggered_by_follow=True,
+            )
 
 
 class TestEntityRagMovementDirectives(unittest.TestCase):
@@ -315,6 +394,63 @@ class TestEntityRagMovementDirectives(unittest.TestCase):
         self.mock_current_game.emit_out_of_combat_move_animation.assert_called_once_with(move_action, 'dm')
         self.assertIn('approach', result['executed_actions'])
 
+    def test_maybe_promote_escort_approach_to_move_for_suite(self):
+        from natural20.session import Session
+
+        session = Session(root_path='user_levels/wild_sheep_chase')
+        game = Mock()
+        game.get_current_battle.return_value = None
+        game.get_map_for_entity.side_effect = lambda ent: session.map_for_entity(ent)
+        handler = EntityRAGHandler(session, game)
+
+        pip = session.entity_by_uid('pip_barmaid')
+        speaker = session.entity_by_uid('aldric') or Mock()
+        if getattr(speaker, 'entity_uid', None) is None:
+            speaker = Mock()
+            speaker.entity_uid = 'aldric'
+
+        plan = {
+            'message': "Alright then, I'll be up in a jiffy.",
+            'narrative': [],
+            'approach': {
+                'target_info': {'kind': 'entity', 'target': speaker},
+                'distance_ft': 5,
+            },
+        }
+        handler.movement_helper.movement_reached = Mock(return_value=True)
+        handler.parse_move_target_info = Mock(
+            return_value={
+                'kind': 'annotation',
+                'annotation': {'id': 'tavern_suite_room'},
+            },
+        )
+
+        promoted = handler.maybe_promote_escort_approach_to_move(
+            plan,
+            pip,
+            speaker=speaker,
+            player_message='Meet me in the suite upstairs?',
+        )
+
+        self.assertTrue(promoted)
+        self.assertIsNone(plan.get('approach'))
+        self.assertEqual(plan['move_to']['target_info']['annotation']['id'], 'tavern_suite_room')
+
+    def test_escort_navigation_inject_note_for_suite_request(self):
+        from natural20.session import Session
+
+        session = Session(root_path='user_levels/wild_sheep_chase')
+        handler = EntityRAGHandler(session, Mock())
+        pip = session.entity_by_uid('pip_barmaid')
+
+        note = handler.escort_navigation_inject_note(
+            pip,
+            'Can you show me the tavern suite?',
+        )
+
+        self.assertIn('MOVE: target=tavern_suite_room', note)
+        self.assertIn('APPROACH', note)
+
     def test_execute_scheduled_movement_completes_when_reached(self):
         actor = Mock()
         actor.entity_uid = 'npc-1'
@@ -337,6 +473,36 @@ class TestEntityRagMovementDirectives(unittest.TestCase):
         result = self.rag_handler.execute_scheduled_movement('npc-1', llm_conversation_handler=None)
         self.mock_current_game.complete_npc_movement.assert_called_once()
         self.assertEqual(result['movement_status'], 'completed')
+
+    def test_execute_scheduled_follow_stays_active_when_in_range(self):
+        actor = Mock()
+        actor.entity_uid = 'npc-1'
+        actor.dialog = True
+        target = Mock()
+        target.entity_uid = 'pc-1'
+
+        task = {
+            'status': 'active',
+            'mode': 'follow',
+            'target_info': {'kind': 'entity', 'target': target},
+            'target_uid': 'pc-1',
+            'distance_ft': 5,
+            'next_run_at': time.time() - 1,
+            'requester_uid': None,
+        }
+
+        self.mock_current_game.get_entity_by_uid.return_value = actor
+        self.mock_current_game.get_npc_movement_task.return_value = task
+        self.mock_current_game.get_current_battle.return_value = None
+        self.mock_game_session.entity_by_uid.return_value = target
+        self.rag_handler.movement_helper.movement_reached = Mock(return_value=True)
+        self.rag_handler.movement_helper.movement_target_viable = Mock(return_value=(True, ''))
+        self.rag_handler.movement_helper.detect_blocking_door_on_route = Mock(return_value=None)
+
+        result = self.rag_handler.execute_scheduled_movement('npc-1', llm_conversation_handler=None)
+
+        self.mock_current_game.complete_npc_movement.assert_not_called()
+        self.assertEqual(result['movement_status'], 'active')
 
     def test_execute_scheduled_movement_skips_llm_when_auto_step_succeeds(self):
         actor = Mock()

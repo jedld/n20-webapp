@@ -623,6 +623,175 @@ def store_in_container(
     return True, f"Stored {transfer_qty} {slug.replace('_', ' ')} in the container."
 
 
+def resolve_inventory_container_slug(
+    actor: Entity,
+    target_spec: str,
+    session=None,
+) -> Optional[str]:
+    if actor is None or not target_spec or not hasattr(actor, 'is_container'):
+        return None
+
+    session = session or getattr(actor, 'session', None)
+    normalized = _normalize_item_slug(target_spec)
+    inventory = getattr(actor, 'inventory', {}) or {}
+
+    if normalized in inventory and actor.is_container(normalized, session):
+        try:
+            qty = int((inventory.get(normalized) or {}).get('qty') or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty > 0:
+            return normalized
+
+    for item_name, meta in inventory.items():
+        try:
+            qty = int((meta or {}).get('qty') or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0 or not actor.is_container(item_name, session):
+            continue
+        aliases = {
+            _normalize_item_slug(item_name),
+            _normalize_item_slug(str(item_name).replace('_', ' ')),
+        }
+        if hasattr(actor, '_item_definition'):
+            definition = actor._item_definition(item_name, session)
+            label = definition.get('label') or definition.get('name') or ''
+            if label:
+                aliases.add(_normalize_item_slug(label))
+        if normalized in aliases:
+            return item_name
+    return None
+
+
+def inventory_container_item_qty(
+    actor: Entity,
+    container_slug: str,
+    item_slug: str,
+) -> int:
+    if actor is None or not hasattr(actor, 'get_container_contents'):
+        return 0
+    slug = _normalize_item_slug(item_slug)
+    total = 0
+    for content in actor.get_container_contents(container_slug) or []:
+        content_type = _normalize_item_slug(content.get('type') or content.get('item') or '')
+        if content_type != slug:
+            continue
+        try:
+            total += int(content.get('qty') or 0)
+        except (TypeError, ValueError):
+            total += 1
+    return total
+
+
+def find_inventory_container_with_item(
+    actor: Entity,
+    item_slug: str,
+    session=None,
+) -> Optional[str]:
+    if actor is None or not hasattr(actor, 'is_container'):
+        return None
+    session = session or getattr(actor, 'session', None)
+    slug = _normalize_item_slug(item_slug)
+    if not slug:
+        return None
+    for item_name, meta in (getattr(actor, 'inventory', {}) or {}).items():
+        try:
+            qty = int((meta or {}).get('qty') or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0 or not actor.is_container(item_name, session):
+            continue
+        if inventory_container_item_qty(actor, item_name, slug) > 0:
+            return item_name
+    return None
+
+
+def format_inventory_container_contents(actor: Entity, container_slug: str, session=None) -> str:
+    if actor is None or not hasattr(actor, 'get_container_contents'):
+        return 'empty'
+    rows: List[str] = []
+    for content in actor.get_container_contents(container_slug) or []:
+        content_type = content.get('type') or content.get('item')
+        if not content_type:
+            continue
+        try:
+            qty = int(content.get('qty') or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
+        rows.append(f"{str(content_type).replace('_', ' ')} x{qty}")
+    return ', '.join(rows) if rows else 'empty'
+
+
+def retrieve_from_inventory_container(
+    session,
+    actor: Entity,
+    container_slug: str,
+    item_slug: str,
+    qty: int = 1,
+) -> Tuple[bool, str]:
+    slug = _normalize_item_slug(item_slug)
+    container_slug = _normalize_item_slug(container_slug)
+    if not slug or not container_slug:
+        return False, 'No item or container specified.'
+    if actor is None or not hasattr(actor, 'retrieve_item'):
+        return False, 'Cannot access personal containers.'
+    if not actor.is_container(container_slug, session):
+        return False, 'That is not a container you carry.'
+
+    try:
+        requested = max(1, int(qty))
+    except (TypeError, ValueError):
+        requested = 1
+
+    available = inventory_container_item_qty(actor, container_slug, slug)
+    transfer_qty = min(requested, available)
+    if transfer_qty <= 0:
+        return False, f'No {slug.replace("_", " ")} remains in that container.'
+
+    ok, reason = actor.retrieve_item(container_slug, slug, transfer_qty, session=session)
+    if not ok:
+        return False, reason or f'Could not retrieve {slug.replace("_", " ")}.'
+    return True, f"Retrieved {transfer_qty} {slug.replace('_', ' ')} from your {container_slug.replace('_', ' ')}."
+
+
+def store_in_inventory_container(
+    session,
+    actor: Entity,
+    container_slug: str,
+    item_slug: str,
+    qty: int = 1,
+) -> Tuple[bool, str]:
+    slug = _normalize_item_slug(item_slug)
+    container_slug = _normalize_item_slug(container_slug)
+    if not slug or not container_slug:
+        return False, 'No item or container specified.'
+    if actor is None or not hasattr(actor, 'stow_item'):
+        return False, 'Cannot access personal containers.'
+    if not actor.is_container(container_slug, session):
+        return False, 'That is not a container you carry.'
+
+    try:
+        requested = max(1, int(qty))
+    except (TypeError, ValueError):
+        requested = 1
+
+    try:
+        available = int((getattr(actor, 'inventory', {}) or {}).get(slug, {}).get('qty') or 0)
+    except (TypeError, ValueError):
+        available = 0
+    transfer_qty = min(requested, available)
+    if transfer_qty <= 0:
+        return False, f'You do not carry any {slug.replace("_", " ")} to stow.'
+
+    ok, reason = actor.stow_item(container_slug, slug, transfer_qty, session=session)
+    if not ok:
+        return False, reason or f'Could not stow {slug.replace("_", " ")}.'
+    return True, f"Stowed {transfer_qty} {slug.replace('_', ' ')} in your {container_slug.replace('_', ' ')}."
+
+
 def give_from_container_to_entity(
     current_game,
     container,
