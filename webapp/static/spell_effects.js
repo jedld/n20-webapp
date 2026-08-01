@@ -3268,7 +3268,6 @@
     });
   });
 
-  // Guidance: focused glow from caster to single ally with hovering d4 motes
   register('guidance', function(payload){
     return new Promise((resolve)=>{
       const targets = ensureArray(payload && payload.target).filter(Boolean);
@@ -3363,6 +3362,14 @@
 
       stageBeam(()=> stageHalo(()=> { destroy(); resolve(); }));
     });
+  });
+
+  register('bardic_inspiration', function(payload){
+    const guidanceFx = REGISTRY['guidance'];
+    if (typeof guidanceFx === 'function') {
+      return guidanceFx(payload);
+    }
+    return Promise.resolve();
   });
 
   // Detect Magic: arcing scan from caster with divination-purple ripple

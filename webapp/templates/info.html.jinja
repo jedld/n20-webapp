@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/libs/font-awesome/css/all.min.css">
     <link href="{{ asset_url('styles.css') }}" rel="stylesheet">
     <link href="{{ asset_url('sheet.css') }}" rel="stylesheet">
+    <link href="{{ asset_url('journal.css') }}" rel="stylesheet">
     
     <link href="https://fonts.googleapis.com/css?family=Cinzel|Uncial+Antiqua|IM+Fell+English" rel="stylesheet">
     <script src="/libs/jquery/jquery-3.6.0.min.js"></script>
@@ -1260,7 +1261,7 @@
                                 <option value="chat">Chat</option>
                             </select>
                         </div>
-                        <div class="journal-entries"><em class="journal-empty">Loading...</em></div>
+                        <div class="journal-entries"><p class="journal-empty">Loading...</p></div>
                         <form class="journal-add-form">
                             <textarea class="journal-add-text" rows="2" placeholder="Add a personal note..."></textarea>
                             <button type="submit" class="journal-add-btn">Add Entry</button>
@@ -1269,57 +1270,6 @@
                 </div>
             </div>
         </div>
-        <style>
-            .journal-section { display: flex; flex-direction: column; gap: 10px; }
-            .journal-controls { display: flex; gap: 8px; }
-            .journal-search { flex: 1; padding: 6px 8px; border: 1px solid #555; background: #2a2a2a; color: #eee; border-radius: 4px; }
-            .journal-kind-filter { padding: 6px 8px; border: 1px solid #555; background: #2a2a2a; color: #eee; border-radius: 4px; }
-            .journal-entries { max-height: 420px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 6px; background: #1c1c1c; }
-            .journal-empty { color: #888; font-style: italic; padding: 8px; display: block; }
-            .journal-entry { padding: 8px 10px; margin-bottom: 6px; background: #262626; border-left: 4px solid #777; border-radius: 3px; position: relative; }
-            .journal-entry .journal-entry-meta { font-size: 0.8em; color: #aaa; margin-bottom: 4px; }
-            .journal-entry .journal-entry-text { color: #eee; white-space: pre-wrap; }
-            .journal-entry .journal-entry-title { font-weight: 700; color: #f1c40f; margin-bottom: 2px; }
-            .journal-entry .journal-entry-delete { position: absolute; top: 6px; right: 8px; background: none; border: none; color: #c0392b; cursor: pointer; font-size: 0.9em; }
-            .journal-entry .journal-entry-delete:hover { color: #e74c3c; }
-            .journal-entry.kind-narration { border-left-color: #c97f4a; }
-            .journal-entry.kind-note { border-left-color: #6cb04a; }
-            .journal-entry.kind-dm { border-left-color: #a073d6; }
-            .journal-entry.kind-chat { border-left-color: #4ab0c9; }
-            .journal-entry.kind-quest { border-left-color: #d4a017; }
-            .journal-entry.is-unread { background: #2f2a22; box-shadow: inset 0 0 0 1px rgba(241, 196, 15, 0.25); }
-            .journal-entry.is-unread .journal-entry-title,
-            .journal-entry.is-unread .journal-entry-text { font-weight: 600; }
-            .journal-unread-badge {
-                display: inline-block;
-                min-width: 1.25em;
-                padding: 0 6px;
-                margin-left: 6px;
-                border-radius: 10px;
-                background: #c0392b;
-                color: #fff;
-                font-size: 0.75em;
-                font-weight: 700;
-                line-height: 1.4;
-                vertical-align: middle;
-            }
-            .journal-unread-pill {
-                display: inline-block;
-                margin-left: 8px;
-                padding: 1px 8px;
-                border-radius: 10px;
-                background: #8a6d3b;
-                color: #fff;
-                font-size: 0.75em;
-                font-weight: 600;
-            }
-            .journal-tag { display: inline-block; background: #3a3a3a; color: #ddd; padding: 1px 6px; margin-right: 4px; border-radius: 8px; font-size: 0.75em; }
-            .journal-add-form { display: flex; flex-direction: column; gap: 6px; }
-            .journal-add-text { padding: 6px 8px; border: 1px solid #555; background: #2a2a2a; color: #eee; border-radius: 4px; resize: vertical; font-family: inherit; }
-            .journal-add-btn { align-self: flex-end; padding: 6px 14px; background: #8a6d3b; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
-            .journal-add-btn:hover { background: #a0824a; }
-            .journal-add-btn:disabled { background: #555; cursor: not-allowed; }
-        </style>
         {% endif %}
 
         {% if 'dm' in role and not entity.object() %}
@@ -2439,29 +2389,37 @@
                 } catch (e) { return ts; }
             }
 
+            function renderEntry(e) {
+                const kind = e.kind || 'note';
+                const metaParts = [kind, fmtTs(e.ts)];
+                if (e.source) metaParts.push(e.source);
+                const meta = metaParts.filter(Boolean).join(' · ');
+                const tags = (e.tags || []).map(function (t) {
+                    return '<span class="journal-tag">' + esc(t) + '</span>';
+                }).join('');
+                const title = e.title
+                    ? '<p class="journal-entry-line">' + esc(e.title) + '</p>'
+                    : '';
+                const unread = e.read === false;
+                const unreadMark = unread ? '<span class="journal-unread-dot" title="Unread"></span>' : '';
+                return '<article class="journal-entry kind-' + esc(kind) + (unread ? ' is-unread' : '') + '" data-id="' + esc(e.id) + '">' +
+                    '<div class="journal-entry-top">' +
+                    '<span class="journal-entry-meta">' + esc(meta) + '</span>' +
+                    '<div class="journal-entry-actions">' + unreadMark +
+                    '<button type="button" class="journal-entry-delete" title="Delete" aria-label="Delete entry">&times;</button>' +
+                    '</div></div>' +
+                    '<div class="journal-entry-content">' + title +
+                    '<p class="journal-entry-text">' + esc(e.text) + '</p>' +
+                    (tags ? '<div class="journal-entry-tags">' + tags + '</div>' : '') +
+                    '</div></article>';
+            }
+
             function render(entries) {
                 if (!entries || !entries.length) {
-                    entriesEl.innerHTML = '<em class="journal-empty">No entries yet.</em>';
+                    entriesEl.innerHTML = '<p class="journal-empty">No entries yet.</p>';
                     return;
                 }
-                const html = entries.slice().reverse().map(function (e) {
-                    const kind = e.kind || 'note';
-                    const tags = (e.tags || []).map(function (t) {
-                        return '<span class="journal-tag">' + esc(t) + '</span>';
-                    }).join('');
-                    const title = e.title ? '<div class="journal-entry-title">' + esc(e.title) + '</div>' : '';
-                    const meta = '<div class="journal-entry-meta">' + esc(kind) + ' &middot; ' + esc(fmtTs(e.ts)) +
-                        (e.source ? ' &middot; ' + esc(e.source) : '') + '</div>';
-                    const unread = e.read === false;
-                    const unreadPill = unread ? '<span class="journal-unread-pill">New</span>' : '';
-                    return '<div class="journal-entry kind-' + esc(kind) + (unread ? ' is-unread' : '') + '" data-id="' + esc(e.id) + '">' +
-                        '<button class="journal-entry-delete" title="Delete">&times;</button>' +
-                        meta + unreadPill + title +
-                        '<div class="journal-entry-text">' + esc(e.text) + '</div>' +
-                        (tags ? '<div>' + tags + '</div>' : '') +
-                        '</div>';
-                }).join('');
-                entriesEl.innerHTML = html;
+                entriesEl.innerHTML = entries.slice().reverse().map(renderEntry).join('');
             }
 
             function updateUnreadBadge(count) {
@@ -2501,11 +2459,11 @@
                             render(data.entries);
                             updateUnreadBadge(data.unread || 0);
                         } else {
-                            entriesEl.innerHTML = '<em class="journal-empty">' + esc(data && data.error || 'Unable to load journal.') + '</em>';
+                            entriesEl.innerHTML = '<p class="journal-empty">' + esc(data && data.error || 'Unable to load journal.') + '</p>';
                         }
                     })
                     .catch(function () {
-                        entriesEl.innerHTML = '<em class="journal-empty">Failed to load journal.</em>';
+                        entriesEl.innerHTML = '<p class="journal-empty">Failed to load journal.</p>';
                     });
             }
 
@@ -2594,8 +2552,8 @@
                 if (badge) { badge.hidden = true; badge.textContent = ''; }
                 root.querySelectorAll('.journal-entry.is-unread').forEach(function (el) {
                     el.classList.remove('is-unread');
-                    const pill = el.querySelector('.journal-unread-pill');
-                    if (pill) pill.remove();
+                    const dot = el.querySelector('.journal-unread-dot');
+                    if (dot) dot.remove();
                 });
                 if (window.parent && window.parent.JournalNotifications) {
                     window.parent.JournalNotifications.refresh();

@@ -16,7 +16,7 @@ from natural20.actions.use_item_action import UseItemAction
 from natural20.actions.ready_action import ReadyAction
 from natural20.spell.extensions.hit_computations import AttackSpell
 from natural20.entity import Entity
-from natural20.action import Action, AsyncReactionHandler
+from natural20.action import Action, AsyncReactionHandler, BardicInspirationPrompt
 from natural20.battle import Battle
 from natural20.generic_controller import GenericController
 from natural20.llm_controller import LlmMcpController
@@ -370,7 +370,8 @@ def get_target():
                 valid_target = target in valid_targets
             return jsonify(valid_target=valid_target, target_squares=target_squares, adv_mod=adv_mod, adv_info=adv_info, attack_mod=attack_mod)
         else:
-            action.validate(battle_map, [x, y])
+            validate_target = target_entity if target_entity is not None else [x, y]
+            action.validate(battle_map, validate_target)
             if len(action.errors)  > 0:
                 return jsonify(valid_target=False, errors=action.errors)
             return jsonify(valid_target=True, target_squares=target_squares, errors=action.errors)
@@ -1090,9 +1091,17 @@ def action():
             if len(action.errors) > 0:
                 return jsonify(status='error', errors=action.errors)
 
-            get_current_game().commit_and_update(session['username'], action, pov_entities)
+            result = get_current_game().commit_and_update(session['username'], action, pov_entities)
+            if isinstance(result, dict) and result.get('status') == 'bardic_inspiration_prompt':
+                return jsonify(result)
             return jsonify(status='ok')
         return jsonify(action_info)
+    except BardicInspirationPrompt as e:
+        get_logger().info("BardicInspirationPrompt during action: %s", e)
+        from webapp.bardic_inspiration_prompt import emit_bardic_inspiration_prompt
+        get_current_game().waiting_for_bardic_inspiration = [e, action]
+        emit_bardic_inspiration_prompt(get_socketio(), e)
+        return jsonify(status='bardic_inspiration_prompt', entity_id=getattr(e.entity, 'entity_uid', None))
     except AsyncReactionHandler as e:
         get_logger().info(f"AsyncReactionHandler during action: {e}")
         for battle, entity, valid_actions in e.resolve():
@@ -1100,6 +1109,22 @@ def action():
             get_current_game().set_waiting_for_reaction_input([entity, e, e.resolve(), valid_actions_str])
         get_socketio().emit('message', {'type': 'reaction', 'message': {'id': entity.entity_uid, 'reaction': e.reaction_type}})
         return jsonify(status='ok')
+
+
+@battle_bp.route('/bardic_inspiration', methods=['POST'])
+def bardic_inspiration_choice():
+    payload = request.json or {}
+    use_die = bool(payload.get('use'))
+    waiting = getattr(get_current_game(), 'waiting_for_bardic_inspiration', None)
+    if not waiting:
+        return jsonify(status='error', message='No Bardic Inspiration choice pending'), 400
+    exc, pending_action = waiting
+    from webapp.bardic_inspiration_prompt import resume_bardic_inspiration_prompt
+    with get_current_game().game_state_lock:
+        resume_bardic_inspiration_prompt(get_current_game(), exc, pending_action, use_die)
+    get_current_game().waiting_for_bardic_inspiration = False
+    get_socketio().emit('message', {'type': 'dismiss_bardic_inspiration_prompt', 'message': {}})
+    return jsonify(status='ok', used=use_die)
 
 
 @battle_bp.route('/ready_action', methods=['POST'])

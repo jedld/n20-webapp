@@ -22,7 +22,7 @@ from natural20.utils.serialization import Serialization
 import gzip
 import threading
 import queue
-from natural20.action import Action, AsyncReactionHandler
+from natural20.action import Action, AsyncReactionHandler, BardicInspirationPrompt
 
 
 def _coalesce_animation_log(animation_log):
@@ -515,6 +515,7 @@ class GameManagement:
         self.tile_px = tile_px
         self.waiting_for_user = False
         self.waiting_for_reaction = False
+        self.waiting_for_bardic_inspiration = False
         self.end_turn_state = False
         self.controllers = controllers
         self.npc_controller = npc_controller
@@ -2059,8 +2060,14 @@ class GameManagement:
         if treat_as_battle:
             # Strict global locking while in battle
             with self.game_state_lock:
-                battle.action(action)
-                battle.commit(action)
+                try:
+                    battle.action(action)
+                    battle.commit(action)
+                except BardicInspirationPrompt as exc:
+                    from webapp.bardic_inspiration_prompt import emit_bardic_inspiration_prompt
+                    self.waiting_for_bardic_inspiration = [exc, action]
+                    emit_bardic_inspiration_prompt(self.socketio, exc)
+                    return {'status': 'bardic_inspiration_prompt'}
                 if battle.battle_ends():
                     self.end_current_battle()
             try:

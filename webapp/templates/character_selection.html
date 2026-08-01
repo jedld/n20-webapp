@@ -9,6 +9,7 @@
     <script src="/libs/bootstrap/3.3.7/js/bootstrap.min.js"></script>
     <!-- D&D Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Uncial+Antiqua&display=swap" rel="stylesheet">
+    <link href="{{ url_for('static', filename='journal.css') }}" rel="stylesheet">
     
     <style>
         /* D&D Theme Styling */
@@ -604,149 +605,14 @@
             padding-bottom: 5px;
         }
 
-        /* ── Journal ──────────────────────────────────────────────── */
-        .journal-section {
-            background: linear-gradient(180deg, rgba(40, 24, 12, 0.55), rgba(0, 0, 0, 0.35));
-            border-color: #b8860b;
-        }
-        .journal-controls {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 10px;
-            flex-wrap: wrap;
-        }
-        .journal-search-input,
-        .journal-kind-filter,
-        .journal-add-text {
-            background: rgba(0, 0, 0, 0.4);
-            color: #f5deb3;
-            border: 1px solid #8B4513;
-            border-radius: 4px;
-            padding: 6px 8px;
+        .details-section.journal-section h3 {
+            color: #a89f92;
             font-family: inherit;
-            font-size: 0.9rem;
-        }
-        .journal-search-input { flex: 1 1 160px; }
-        .journal-kind-filter { flex: 0 0 auto; }
-        .journal-search-input:focus,
-        .journal-kind-filter:focus,
-        .journal-add-text:focus {
-            outline: none;
-            border-color: #D4AF37;
-            box-shadow: 0 0 4px rgba(212, 175, 55, 0.6);
-        }
-        .journal-entries {
-            max-height: 320px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            padding-right: 4px;
-            margin-bottom: 10px;
-        }
-        .journal-empty {
-            color: #b9a07a;
-            font-style: italic;
-            margin: 0;
-        }
-        .journal-entry {
-            background: rgba(20, 12, 6, 0.55);
-            border: 1px solid rgba(184, 134, 11, 0.45);
-            border-left: 3px solid #b8860b;
-            border-radius: 4px;
-            padding: 8px 10px;
-            color: #f5deb3;
-            position: relative;
-        }
-        .journal-entry.journal-kind-narration { border-left-color: #c97f4a; }
-        .journal-entry.journal-kind-note { border-left-color: #6cb04a; }
-        .journal-entry.journal-kind-dm { border-left-color: #a073d6; }
-        .journal-entry.journal-kind-chat { border-left-color: #4ab0c9; }
-        .journal-entry.journal-kind-quest { border-left-color: #d4a017; }
-        .journal-entry.is-unread { background: rgba(201, 127, 74, 0.12); border-left-width: 5px; }
-        .journal-unread-pill {
-            display: inline-block;
-            margin-left: 8px;
-            padding: 1px 8px;
-            border-radius: 10px;
-            background: #c0392b;
-            color: #fff;
-            font-size: 0.75em;
-            font-weight: 600;
-        }
-        .journal-entry-meta {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.75rem;
-            color: #b9a07a;
-            margin-bottom: 4px;
-        }
-        .journal-kind-badge {
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-weight: bold;
-            color: #D4AF37;
-        }
-        .journal-entry-ts { margin-left: auto; }
-        .journal-entry-delete {
-            background: none;
-            border: none;
-            color: #b9a07a;
-            font-size: 1.1rem;
-            line-height: 1;
-            cursor: pointer;
-            padding: 0 4px;
-        }
-        .journal-entry-delete:hover { color: #ff6b6b; }
-        .journal-entry-title {
-            font-family: 'Uncial Antiqua', cursive;
             font-size: 0.95rem;
-            color: #D4AF37;
-            margin-bottom: 2px;
-        }
-        .journal-entry-text {
-            white-space: pre-wrap;
-            font-size: 0.9rem;
-            line-height: 1.4;
-        }
-        .journal-entry-tags {
-            margin-top: 4px;
-            display: flex;
-            gap: 4px;
-            flex-wrap: wrap;
-        }
-        .journal-tag {
-            background: rgba(184, 134, 11, 0.25);
-            border: 1px solid rgba(184, 134, 11, 0.5);
-            border-radius: 3px;
-            padding: 1px 6px;
-            font-size: 0.7rem;
-            color: #f5deb3;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .journal-add-form {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-        .journal-add-text {
-            resize: vertical;
-            min-height: 48px;
-        }
-        .journal-add-btn {
-            align-self: flex-end;
-            background: linear-gradient(180deg, #8B4513, #5a2a0a);
-            color: #f5deb3;
-            border: 1px solid #D4AF37;
-            border-radius: 4px;
-            padding: 6px 14px;
-            font-family: inherit;
-            cursor: pointer;
-        }
-        .journal-add-btn:hover {
-            background: linear-gradient(180deg, #a25420, #6e3410);
+            text-shadow: none;
+            border-bottom: none;
+            padding-bottom: 0;
+            margin-bottom: 4px;
         }
         
         .ability-scores {
@@ -1412,24 +1278,30 @@
             const reversed = entries.slice().reverse();
             const html = reversed.map(entry => {
                 const kind = entry.kind || 'note';
+                const metaParts = [kind, formatJournalTimestamp(entry.ts)];
+                if (entry.source) metaParts.push(entry.source);
+                const meta = metaParts.filter(Boolean).join(' · ');
                 const titleHtml = entry.title
-                    ? `<div class="journal-entry-title">${escapeHtml(entry.title)}</div>`
+                    ? `<p class="journal-entry-line">${escapeHtml(entry.title)}</p>`
                     : '';
                 const tagsHtml = (entry.tags || []).map(t => `<span class="journal-tag">${escapeHtml(t)}</span>`).join('');
                 const unread = entry.read === false;
                 const unreadClass = unread ? ' is-unread' : '';
-                const unreadPill = unread ? '<span class="journal-unread-pill">New</span>' : '';
+                const unreadMark = unread ? '<span class="journal-unread-dot" title="Unread"></span>' : '';
                 return `
                     <article class="journal-entry journal-kind-${escapeHtml(kind)}${unreadClass}" data-entry-id="${escapeHtml(entry.id || '')}">
-                        <header class="journal-entry-meta">
-                            <span class="journal-kind-badge">${escapeHtml(kind)}</span>
-                            ${unreadPill}
-                            <time class="journal-entry-ts">${escapeHtml(formatJournalTimestamp(entry.ts))}</time>
-                            <button type="button" class="journal-entry-delete" title="Delete entry" aria-label="Delete entry">&times;</button>
-                        </header>
-                        ${titleHtml}
-                        <div class="journal-entry-text">${escapeHtml(entry.text)}</div>
-                        ${tagsHtml ? `<div class="journal-entry-tags">${tagsHtml}</div>` : ''}
+                        <div class="journal-entry-top">
+                            <span class="journal-entry-meta">${escapeHtml(meta)}</span>
+                            <div class="journal-entry-actions">
+                                ${unreadMark}
+                                <button type="button" class="journal-entry-delete" title="Delete entry" aria-label="Delete entry">&times;</button>
+                            </div>
+                        </div>
+                        <div class="journal-entry-content">
+                            ${titleHtml}
+                            <p class="journal-entry-text">${escapeHtml(entry.text)}</p>
+                            ${tagsHtml ? `<div class="journal-entry-tags">${tagsHtml}</div>` : ''}
+                        </div>
                     </article>`;
             }).join('');
             $list.html(html);

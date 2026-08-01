@@ -2231,6 +2231,21 @@ class EventQueue {
           $("#reaction-modal").modal("hide");
           resolve();
           break;
+        case "bardic_inspiration_prompt": {
+          const msg = (data && data.message) || {};
+          const die = msg.die || '1d6';
+          const base = msg.base_total != null ? msg.base_total : '?';
+          const threshold = msg.threshold != null ? msg.threshold : '?';
+          const promptText = `Use Bardic Inspiration (${die})? Your roll is ${base} vs ${threshold}.`;
+          const useDie = window.confirm(promptText);
+          Utils.ajaxPost('/bardic_inspiration', { use: useDie }, () => {
+            Utils.refreshTileSet(false, false, 0, 0, null, resolve);
+          }, () => resolve());
+          break;
+        }
+        case "dismiss_bardic_inspiration_prompt":
+          resolve();
+          break;
         case "switch_map":
           var map_id = data.message.map;
           var triggered_entity_uid = data.message.entity_uid || null;
