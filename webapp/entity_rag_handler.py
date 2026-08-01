@@ -6773,6 +6773,15 @@ class EntityRAGHandler:
                 context['position'] = battle_map.entity_or_object_pos(entity)
         except:
             context['position'] = None
+
+        if isinstance(entity, PlayerCharacter):
+            try:
+                from natural20.utils.character_profile import profile_for_entity
+                profile = profile_for_entity(entity)
+                if profile:
+                    context['character_profile'] = profile
+            except Exception:
+                pass
         
         return context
     

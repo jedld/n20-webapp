@@ -242,6 +242,104 @@
             background: #ccc;
             cursor: not-allowed;
         }
+
+        /* ----- Dark theme inventory overrides for character sheet ----- */
+        #Equipment .section-content {
+            overflow: visible !important;
+        }
+        #Equipment .tile-inventory {
+            overflow: visible !important;
+        }
+        #Equipment .inventory-slot {
+            position: relative;
+            z-index: 1;
+        }
+        #Equipment .inventory-slot:hover,
+        #Equipment .inventory-slot:focus-within,
+        #Equipment .inventory-slot.container-expanded {
+            z-index: 10;
+        }
+        #Equipment .inventory-slot-menu {
+            display: none;
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            min-width: 140px;
+            max-width: 220px;
+            padding: 8px;
+            background: #2a2a2a;
+            border: 1px solid #70532f;
+            border-radius: 5px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+            box-sizing: border-box;
+            z-index: 1000;
+            pointer-events: auto;
+        }
+        #Equipment .inventory-slot:hover .inventory-slot-menu,
+        #Equipment .inventory-slot:focus-within .inventory-slot-menu,
+        #Equipment .inventory-slot.container-expanded .inventory-slot-menu {
+            display: block;
+        }
+        #Equipment .inventory-slot-menu-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #f5deb3;
+            line-height: 1.25;
+            margin-bottom: 4px;
+            word-break: break-word;
+        }
+        #Equipment .inventory-slot-menu-meta {
+            font-size: 10px;
+            color: #bbb;
+            margin-bottom: 6px;
+        }
+        #Equipment .inventory-slot-menu-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        #Equipment .inventory-action-btn,
+        #Equipment .inventory-slot-menu-actions .container-toggle-btn {
+            display: block;
+            width: 100%;
+            margin: 0;
+            padding: 5px 8px;
+            font-size: 11px;
+            line-height: 1.2;
+            white-space: nowrap;
+            background-color: #3a2a1a;
+            color: #f5deb3;
+            border: 1px solid #70532f;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+            box-sizing: border-box;
+        }
+        #Equipment .inventory-action-btn:hover,
+        #Equipment .inventory-slot-menu-actions .container-toggle-btn:hover {
+            background-color: #5a4a2a;
+        }
+        #Equipment .inventory-action-btn:active {
+            transform: translateY(1px);
+        }
+        #Equipment .inventory-action-btn-read {
+            background-color: #2a4a2a;
+            border-color: #4a7a4a;
+            color: #9fdf9f;
+        }
+        #Equipment .inventory-action-btn-read:hover {
+            background-color: #3a6a3a;
+        }
+        #Equipment .item-equip-note {
+            font-size: 9px;
+            margin: 0;
+            text-align: center;
+            color: #999;
+            line-height: 1.2;
+        }
+        #Equipment .consumables-list .inventory-slot-menu {
+            top: calc(100% + 4px);
+        }
     </style>
 
 </head>
@@ -1114,13 +1212,27 @@
                 <div class="section-content">
                     <ul class="consumables-list tile-inventory">
                     {% for item in entity.usable_items() %}
-                    <li class="tile-item" data-tooltip="{{ item['label'] }}">
-                    <div class="item-icon-container">
-                        <img class="item-icon" src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}" alt="{{ item['label'] }}">
-                        <div class="item-quantity">{{ 'x ' ~ item.get('qty', 1) }}</div>
-                    </div>
+                    <li class="inventory-slot tile-item" data-item-name="{{ item['name'] }}"">
+                        <div class="inventory-slot-face">
+                            <img class="item-icon" src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}" alt="{{ item['label'] }}">
+                            {% if item.get('qty', 1) > 1 %}
+                            <span class="item-quantity">{{ item.get('qty', 1) }}</span>
+                            {% endif %}
+                        </div>
+                        <div class="inventory-slot-menu">
+                            <div class="inventory-slot-menu-title">{{ item['label'] }}</div>
+                            {% if item.get('weight') is not none %}
+                            <div class="inventory-slot-menu-meta">{{ item['weight'] }} lb{% if item.get('qty', 1) > 1 %} each{% endif %}</div>
+                            {% endif %}
+                            <div class="inventory-slot-menu-actions">
+                                <span class="item-use-note">Use from action panel</span>
+                            </div>
+                        </div>
                     </li>
                     {% endfor %}
+                    {% if not entity.usable_items() %}
+                    <li class="container-empty">No consumables</li>
+                    {% endif %}
                     </ul>
                 </div>
             </div>

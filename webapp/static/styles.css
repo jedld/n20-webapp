@@ -135,12 +135,15 @@
 }
 
 .tile {
-  position: absolute
+  position: absolute;
+  --tile-entity-z: 1110;
+  --tile-interact-z: 1125;
 }
 
 .tile .entity {
   position: absolute;
-  z-index: 2;
+  z-index: var(--tile-entity-z, 1110);
+  pointer-events: auto;
 }
 
 /* removed: DM hover delete button for entities on map (moved to action bar) */
@@ -703,6 +706,7 @@ input.initiative-text {
   background-color: black;
   opacity: 0.99;
   z-index: 999;
+  pointer-events: none;
 }
 
 body.aoe-point-targeting .tile .fog-of-war,
@@ -1156,8 +1160,9 @@ input.initiative-input.form-control {
   position: absolute;
   top: 0;
   left: 0;
-  z-index: 1101;
+  z-index: var(--tile-interact-z, 1125);
   pointer-events: none;
+  overflow: visible;
 }
 
 .object-quick-interact-layer .object-quick-actions {
@@ -1174,8 +1179,7 @@ input.initiative-input.form-control {
 .teleporter-marker {
   position: absolute;
   inset: 0;
-  pointer-events: auto;
-  cursor: pointer;
+  pointer-events: none;
   border: 2px solid var(--teleporter-marker-color, #22c55e);
   box-shadow: 0 0 4px var(--teleporter-marker-color, #22c55e) inset;
   box-sizing: border-box;
@@ -2028,7 +2032,7 @@ body.highlight-doors .tile.tile-door-highlight {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  z-index: 1002;
+  z-index: var(--tile-interact-z, 1125);
   box-shadow: 0 2px 4px rgba(0,0,0,0.3);
   transition: all 0.2s ease;
   pointer-events: auto;
@@ -2075,12 +2079,12 @@ body.highlight-doors .tile.tile-door-highlight {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  z-index: 1101;
+  z-index: calc(var(--tile-interact-z, 1125) + 1);
   pointer-events: auto;
 }
 
 .object-quick-actions.anchor-top {
-  top: 2px;
+  top: -8px;
   bottom: auto;
   left: 50%;
   right: auto;
@@ -2089,7 +2093,7 @@ body.highlight-doors .tile.tile-door-highlight {
 
 .object-quick-actions.anchor-bottom {
   top: auto;
-  bottom: 2px;
+  bottom: -8px;
   left: 50%;
   right: auto;
   transform: translateX(-50%);
@@ -2098,7 +2102,7 @@ body.highlight-doors .tile.tile-door-highlight {
 .object-quick-actions.anchor-left {
   top: 50%;
   bottom: auto;
-  left: 2px;
+  left: -8px;
   right: auto;
   transform: translateY(-50%);
 }
@@ -2107,8 +2111,16 @@ body.highlight-doors .tile.tile-door-highlight {
   top: 50%;
   bottom: auto;
   left: auto;
-  right: 2px;
+  right: -8px;
   transform: translateY(-50%);
+}
+
+.object-quick-actions.layout-cols-2 {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 2px;
+  align-items: start;
+  justify-items: start;
 }
 
 .object-quick-actions.hover-only {
@@ -2120,7 +2132,8 @@ body.highlight-doors .tile.tile-door-highlight {
 .tile:hover .object-quick-actions.hover-only,
 .object-container:hover .object-quick-actions.hover-only,
 .object-quick-interact-layer:hover .object-quick-actions.hover-only,
-.object-quick-actions.hover-only:hover {
+.object-quick-actions.hover-only:hover,
+.object-quick-actions.hover-only:focus-within {
   opacity: 1;
   visibility: visible;
 }
@@ -2142,7 +2155,33 @@ body.highlight-doors .tile.tile-door-highlight {
   line-height: 1;
   pointer-events: auto;
   position: relative;
-  z-index: 1102;
+  z-index: calc(var(--tile-interact-z, 1125) + 2);
+}
+
+.object-quick-action--labeled {
+  width: auto;
+  min-width: 22px;
+  max-width: 118px;
+  height: auto;
+  min-height: 22px;
+  border-radius: 11px;
+  padding: 2px 6px;
+  gap: 3px;
+}
+
+.object-quick-action--labeled .object-quick-action-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.object-quick-action-label {
+  font-size: 9px;
+  line-height: 1.1;
+  font-weight: 600;
+  text-align: center;
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: none;
 }
 
 .object-quick-action:hover:not(:disabled) {
@@ -2850,6 +2889,17 @@ body.dialog-manual-mode-active #dialogChatInput::placeholder {
 #chat-messages::-webkit-scrollbar-thumb:hover,
 #draggable-chat-messages::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8;
+}
+
+.in-character-draft-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 0;
+  font-size: 13px;
+}
+
+#inCharacterPolishedPreview {
+  resize: vertical;
 }
 
 /* Tab Navigation Styles */

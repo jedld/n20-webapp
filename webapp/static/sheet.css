@@ -314,19 +314,234 @@ th, td {
 }
 
 /* Inventory Section Styles */
+.unequipped-items-title {
+    margin: 18px 0 12px;
+    clear: both;
+}
+
 .tile-inventory {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 52px);
+    gap: 5px;
+    justify-content: start;
     list-style-type: none;
     padding: 0;
     margin: 0 0 30px 0;
+    overflow: visible;
+}
+
+.tile-inventory > .container-empty {
+    grid-column: 1 / -1;
+    list-style: none;
+    padding: 12px;
+    text-align: center;
+    color: #6b4423;
+    font-style: italic;
+    background: rgba(255, 248, 220, 0.5);
+    border: 1px dashed #c4a574;
+    border-radius: 6px;
+}
+
+.tile-inventory .inventory-slot {
+    width: 52px;
+    height: 52px;
+    position: relative;
+    z-index: 1;
+}
+
+.tile-inventory .inventory-slot:hover,
+.tile-inventory .inventory-slot:focus-within,
+.tile-inventory .inventory-slot.container-expanded {
+    z-index: 5;
+}
+
+.tile-inventory .inventory-slot.container-expanded {
+    grid-column: 1 / -1;
+    width: auto;
+    height: auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.inventory-slot-face {
+    position: relative;
+    width: 52px;
+    height: 52px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(180deg, rgba(255, 252, 240, 0.98), rgba(255, 245, 220, 0.9));
+    border: 1px solid #c4a574;
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+    cursor: default;
+}
+
+.container-item .inventory-slot-face {
+    border-color: #6b4423;
+    box-shadow: inset 0 0 0 1px rgba(107, 68, 35, 0.15);
+}
+
+.inventory-slot-face .item-icon {
+    width: 38px;
+    height: 38px;
+    object-fit: contain;
+    pointer-events: none;
+}
+
+.inventory-slot-face .item-quantity {
+    position: absolute;
+    right: 2px;
+    bottom: 1px;
+    min-width: 14px;
+    padding: 0 3px;
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 14px;
+    text-align: center;
+}
+
+.inventory-slot-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 128px;
+    max-width: 200px;
+    padding: 6px;
+    background: #fff8dc;
+    border: 1px solid #6b4423;
+    border-radius: 5px;
+    box-shadow: 0 4px 12px rgba(74, 47, 25, 0.25);
+    box-sizing: border-box;
+    z-index: 100;
+    pointer-events: auto;
+}
+
+/* Ensure menu stays visible when near right edge */
+.inventory-slot:hover .inventory-slot-menu,
+.inventory-slot:focus-within .inventory-slot-menu,
+.inventory-slot.container-expanded .inventory-slot-menu {
+    display: block;
+}
+
+.inventory-slot:hover .inventory-slot-menu,
+.inventory-slot:focus-within .inventory-slot-menu,
+.inventory-slot.container-expanded .inventory-slot-menu {
+    display: block;
+}
+
+.inventory-slot-menu-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #4a2f19;
+    line-height: 1.25;
+    margin-bottom: 2px;
+    word-break: break-word;
+}
+
+.inventory-slot-menu-meta {
+    font-size: 10px;
+    color: #6b4423;
+    margin-bottom: 5px;
+}
+
+.inventory-slot-menu-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.inventory-slot-menu-actions form {
+    margin: 0;
+}
+
+.inventory-action-btn,
+.inventory-slot-menu-actions .container-toggle-btn {
+    display: block;
+    width: 100%;
+    margin: 0;
+    padding: 3px 6px;
+    font-size: 10px;
+    line-height: 1.2;
+    white-space: nowrap;
+    background-color: #6b4423;
+    color: #fff;
+    border: 1px solid #4a2f19;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+    box-sizing: border-box;
+}
+
+.inventory-action-btn-read {
+    background-color: #4a6741;
+    border-color: #355032;
+}
+
+.inventory-action-btn:hover,
+.inventory-slot-menu-actions .container-toggle-btn:hover {
+    background-color: #4a2f19;
+}
+
+.inventory-action-btn-read:hover {
+    background-color: #355032;
+}
+
+.inventory-action-btn:active,
+.inventory-slot-menu-actions .container-toggle-btn:active {
+    transform: translateY(1px);
+}
+
+/* Quick name tooltip while hovering icon (RPG-style) */
+.tile-inventory .inventory-slot[data-tooltip]:hover::before {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 2px 5px;
+    background: rgba(30, 20, 10, 0.92);
+    color: #fff;
+    font-size: 9px;
+    line-height: 1.2;
+    white-space: nowrap;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 6;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tile-inventory .inventory-slot.container-expanded[data-tooltip]:hover::before,
+.tile-inventory .inventory-slot:focus-within[data-tooltip]::before {
+    display: none;
 }
 
 .tile-item {
     width: 80px;
     height: 80px;
     position: relative;
+}
+
+/* Grid-based inventory overrides: keep items at 52px instead of 80px */
+.tile-inventory .tile-item {
+    width: 52px;
+    height: 52px;
+}
+
+/* Equipped weapon/armor tables keep compact icon tiles */
+.equipped-item-stats .tile-item,
+table .tile-item {
+    width: 80px;
+    height: 80px;
 }
 
 .effect-list {
@@ -356,7 +571,7 @@ th, td {
     font-size: 0.8em;
 }
 
-/* Make data-tooltip appear on hover */
+/* Tooltip for compact equipped-item tiles */
 .tile-item[data-tooltip] {
     position: relative;
 }
@@ -367,13 +582,16 @@ th, td {
     display: block;
     background-color: #333;
     color: #fff;
-    padding: 3px 6px;
-    border-radius: 3px;
     top: 40%;
     left: 50%;
     transform: translateX(-50%);
+    padding: 3px 6px;
+    border-radius: 3px;
     white-space: nowrap;
-    z-index: 999;
+    z-index: 20;
+    pointer-events: none;
+    font-size: inherit;
+    box-shadow: none;
 }
 
 /* Die Roll Component Styles */
@@ -510,8 +728,19 @@ th, td {
 
 .section-content {
     max-height: 2000px;
-    overflow: hidden;
+    overflow: visible;
     transition: max-height 0.3s ease-out;
+}
+
+/* Allow inventory menus to overflow the tab content area */
+.tabcontent .section-content,
+#Equipment .section-content {
+    overflow: visible;
+}
+
+/* Ensure the Equipment tab content area doesn't clip menus */
+#Equipment .section {
+    overflow: visible;
 }
 
 .section-content.collapsed {
@@ -619,7 +848,8 @@ th, td {
 .item-weight-tag {
     font-size: 0.72em;
     color: #6b4423;
-    margin-top: 2px;
+    margin-top: 1px;
+    text-align: left;
 }
 
 .container-magic-badge {
@@ -634,36 +864,41 @@ th, td {
 }
 
 .item-equip-note {
-    font-size: 0.8em;
-    margin: 4px 0 0;
+    font-size: 9px;
+    margin: 0;
+    text-align: center;
+    color: #8a6d4b;
+    line-height: 1.2;
 }
 
 .container-indicator {
     position: absolute;
-    top: -5px;
-    right: -5px;
-    font-size: 16px;
-    z-index: 10;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
+    top: 1px;
+    right: 1px;
+    font-size: 10px;
+    line-height: 1;
+    z-index: 2;
+    filter: drop-shadow(0 1px 1px rgba(0,0,0,0.35));
 }
 
 .container-item {
-    border: 2px solid #6b4423;
-    background-color: rgba(255, 248, 220, 0.5);
+    border: none;
+    background-color: transparent;
 }
 
 .container-toggle-btn {
     display: block;
     width: 100%;
-    margin-top: 5px;
-    padding: 4px 8px;
+    margin-top: 0;
+    padding: 6px 8px;
     font-size: 11px;
     background-color: #6b4423;
     color: #fff;
     border: 1px solid #4a2f19;
-    border-radius: 3px;
+    border-radius: 4px;
     cursor: pointer;
     transition: background-color 0.2s ease;
+    box-sizing: border-box;
 }
 
 .container-toggle-btn:hover {
@@ -676,6 +911,10 @@ th, td {
     background-color: rgba(255, 248, 220, 0.8);
     border: 2px solid #6b4423;
     border-radius: 5px;
+}
+
+.inventory-slot.container-expanded .container-contents {
+    margin: 0;
 }
 
 .container-contents-header {
@@ -734,10 +973,11 @@ th, td {
 }
 
 .container-contents-wrapper {
-    list-style: none;
-    width: 100%;
+    flex: 1 1 220px;
+    min-width: 0;
     margin: 0;
     padding: 0;
+    box-sizing: border-box;
 }
 
 .container-capacity-text {

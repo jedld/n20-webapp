@@ -429,6 +429,38 @@ function neighborApproachCoords(objectX, objectY) {
   ];
 }
 
+const DOOR_APPROACH_ANCHOR_OFFSETS = {
+  top: { x: 0, y: -1 },
+  bottom: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+};
+
+function doorApproachCoordsFromButton(btn) {
+  const layer = btn && btn.closest ? btn.closest('.object-quick-interact-layer') : null;
+  if (!layer) {
+    return null;
+  }
+  const raw = layer.getAttribute('data-door-approach') || '';
+  const anchors = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  if (!anchors.length) {
+    return null;
+  }
+  const tile = btn.closest('.tile');
+  if (!tile) {
+    return null;
+  }
+  const objectX = Number(tile.getAttribute('data-coords-x') ?? tile.dataset.coordsX);
+  const objectY = Number(tile.getAttribute('data-coords-y') ?? tile.dataset.coordsY);
+  if (!Number.isFinite(objectX) || !Number.isFinite(objectY)) {
+    return null;
+  }
+  return anchors.map((anchor) => {
+    const offset = DOOR_APPROACH_ANCHOR_OFFSETS[anchor] || { x: 0, y: 0 };
+    return { x: objectX + offset.x, y: objectY + offset.y };
+  });
+}
+
 function talkApproachCoords(npcX, npcY) {
   const coords = [];
   for (let dx = -2; dx <= 2; dx += 1) {
@@ -539,8 +571,12 @@ function findApproachPathToCoords(povUid, candidates, callback) {
   });
 }
 
-function findApproachPathForObject(povUid, objectX, objectY, callback) {
-  findApproachPathToCoords(povUid, neighborApproachCoords(objectX, objectY), callback);
+function findApproachPathForObject(povUid, objectX, objectY, callback, btn) {
+  const doorCoords = btn ? doorApproachCoordsFromButton(btn) : null;
+  const candidates = doorCoords && doorCoords.length
+    ? doorCoords
+    : neighborApproachCoords(objectX, objectY);
+  findApproachPathToCoords(povUid, candidates, callback);
 }
 
 function findApproachPathForTalk(povUid, npcX, npcY, callback) {
@@ -596,33 +632,6 @@ function runTeleporterApproach(povUid, tileX, tileY) {
     );
   });
 }
-
-function handleTeleporterMarkerActivate(event) {
-  const marker = event.target && event.target.closest
-    ? event.target.closest('.teleporter-marker')
-    : null;
-  if (!marker) {
-    return;
-  }
-  if (!marker.closest('.tiles-container, .map-stack-overlay-tiles')) {
-    return;
-  }
-  event.preventDefault();
-  event.stopPropagation();
-  if (typeof event.stopImmediatePropagation === 'function') {
-    event.stopImmediatePropagation();
-  }
-  const povUid = $('body').attr('data-pov-entity')
-    || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
-  if (!povUid || isBattleInProgress()) {
-    return;
-  }
-  const $tile = $(marker).closest('.tile');
-  const pathCoords = resolveStackPathCoords($tile);
-  runTeleporterApproach(povUid, pathCoords.x, pathCoords.y);
-}
-
-document.addEventListener('click', handleTeleporterMarkerActivate, true);
 
 function postObjectInteract(povUid, objectUid, objectAction, tileX, tileY, done) {
   const opts = {
@@ -685,6 +694,7 @@ function activateObjectQuickAction(btn) {
     needsApproach,
     pathCoords.x,
     pathCoords.y,
+    btn,
   );
 }
 
@@ -708,7 +718,7 @@ function handleObjectQuickActionActivate(event) {
 
 document.addEventListener('click', handleObjectQuickActionActivate, true);
 
-function runObjectQuickInteract(povUid, objectUid, objectAction, needsApproach, tileX, tileY) {
+function runObjectQuickInteract(povUid, objectUid, objectAction, needsApproach, tileX, tileY, btn) {
   if (!povUid || !objectUid || !objectAction || objectQuickInteractInFlight) {
     return;
   }
@@ -759,7 +769,7 @@ function runObjectQuickInteract(povUid, objectUid, objectAction, needsApproach, 
       },
       true,
     );
-  });
+  }, btn || null);
 }
 
 function runTalkWithApproach(povUid, npcUid, npcName, options) {
@@ -5576,7 +5586,7 @@ $(document).ready(() => {
   });
 
   $(".tiles-container").on("click", ".tile", function (e) {
-    if ($(e.target).closest('.object-quick-action, .object-quick-actions, .object-quick-interact-layer, .teleporter-marker').length) {
+    if ($(e.target).closest('.object-quick-action, .object-quick-actions, .object-quick-interact-layer').length) {
       return;
     }
     if (isInteractionLocked()) {
@@ -5655,6 +5665,21 @@ $(document).ready(() => {
       } else {
         $(".popover-menu").hide();
         closeCenterActionBar();
+        const primaryEntityId = $tile.data("coords-id");
+        if (
+          !primaryEntityId
+          && !isBattleInProgress()
+          && $tile.find('.teleporter-marker').length
+        ) {
+          const povUid = $('body').attr('data-pov-entity')
+            || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
+          if (povUid) {
+            const pathCoords = resolveStackPathCoords($tile);
+            runTeleporterApproach(povUid, pathCoords.x, pathCoords.y);
+            return;
+          }
+        }
+
         const occupantEntries = [];
         const seenOccupants = new Set();
 
@@ -5667,7 +5692,6 @@ $(document).ready(() => {
           occupantEntries.push({ id, label: trimmedLabel, type });
         };
 
-        const primaryEntityId = $tile.data("coords-id");
         if (primaryEntityId) {
           const $primaryEntity = $tile
             .find(`.entity[data-id="${primaryEntityId}"]`)
@@ -8626,6 +8650,24 @@ $(document).ready(() => {
       sendDialogMessage(entityId);
     });
 
+    $('#dialogInCharacterBtn').off('click').on('click', function () {
+      const povEntity = Chat.getCurrentPovEntity();
+      if (!povEntity || (isDM() && dialogNpcManualMode && talkToEntityMode)) {
+        return;
+      }
+      Chat.polishConversationInput({
+        inputSelector: '#dialogChatInput',
+        buttonSelector: '#dialogInCharacterBtn',
+        entityId: povEntity,
+        language: $('#dialogLanguageSelect').val(),
+        onStatus: (msg) => {
+          if (msg) {
+            Chat.addDialogMessage('system', msg, 'system');
+          }
+        },
+      });
+    });
+
     $('#dialogNoResponse').off('click').on('click', function () {
       sendDialogNoResponse(entityId);
     });
@@ -9434,7 +9476,7 @@ $(document).ready(() => {
     if (isEditMode() && !$tile.find('.entity, .npc, .object-container').length) return;
 
     // Prevent dragging if clicking on action buttons or other interactive elements
-    if ($(e.target).closest('.popover-menu, .popover-menu-2, .action-button, .add-to-turn-order, .dialog-bubble, .conversation-bubble, .close-bubble, .add-to-target, .object-quick-action, .object-quick-actions, .teleporter-marker').length) {
+    if ($(e.target).closest('.popover-menu, .popover-menu-2, .action-button, .add-to-turn-order, .dialog-bubble, .conversation-bubble, .close-bubble, .add-to-target, .object-quick-action, .object-quick-actions').length) {
       return;
     }
 

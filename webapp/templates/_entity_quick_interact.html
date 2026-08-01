@@ -1,0 +1,9 @@
+{% if pov_entity and tile.get('quick_interact') and tile.get('id') != pov_entity.entity_uid %}
+  <div class="object-quick-interact-layer entity-quick-interact-layer"
+       data-object-id="{{ tile['id'] }}"
+       style="width: {{ tile_size_px }}px; height: {{ tile_size_px }}px;">
+    {% with obj = {'id': tile['id'], 'quick_interact': tile['quick_interact']} %}
+      {% include '_object_quick_interact.html' %}
+    {% endwith %}
+  </div>
+{% endif %}

@@ -10,6 +10,7 @@ from typing import Dict, List, Any, Optional, Tuple, Iterator
 
 from natural20.player_character import PlayerCharacter
 from natural20.utils.conversation import entity_label
+from natural20.utils.character_profile import extract_profile, profile_for_entity
 from webapp.rest_execution import execute_entity_rest
 
 logger = logging.getLogger(__name__)
@@ -350,6 +351,12 @@ class GameContextProvider:
                 details['player_character'] = True
                 try:
                     details['class'] = target_entity.class_descriptor()
+                except Exception:
+                    pass
+                try:
+                    profile = profile_for_entity(target_entity)
+                    if profile:
+                        details['character_profile'] = profile
                 except Exception:
                     pass
                 try:

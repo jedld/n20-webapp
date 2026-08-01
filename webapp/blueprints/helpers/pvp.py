@@ -24,8 +24,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def selectable_character_entry(character_name):
+    target = str(character_name or '').lower()
+    if not target:
+        return None
     for character in get_index_data().get("selectable_characters", []):
-        if character.get('name') == character_name:
+        if str(character.get('name', '')).lower() == target:
             return character
     return None
 

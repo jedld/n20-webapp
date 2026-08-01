@@ -247,6 +247,151 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
         const spoken = working.replace(/\s+/g, ' ').trim();
         return { spoken, actions, raw };
     },
+    _inCharacterPreviewState: null,
+    canUseInCharacterPolish: function (speakerEntityId) {
+        if (!speakerEntityId) {
+            return false;
+        }
+        const state = Chat.localConversation || {};
+        if (typeof Chat.isDmUser === 'function' && Chat.isDmUser()
+            && state.impersonateMode && state.impersonateNpcId) {
+            return false;
+        }
+        return true;
+    },
+    requestInCharacterPolish: function (options) {
+        const opts = options || {};
+        const entityId = opts.entityId;
+        const draft = String(opts.message || '').trim();
+        const language = opts.language || 'Common';
+        const onStatus = typeof opts.onStatus === 'function' ? opts.onStatus : function () {};
+        const onComplete = typeof opts.onComplete === 'function' ? opts.onComplete : function () {};
+
+        if (!entityId || !draft) {
+            return;
+        }
+        onStatus('Rewriting in character…');
+
+        $.ajax({
+            type: 'POST',
+            url: '/talk',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                entity_id: entityId,
+                message: draft,
+                language: language,
+                in_character_polish: true,
+                polish_only: true,
+            }),
+            success: (data) => {
+                const polished = (data && data.polished_message)
+                    ? String(data.polished_message).trim()
+                    : draft;
+                Chat.showInCharacterPreviewModal({
+                    draft: draft,
+                    polished: polished,
+                    targetInput: opts.targetInput,
+                    onApplied: opts.onApplied,
+                });
+                onStatus('');
+            },
+            error: (xhr) => {
+                let msg = 'Failed to rewrite in character.';
+                try {
+                    const body = xhr.responseJSON || JSON.parse(xhr.responseText || '{}');
+                    if (body.error) {
+                        msg = body.error;
+                    }
+                } catch (e) { /* ignore */ }
+                onStatus(msg);
+            },
+            complete: () => {
+                onComplete();
+            },
+        });
+    },
+    showInCharacterPreviewModal: function (options) {
+        const opts = options || {};
+        const draft = String(opts.draft || '');
+        const polished = String(opts.polished || draft);
+        const $modal = $('#inCharacterPreviewModal');
+        const $draftBox = $('#inCharacterDraftPreview');
+        const $polished = $('#inCharacterPolishedPreview');
+        if (!$modal.length) {
+            if (opts.targetInput) {
+                $(opts.targetInput).val(polished);
+            }
+            if (typeof opts.onApplied === 'function') {
+                opts.onApplied(polished);
+            }
+            return;
+        }
+
+        Chat._inCharacterPreviewState = {
+            targetInput: opts.targetInput || null,
+            onApplied: opts.onApplied || null,
+            draft: draft,
+        };
+        $draftBox.text(draft);
+        $polished.val(polished);
+        $modal.modal('show');
+        setTimeout(() => { $polished.focus(); }, 250);
+    },
+    initInCharacterPreviewModal: function () {
+        const $modal = $('#inCharacterPreviewModal');
+        if (!$modal.length || $modal.data('inCharacterBound')) {
+            return;
+        }
+        $modal.data('inCharacterBound', true);
+
+        const applyLine = function (line) {
+            const state = Chat._inCharacterPreviewState || {};
+            if (state.targetInput) {
+                $(state.targetInput).val(line);
+            }
+            if (typeof state.onApplied === 'function') {
+                state.onApplied(line);
+            }
+            $modal.modal('hide');
+        };
+
+        $('#inCharacterUsePolishedBtn').on('click', function () {
+            const line = ($('#inCharacterPolishedPreview').val() || '').trim();
+            if (line) {
+                applyLine(line);
+            }
+        });
+        $('#inCharacterKeepDraftBtn').on('click', function () {
+            const state = Chat._inCharacterPreviewState || {};
+            applyLine(state.draft || '');
+        });
+    },
+    polishConversationInput: function (options) {
+        const opts = options || {};
+        const $input = $(opts.inputSelector || '');
+        if (!$input.length) {
+            return;
+        }
+        const message = ($input.val() || '').trim();
+        const entityId = opts.entityId || (typeof Chat.getCurrentPovEntity === 'function' ? Chat.getCurrentPovEntity() : null);
+        if (!message || !entityId || !Chat.canUseInCharacterPolish(entityId)) {
+            return;
+        }
+        const $button = $(opts.buttonSelector || '');
+        $button.prop('disabled', true);
+        $input.prop('disabled', true);
+        Chat.requestInCharacterPolish({
+            entityId: entityId,
+            message: message,
+            language: opts.language,
+            targetInput: opts.inputSelector,
+            onStatus: opts.onStatus,
+            onComplete: () => {
+                $button.prop('disabled', false);
+                $input.prop('disabled', false).focus();
+            },
+        });
+    },
     renderPlayerActionLines: function (actions) {
         const entries = Array.isArray(actions)
             ? actions.filter((entry) => `${entry || ''}`.trim().length > 0)
@@ -2062,6 +2207,7 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
             Chat.selectTranscript(true);
         });
         loadAiChatPanelLayout();
+        Chat.initInCharacterPreviewModal();
         Chat.bindDialogInsightButtons($('#dialogChatMessages'));
         Chat.bindTtsReplayButtons($('#dialogChatMessages'));
 

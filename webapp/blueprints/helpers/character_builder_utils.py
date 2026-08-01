@@ -43,6 +43,71 @@ PREBUILT_CHARACTER_DIR = os.path.join(
 # Form parsing helpers
 # --------------------------------------------------------------------------- #
 
+def _normalize_language_key(lang):
+  """Normalize a language id for comparison (lowercase, stripped)."""
+  if lang is None:
+    return ''
+  return str(lang).strip().lower()
+
+
+def collect_granted_languages(race_def=None, subrace_def=None, background_def=None):
+  """Languages automatically granted by race, subrace, and background (not player picks)."""
+  granted = set()
+  for src in (race_def or {}, subrace_def or {}, background_def or {}):
+    for lang in src.get('languages') or []:
+      key = _normalize_language_key(lang)
+      if key and key != 'none':
+        granted.add(key)
+  return granted
+
+
+def filter_language_pool(pool, granted):
+  """Drop languages already granted; preserve YAML casing and order."""
+  if not pool:
+    return []
+  seen = set()
+  filtered = []
+  for lang in pool:
+    key = _normalize_language_key(lang)
+    if not key or key == 'none' or key in granted or key in seen:
+      continue
+    seen.add(key)
+    filtered.append(lang)
+  return filtered
+
+
+def validate_background_language_selections(
+    background_def,
+    selections,
+    race_def=None,
+    subrace_def=None,
+):
+  """Validate background language picks against the filtered pool."""
+  selections = list(selections or [])
+  if not background_def:
+    if selections:
+      return False, 'Unexpected background language choices'
+    return True, None
+
+  granted = collect_granted_languages(race_def, subrace_def, background_def)
+  choice_count = int(background_def.get('language_choice_count', 0))
+  if choice_count <= 0:
+    if selections:
+      return False, 'Unexpected background language choices'
+    return True, None
+
+  pool = filter_language_pool(background_def.get('languages_pool') or [], granted)
+  pool_set = set(pool)
+  if len(pool) < choice_count:
+    return False, 'Not enough background language options for this race/background combination.'
+  if len(selections) != choice_count:
+    plural = '' if choice_count == 1 else 's'
+    return False, f'Choose {choice_count} background language{plural}.'
+  if not all(sel in pool_set for sel in selections):
+    return False, 'Invalid background language choices'
+  return True, None
+
+
 def _parse_json_list_form(form, key):
     """Parse a JSON-encoded list from a Flask form field."""
     val = form.get(key)
@@ -145,7 +210,7 @@ def _spell_choice_caps(klass, level, ability, class_def):
 def _apply_class_and_feat_choices(pc, klass, level, classes_def, selected_skills,
                                   selected_cantrips, selected_level1, selected_feats,
                                   spells_by_level=None, subclass_choice=None,
-                                  asi_boosts=None):
+                                  asi_boosts=None, restrictions=None):
     """Apply class and feat choices to a player character dict.
 
     This function validates selections against the class definition, applies
@@ -171,7 +236,10 @@ def _apply_class_and_feat_choices(pc, klass, level, classes_def, selected_skills
         Feat names chosen by the user.
     """
     cdef = (classes_def or {}).get(klass, {}) or {}
-    level = clamp_builder_level(level)
+    if restrictions is not None:
+        level = restrictions.clamp_level(level)
+    else:
+        level = clamp_builder_level(level)
 
     # Skills
     max_skills = int(cdef.get('available_skills_choices', 0) or 0)
@@ -200,20 +268,27 @@ def _apply_class_and_feat_choices(pc, klass, level, classes_def, selected_skills
     )
 
     features = collect_progression_features(cdef, level)
+    if restrictions is not None:
+        features = restrictions.filter_features(features)
     if features:
         pc['class_features'] = features
 
     if subclass_choice:
-        apply_subclass(pc, klass, subclass_choice, cdef, level)
+        if restrictions is None or restrictions.ability_allowed(subclass_choice):
+            apply_subclass(pc, klass, subclass_choice, cdef, level)
 
     if asi_boosts:
         apply_asi(pc, asi_boosts)
 
     # Feats
     feat_options = cdef.get('feat_choices') or cdef.get('available_feats') or []
+    if restrictions is not None:
+        feat_options = [f for f in feat_options if restrictions.feat_allowed(f)]
     feat_count = int(cdef.get('feat_choices_count') or cdef.get('available_feats_choices') or 0)
     if feat_options:
         feats = [f for f in selected_feats if f in feat_options]
+        if restrictions is not None:
+            feats = [f for f in feats if restrictions.feat_allowed(f)]
         if feat_count > 0:
             feats = feats[:feat_count]
         pc['feats'] = list(dict.fromkeys(feats))
@@ -465,27 +540,32 @@ def _register_new_character_in_campaign(pc, safe_name):
     index_data = get_index_data()
 
     entity_uid = pc.get('entity_uid') or safe_name.lower()
+    sheet_path = f'characters/{safe_name}.yml'
+    portrait_file = pc.get('profile_image') or f'characters/{entity_uid}.png'
 
     if get_builder_only_mode():
         return
 
-    try:
-        pc_entity = PlayerCharacter.load(game_session, f'characters/{safe_name}.yml')
-        target_map = game_session.maps.get('index') or next(iter(game_session.maps.values()))
-        width, height = target_map.size
-        pos = None
-        for y in range(height):
-            for x in range(width):
-                if not target_map.entity_at(x, y):
-                    pos = (x, y)
+    # Campaigns with deferred player spawn place PCs at player_spawn_points only
+    # after the player confirms selection on /character_selection.
+    if not getattr(current_game, 'defer_player_spawn', False):
+        try:
+            pc_entity = PlayerCharacter.load(game_session, sheet_path)
+            target_map = game_session.maps.get('index') or next(iter(game_session.maps.values()))
+            width, height = target_map.size
+            pos = None
+            for y in range(height):
+                for x in range(width):
+                    if not target_map.entity_at(x, y):
+                        pos = (x, y)
+                        break
+                if pos:
                     break
-            if pos:
-                break
-        if not pos:
-            pos = (0, 0)
-        target_map.add(pc_entity, pos[0], pos[1], group='a')
-    except Exception:
-        logger.exception('Failed to place new character on map')
+            if not pos:
+                pos = (0, 0)
+            target_map.add(pc_entity, pos[0], pos[1], group='a')
+        except Exception:
+            logger.exception('Failed to place new character on map')
 
     try:
         index_json_path = os.path.join(game_session.root_path, 'index.json')
@@ -499,8 +579,10 @@ def _register_new_character_in_campaign(pc, safe_name):
         if not any(c.get('name', '').lower() == lower for c in selectable):
             selectable.append({
                 'name': lower,
-                'file': f'characters/{lower}.png',
+                'file': portrait_file,
                 'description': pc.get('description', lower),
+                'sheet': sheet_path,
+                'overrides': {'entity_uid': lower},
             })
         idx['selectable_characters'] = selectable
         with open(index_json_path, 'w') as jf:

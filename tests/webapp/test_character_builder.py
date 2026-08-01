@@ -389,13 +389,13 @@ def test_import_dndbeyond_route_saves_character(monkeypatch):
     )
 
     def _fake_import(character_id, cobalt_token=None):
-        pc, warnings = _real_import(
+        pc, warnings, raw_data = _real_import(
             character_id,
             input_path=wizard_fixture,
         )
         pc = dict(pc)
         pc['name'] = f"DDB Import {uuid.uuid4().hex[:8]}"
-        return pc, warnings
+        return pc, warnings, raw_data
 
     monkeypatch.setattr(character_module, 'import_character_from_dndbeyond', _fake_import)
 
@@ -412,6 +412,9 @@ def test_import_dndbeyond_route_saves_character(monkeypatch):
     body = response.get_json()
     assert body.get('status') == 'ok'
     assert body.get('character_name', '').startswith('DDB Import')
+    redirect = body.get('redirect', '')
+    assert '/character_editor/' in redirect
+    assert 'next=' in redirect
 
     char_file = body.get('character_file', '')
     assert char_file.startswith('characters/')

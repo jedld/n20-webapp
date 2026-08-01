@@ -71,12 +71,14 @@ def _known_spell_table(klass_lower):
     return tables.get(klass_lower, [])
 
 
-def clamp_builder_level(level):
+def clamp_builder_level(level, min_level=None, max_level=None):
     try:
         lvl = int(level or 1)
     except (TypeError, ValueError):
         lvl = 1
-    return max(BUILDER_MIN_LEVEL, min(BUILDER_MAX_LEVEL, lvl))
+    lo = BUILDER_MIN_LEVEL if min_level is None else int(min_level)
+    hi = BUILDER_MAX_LEVEL if max_level is None else int(max_level)
+    return max(lo, min(hi, lvl))
 
 
 def subclass_property_name(klass):

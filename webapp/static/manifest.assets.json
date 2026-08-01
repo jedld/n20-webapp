@@ -29,14 +29,14 @@
     "edit_mode.min.js": "6172d9bf17",
     "edit_properties.min.js": "be9c81ebb1",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "613700a9d5",
+    "engine.min.js": "b7c5e59c57",
     "inert-polyfill.min.js": "fcce9c44c6",
     "map_annotations_edit.min.js": "0d9efc0e2b",
     "map_graph.min.js": "cde7317c95",
     "path_compute.min.js": "ccc22663d8",
     "perf.min.js": "7305880b63",
     "sfx.min.js": "d5a1167d46",
-    "sheet.min.js": "e5c4af0da3",
+    "sheet.min.js": "b3a20459fc",
     "spell_effects.min.js": "5f6ebcbdf2",
     "status_effects.min.js": "960a5f58ea",
     "utils.min.js": "65bba83c00",
@@ -46,9 +46,9 @@
     "js/chat.min.js": "8c2a17c6dd",
     "js/local_conversation.min.js": "6cf3759906",
     "js/tts_player.min.js": "ad1f664ee2",
-    "sheet.min.css": "87e9ef1852",
-    "styles.min.css": "4aa536bb6d"
+    "sheet.min.css": "983d8f4d12",
+    "styles.min.css": "89c150d98a"
   },
-  "generatedAt": "2026-07-31T20:56:40.679Z",
-  "buildVersion": "a6e9eae1cf4c"
+  "generatedAt": "2026-07-31T22:01:01.104Z",
+  "buildVersion": "3e0b0415c960"
 }

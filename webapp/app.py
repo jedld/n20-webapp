@@ -1449,59 +1449,22 @@ def character_selection():
 
 def _register_new_character_in_campaign(pc, safe_name):
     """Place a new PC on the default map and expose it on the selection screen."""
-    global index_data
-    entity_uid = pc.get('entity_uid') or safe_name.lower()
-
-    if builder_only_mode():
-        return
-
-    try:
-        pc_entity = PlayerCharacter.load(game_session, f'characters/{safe_name}.yml')
-        target_map = game_session.maps.get('index') or next(iter(game_session.maps.values()))
-        width, height = target_map.size
-        pos = None
-        for y in range(height):
-            for x in range(width):
-                if not target_map.entity_at(x, y):
-                    pos = (x, y)
-                    break
-            if pos:
-                break
-        if not pos:
-            pos = (0, 0)
-        target_map.add(pc_entity, pos[0], pos[1], group='a')
-    except Exception:
-        logger.exception('Failed to place new character on map')
-
-    try:
-        index_json_path = os.path.join(game_session.root_path, 'index.json')
-        if os.path.exists(index_json_path):
-            with open(index_json_path, 'r') as jf:
-                idx = json.load(jf)
-        else:
-            idx = {}
-        selectable = idx.get('selectable_characters') or []
-        lower = str(entity_uid).lower()
-        if not any(c.get('name', '').lower() == lower for c in selectable):
-            selectable.append({
-                'name': lower,
-                'file': f'characters/{lower}.png',
-                'description': pc.get('description', lower),
-            })
-        idx['selectable_characters'] = selectable
-        with open(index_json_path, 'w') as jf:
-            json.dump(idx, jf, indent=2)
-        try:
-            index_data['selectable_characters'] = selectable
-        except Exception:
-            logger.exception('Failed to update in-memory selectable_characters')
-    except Exception:
-        logger.exception('Failed to update index.json with new character')
+    from webapp.blueprints.helpers.character_builder_utils import (
+        _register_new_character_in_campaign as register_new_character_in_campaign,
+    )
+    register_new_character_in_campaign(pc, safe_name)
 
 
 @app.route('/character_builder/import_dndbeyond', methods=['POST'])
 def import_dndbeyond_character():
   """Import a character sheet from a D&D Beyond URL and save it as campaign YAML."""
+  from webapp.dndbeyond_import import (
+      download_ddb_character_portraits,
+      import_character_from_dndbeyond,
+      parse_character_id_from_url,
+      prepare_imported_pc_dict,
+  )
+
   if not logged_in():
     return jsonify(error='Not logged in'), 401
 
@@ -1522,7 +1485,7 @@ def import_dndbeyond_character():
     ), 400
 
   try:
-    pc, import_warnings = import_character_from_dndbeyond(
+    pc, import_warnings, raw_data = import_character_from_dndbeyond(
       character_id,
       cobalt_token=cobalt_token,
     )
@@ -1542,6 +1505,18 @@ def import_dndbeyond_character():
   pc, safe_name = prepare_imported_pc_dict(pc)
   if not pc.get('name'):
     return jsonify(error='Imported character has no name'), 400
+
+  entity_uid = str(pc.get('entity_uid') or safe_name)
+  assets_dir = os.path.join(game_session.root_path, 'assets')
+  os.makedirs(assets_dir, exist_ok=True)
+  import_warnings.extend(
+      download_ddb_character_portraits(
+          raw_data,
+          entity_uid=entity_uid,
+          assets_dir=assets_dir,
+          cobalt_token=cobalt_token,
+      )
+  )
 
   races_def = game_session.load_races() or {}
   if pc.get('race') and pc['race'] not in races_def:
@@ -1574,10 +1549,10 @@ def import_dndbeyond_character():
 
   _register_new_character_in_campaign(pc, safe_name)
 
+  next_url = '/character_selection' if 'dm' not in user_role() else '/'
   if builder_only_mode():
-    redirect_to = url_for('character_builder')
-  else:
-    redirect_to = '/character_selection' if 'dm' not in user_role() else '/'
+    next_url = url_for('character_builder')
+  redirect_to = url_for('character_editor', character_name=safe_name, next=next_url)
 
   return jsonify(
       status='ok',
@@ -1685,8 +1660,15 @@ def create_character():
 
         language_choice_cfg = subrace_def.get('language_choices') or race_def.get('language_choices') or {}
         if language_choice_cfg.get('count'):
+            from webapp.blueprints.helpers.character_builder_utils import (
+                collect_granted_languages,
+                filter_language_pool,
+            )
             expected_language_count = int(language_choice_cfg['count'])
-            options = set(language_choice_cfg.get('options') or [])
+            granted_race_langs = collect_granted_languages(race_def, subrace_def)
+            options = set(filter_language_pool(
+                language_choice_cfg.get('options') or [], granted_race_langs
+            ))
             if len(race_language_selections) != expected_language_count:
                 plural = '' if expected_language_count == 1 else 's'
                 return jsonify(error=f'Choose {expected_language_count} bonus language{plural}.'), 400
@@ -1718,6 +1700,16 @@ def create_character():
         for lang_src in (race_def.get('languages', []), subrace_def.get('languages', [])):
             if lang_src:
                 base_languages.extend([str(l) for l in lang_src])
+
+        from webapp.blueprints.helpers.character_builder_utils import validate_background_language_selections
+        ok, bg_lang_error = validate_background_language_selections(
+            background_def,
+            background_language_selections,
+            race_def=race_def,
+            subrace_def=subrace_def,
+        )
+        if not ok:
+            return jsonify(error=bg_lang_error), 400
 
         # Build PC YAML compatible with existing templates
         # Basic defaults: level 1, hit_die inherit, simple equipment empty

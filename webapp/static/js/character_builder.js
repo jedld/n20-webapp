@@ -71,7 +71,91 @@
     try { return JSON.parse(el.textContent || '{}'); } catch(e){ return {}; }
   }
   const BACKGROUNDS = getBackgrounds();
-  const BUILDER_MAX_LEVEL = 5;
+
+  function normalizeLanguageKey(lang){
+    return String(lang || '').trim().toLowerCase();
+  }
+
+  function getGrantedLanguages(backgroundKey){
+    const granted = new Set();
+    const race = $('#race').val();
+    const subrace = $('#subrace').val();
+    const base = (race && RACES[race]) || {};
+    const sub = (base.subrace && subrace && base.subrace[subrace]) || {};
+    [base.languages, sub.languages].forEach(list=>{
+      (list || []).forEach(lang=>{
+        const key = normalizeLanguageKey(lang);
+        if(key && key !== 'none') granted.add(key);
+      });
+    });
+    const bg = backgroundKey || $('#background').val();
+    const bdata = (bg && BACKGROUNDS[bg]) || {};
+    (bdata.languages || []).forEach(lang=>{
+      const key = normalizeLanguageKey(lang);
+      if(key && key !== 'none') granted.add(key);
+    });
+    return granted;
+  }
+
+  function filterLanguagePool(pool, granted){
+    const seen = new Set();
+    return (pool || []).filter(lang=>{
+      const key = normalizeLanguageKey(lang);
+      if(!key || key === 'none' || granted.has(key) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  const PROFILE_FIELDS = [
+    'alignment', 'gender', 'faith', 'size', 'age', 'height', 'weight',
+    'eyes', 'hair', 'skin', 'personality_traits', 'ideals', 'bonds', 'flaws', 'backstory'
+  ];
+
+  function applyProfileFields(profile){
+    if(!profile) return;
+    PROFILE_FIELDS.forEach(function(key){
+      const $el = $(`#${key}`);
+      if(!$el.length) return;
+      if(profile[key] !== undefined && profile[key] !== null){
+        $el.val(profile[key]);
+      }
+    });
+  }
+
+  function updateRaceDefaultSizeHint(){
+    const race = $('#race').val();
+    const raceDef = race ? RACES[race] : null;
+    const size = (raceDef && raceDef.size) ? String(raceDef.size) : 'medium';
+    const $hint = $('#race-default-size-hint');
+    if($hint.length){
+      $hint.text(`Race default size: ${size.replace('_', ' ')}`);
+    }
+  }
+  function getBuilderRestrictions(){
+    const el = document.getElementById('builder-restrictions-data');
+    if(!el) return { min_level: 1, max_level: 5, blacklist: {} };
+    try { return JSON.parse(el.textContent || '{}'); } catch(e){ return { min_level: 1, max_level: 5, blacklist: {} }; }
+  }
+  const BUILDER_RESTRICTIONS = getBuilderRestrictions();
+  const BUILDER_MIN_LEVEL = parseInt(BUILDER_RESTRICTIONS.min_level || 1, 10) || 1;
+  const BUILDER_MAX_LEVEL = parseInt(BUILDER_RESTRICTIONS.max_level || 5, 10) || 5;
+  const BLACKLIST = BUILDER_RESTRICTIONS.blacklist || {};
+
+  function isBlacklisted(kind, value){
+    const list = BLACKLIST[kind] || [];
+    const key = String(value || '').trim().toLowerCase().replace(/ /g, '_');
+    return list.some(item => String(item || '').trim().toLowerCase().replace(/ /g, '_') === key);
+  }
+  function isSpellAllowed(spellSlug){
+    return !isBlacklisted('spells', spellSlug);
+  }
+  function isFeatAllowed(feat){
+    return !isBlacklisted('feats', feat) && !isBlacklisted('abilities', feat);
+  }
+  function isSubclassAllowed(subclass){
+    return !isBlacklisted('abilities', subclass);
+  }
   const SUBCLASS_BLOCKS = {
     barbarian: 'primal_paths',
     bard: 'bard_colleges',
@@ -162,6 +246,7 @@
     } else {
       $sub.prop('disabled', true);
     }
+    updateRaceDefaultSizeHint();
   });
 
   // ---------- Class & Level dependent options ----------
@@ -276,8 +361,8 @@
 
     function renderSpellLevelPicker(spellList, spellLevel, totalCap, labelPrefix){
       const key = `level_${spellLevel}`;
-      const spells = spellList[key];
-      if(!Array.isArray(spells) || !spells.length) return;
+      const spells = (spellList[key] || []).filter(sp => isSpellAllowed(sp));
+      if(!spells.length) return;
       const sWrap = $('<div class="form-group spell-level-group"/>');
       sWrap.append(`<label>${labelPrefix} Level ${spellLevel} Spells</label>`);
       const row = $('<div class="row"/>');
@@ -307,7 +392,7 @@
       });
     }
 
-    const subclassOptions = listSubclassOptions(klass, kdata);
+    const subclassOptions = listSubclassOptions(klass, kdata).filter(isSubclassAllowed);
     if(level >= 3 && subclassOptions.length){
       const subWrap = $('<div class="form-group"/>');
       subWrap.append('<label>Subclass</label>');
@@ -395,10 +480,12 @@
       }
 
       if(cantripCount>0 && Array.isArray(spellList.cantrip)){
+        const allowedCantrips = spellList.cantrip.filter(isSpellAllowed);
+        if(allowedCantrips.length){
         const canWrap = $('<div class="form-group"/>');
         canWrap.append(`<label>Cantrips: choose ${cantripCount}</label>`);
         const row = $('<div class="row"/>');
-        spellList.cantrip.forEach((sp, i)=>{
+        allowedCantrips.forEach((sp, i)=>{
           const col = $('<div class="col-xs-6 col-sm-4 col-md-3"/>');
           const id = `cantrip-${i}`;
           col.append(`
@@ -423,6 +510,7 @@
             $body.find('.cb-cantrip').prop('disabled', false);
           }
         });
+        }
       }
 
       if(totalSpellCap > 0 && maxSpellLevel > 0){
@@ -441,7 +529,7 @@
       }
     }
 
-    const featOptions = kdata.feat_choices || kdata.available_feats || [];
+    const featOptions = (kdata.feat_choices || kdata.available_feats || []).filter(isFeatAllowed);
     const featCount = parseInt(kdata.feat_choices_count || kdata.available_feats_choices || 0, 10) || 0;
     if(Array.isArray(featOptions) && featOptions.length){
       const wrap = $('<div class="form-group"/>');
@@ -583,7 +671,8 @@
     const languageChoices = sub.language_choices || base.language_choices;
     if(languageChoices && languageChoices.count){
       const count = parseInt(languageChoices.count, 10) || 0;
-      const options = languageChoices.options || [];
+      const granted = getGrantedLanguages();
+      const options = filterLanguagePool(languageChoices.options || [], granted);
       if(count > 0 && options.length){
         const wrap = $('<div class="form-group"/>');
         wrap.append(`<label>Bonus Languages: choose ${count}</label>`);
@@ -627,7 +716,10 @@
   }
 
   $('#klass, #level').on('change', renderClassOptions);
-  $('#race, #subrace').on('change', renderRaceOptions);
+  $('#race, #subrace').on('change', function(){
+    renderRaceOptions();
+    renderBackgroundOptions();
+  });
   $('#background').on('change', renderBackgroundOptions);
   // initial hide
   $('#class-options').hide();
@@ -670,16 +762,15 @@
       $body.append(`<div class="form-group"><label>Feature: ${bdata.feature.name}</label><div class="helper">${bdata.feature.description.substring(0, 150)}${bdata.feature.description.length > 150 ? '...' : ''}</div></div>`);
     }
 
-    // Language choices
+    // Language choices (exclude languages already granted by race/background)
     const choiceCount = parseInt(bdata.language_choice_count || 0, 10);
-    const pool = bdata.languages_pool || [];
+    const granted = getGrantedLanguages(bg);
+    const pool = filterLanguagePool(bdata.languages_pool || [], granted);
     if(choiceCount > 0 && pool.length){
       const langWrap = $('<div class="form-group"/>');
       langWrap.append(`<label>Background Languages: choose ${choiceCount}</label>`);
       const row = $('<div class="row"/>');
-      // Deduplicate pool
-      const uniquePool = [...new Set(pool)];
-      uniquePool.forEach((lang, idx)=>{
+      pool.forEach((lang, idx)=>{
         const col = $('<div class="col-xs-6 col-sm-4 col-md-3"/>');
         const id = `bg-language-${idx}`;
         col.append(`
@@ -854,9 +945,21 @@
   const bgDef = bgVal ? BACKGROUNDS[bgVal] : null;
   if(bgDef){
     const expectedBgLang = parseInt(bgDef.language_choice_count || 0, 10);
-    if(expectedBgLang > 0 && bgLanguages.length !== expectedBgLang){
-      $('#builder-msg').html(`<div class="alert alert-danger">Choose ${expectedBgLang} background language${expectedBgLang > 1 ? 's' : ''}.</div>`);
-      return;
+    const bgPool = filterLanguagePool(bgDef.languages_pool || [], getGrantedLanguages(bgVal));
+    if(expectedBgLang > 0){
+      if(bgPool.length < expectedBgLang){
+        $('#builder-msg').html('<div class="alert alert-danger">Not enough background language options for this race/background combination.</div>');
+        return;
+      }
+      if(bgLanguages.length !== expectedBgLang){
+        $('#builder-msg').html(`<div class="alert alert-danger">Choose ${expectedBgLang} background language${expectedBgLang > 1 ? 's' : ''}.</div>`);
+        return;
+      }
+      const invalidBgLang = bgLanguages.some(lang => !bgPool.includes(lang));
+      if(invalidBgLang){
+        $('#builder-msg').html('<div class="alert alert-danger">One or more background language choices are already known or invalid.</div>');
+        return;
+      }
     }
   }
 
@@ -889,6 +992,7 @@
     $('#name').val(ec.name || '');
     $('#pronoun').val(ec.pronoun || '');
     $('#outward_appearance').val(ec.outward_appearance || '');
+    applyProfileFields(ec);
     $('#race').val(ec.race || '');
     $('#race').trigger('change');
     if(ec.subrace){
@@ -1001,6 +1105,38 @@
     });
   }
   
+  function setupProfileRandomize(){
+    const $btn = $('#randomize-profile-btn');
+    const $status = $('#randomize-profile-status');
+    if(!$btn.length) return;
+    $btn.on('click', function(){
+      $btn.prop('disabled', true);
+      $status.text('Rolling…');
+      $.ajax({
+        type: 'POST',
+        url: '/character_builder/randomize_profile',
+        contentType: 'application/json',
+        data: JSON.stringify({
+          background: ($('#background').val() || '').trim(),
+          race: ($('#race').val() || '').trim(),
+        }),
+        dataType: 'json',
+      }).done(function(resp){
+        if(resp.error){
+          $status.text(resp.error);
+          return;
+        }
+        applyProfileFields(resp.profile || {});
+        $status.text('Rolled!');
+        setTimeout(function(){ $status.text(''); }, 2000);
+      }).fail(function(){
+        $status.text('Randomize failed.');
+      }).always(function(){
+        $btn.prop('disabled', false);
+      });
+    });
+  }
+
   function setupDndBeyondImport(){
     if(editMode) return;
     const $btn = $('#ddb-import-btn');
@@ -1221,9 +1357,11 @@
 
   // init
   updatePoints();
+  updateRaceDefaultSizeHint();
   renderRaceOptions();
   renderBackgroundOptions();
   prefillEditCharacter();
+  setupProfileRandomize();
   setupEquipmentPackPreview();
   setupDndBeyondImport();
   setupInventoryManager();

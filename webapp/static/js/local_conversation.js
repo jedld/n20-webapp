@@ -1019,6 +1019,17 @@ window.LocalConversationChatBindings = {
             Chat.sendLocalConversationMessage();
         });
 
+        $('#localConversationInCharacterBtn').on('click', function () {
+            const speakerEntity = Chat.getLocalConversationSpeakerEntity();
+            Chat.polishConversationInput({
+                inputSelector: '#localConversationInput',
+                buttonSelector: '#localConversationInCharacterBtn',
+                entityId: speakerEntity,
+                language: $('#localConversationLanguage').val(),
+                onStatus: (msg) => Chat.setLocalConversationStatus(msg || ''),
+            });
+        });
+
         $('#localConversationInput').on('input click focus', function () {
             Chat.updateLocalMentionSuggestions();
         });

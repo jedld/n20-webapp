@@ -4621,6 +4621,7 @@ class ConversationService:
         dm_impersonate = bool(data.get('dm_impersonate'))
         dm_impersonate_polish = bool(data.get('dm_impersonate_polish'))
         polish_only = bool(data.get('polish_only'))
+        in_character_polish = bool(data.get('in_character_polish'))
         entity_id = data.get('entity_id')
         message = data.get('message')
         language = data.get('language')
@@ -4684,6 +4685,26 @@ class ConversationService:
 
         if message is None:
             return {'error': 'Entity ID and message are required'}, 400
+
+        if polish_only and in_character_polish:
+            if not isinstance(entity, PlayerCharacter):
+                return {'error': 'In-character polish requires a player character'}, 400
+            if not self._requester_can_control_entity(normalized_requesting_username, entity):
+                return {'error': 'You may only polish lines for characters you control'}, 403
+            draft = str(message or '').strip()
+            if not draft:
+                return {'error': 'Message is required'}, 400
+            polished = self.polish_pc_in_character_line(
+                entity,
+                draft,
+                language=language or 'common',
+            )
+            return {
+                'success': True,
+                'draft_message': draft,
+                'polished_message': polished or draft,
+                'in_character_polish': True,
+            }, 200
 
         parsed_input = parse_player_conversation_input(message or '')
         spoken_message = parsed_input.get('spoken') or ''
@@ -5246,6 +5267,28 @@ class ConversationService:
     def _requester_is_dm(self, username):
         return 'dm' in self._requester_roles(username)
 
+    def _requester_can_control_entity(self, username, entity):
+        if not username or entity is None:
+            return False
+        if self._requester_is_dm(username):
+            return True
+        entity_uid = getattr(entity, 'entity_uid', None)
+        if not entity_uid:
+            return False
+        try:
+            pov = self.current_game.get_pov_entity_for_user(username)
+            if pov is not None and getattr(pov, 'entity_uid', None) == entity_uid:
+                return True
+        except Exception:
+            pass
+        try:
+            for controlled in self.entities_controlled_by(username) or []:
+                if getattr(controlled, 'entity_uid', None) == entity_uid:
+                    return True
+        except Exception:
+            pass
+        return False
+
     def npc_conversation_mode_is_manual(self, entity):
         from webapp.npc_conversation_mode import is_npc_manual_conversation
         return is_npc_manual_conversation(self.game_session, entity)
@@ -5348,6 +5391,108 @@ class ConversationService:
             self.logger.debug(
                 'DM impersonation polish failed for %s: %s',
                 getattr(npc, 'entity_uid', npc),
+                exc,
+            )
+            return None
+
+        polished = str(raw_response or '').strip()
+        polished = re.sub(r'\[.*?\]', '', polished).strip()
+        polished = polished.strip('"\'')
+        if not polished or is_npc_llm_failure_response(polished):
+            return None
+        return polished[:500]
+
+    def polish_pc_in_character_line(
+        self,
+        pc,
+        draft,
+        *,
+        language='common',
+    ):
+        """Rewrite a player draft into an in-character spoken line using the NPC LLM."""
+        draft = str(draft or '').strip()
+        if not draft or not isinstance(pc, PlayerCharacter):
+            return None
+
+        controller = self.llm_conversation_handler
+        if controller is None:
+            return None
+
+        send_message = getattr(controller, '_effective_send_message', None)
+        if not callable(send_message):
+            return None
+
+        from natural20.utils.character_profile import format_profile_for_llm, profile_for_entity
+
+        profile_text = format_profile_for_llm(profile_for_entity(pc), max_field_chars=500)
+        props = getattr(pc, 'properties', None) or {}
+        background_key = str(props.get('background') or '').strip()
+        background_label = background_key.replace('_', ' ').title() if background_key else ''
+        try:
+            class_desc = pc.class_descriptor() if callable(getattr(pc, 'class_descriptor', None)) else ''
+        except Exception:
+            class_desc = ''
+        try:
+            race_label = pc.race() if callable(getattr(pc, 'race', None)) else ''
+        except Exception:
+            race_label = str(props.get('race') or '')
+
+        character_context_parts = [
+            f'Name: {entity_label(pc)}',
+        ]
+        if race_label:
+            character_context_parts.append(f'Race: {race_label}')
+        if class_desc:
+            character_context_parts.append(f'Class: {class_desc}')
+        if background_label:
+            character_context_parts.append(f'Background: {background_label}')
+        if profile_text:
+            character_context_parts.append(profile_text)
+        character_context = '\n'.join(character_context_parts)
+
+        recent_lines = []
+        for entry in (getattr(pc, 'conversation_buffer', None) or [])[-5:]:
+            line = str((entry or {}).get('message') or '').strip()
+            if line:
+                recent_lines.append(line)
+
+        polish_instructions = (
+            'Rewrite the player draft into a single in-character line for this hero. '
+            'Shape vocabulary, tone, and manner using their personality traits, ideals, '
+            'bonds, flaws, backstory, background, race, and class. '
+            'Output ONLY the rewritten line with no quotes, brackets, labels, or commentary. '
+            'Preserve the draft meaning and intent. '
+            'Keep any *action* text wrapped in asterisks exactly as actions; polish spoken words only.'
+        )
+        import json as _json
+        user_payload = {
+            'draft': draft,
+            'language': language,
+            'recent_speech': recent_lines,
+        }
+        messages = [
+            {
+                'role': 'system',
+                'content': (
+                    f'You are helping a player speak in character.\n\n'
+                    f'{character_context}\n\n{polish_instructions}'
+                ),
+            },
+            {'role': 'user', 'content': _json.dumps(user_payload, ensure_ascii=True)},
+        ]
+        try:
+            raw_response = send_message(
+                messages,
+                context={
+                    'response_mode': 'conversation',
+                    'skip_continuation': True,
+                    'log_label': 'pc_in_character_polish',
+                },
+            )
+        except Exception as exc:
+            self.logger.debug(
+                'PC in-character polish failed for %s: %s',
+                getattr(pc, 'entity_uid', pc),
                 exc,
             )
             return None

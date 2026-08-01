@@ -541,6 +541,42 @@ class TestCharacterBuilderUtils(unittest.TestCase):
         """Module has a logger."""
         self.assertIsNotNone(self.mod.logger)
 
+    @patch('webapp.blueprints.helpers.character_builder_utils.json.dump')
+    @patch('builtins.open', new_callable=mock_open, read_data='{"selectable_characters": []}')
+    @patch('webapp.blueprints.helpers.character_builder_utils.os.path.exists', return_value=True)
+    @patch('webapp.blueprints.helpers.character_builder_utils.get_builder_only_mode', return_value=False)
+    @patch('webapp.blueprints.helpers.character_builder_utils.get_index_data', return_value={'selectable_characters': []})
+    @patch('webapp.blueprints.helpers.character_builder_utils.get_game_session')
+    @patch('webapp.blueprints.helpers.character_builder_utils.get_current_game')
+    def test_register_new_character_includes_sheet(
+        self,
+        mock_current_game,
+        mock_game_session,
+        mock_index_data,
+        mock_builder_only,
+        mock_exists,
+        mock_open_file,
+        mock_json_dump,
+    ):
+        mock_current_game.return_value.defer_player_spawn = True
+        mock_session = MagicMock()
+        mock_session.root_path = '/tmp/death_house'
+        mock_game_session.return_value = mock_session
+
+        pc = {
+            'name': 'Test Hero',
+            'entity_uid': 'test_hero',
+            'description': 'A test hero',
+            'profile_image': 'characters/test_hero.png',
+        }
+        self.mod._register_new_character_in_campaign(pc, 'Test_Hero')
+
+        written = mock_json_dump.call_args[0][0]
+        entry = written['selectable_characters'][0]
+        self.assertEqual(entry['name'], 'test_hero')
+        self.assertEqual(entry['sheet'], 'characters/Test_Hero.yml')
+        self.assertEqual(entry['overrides'], {'entity_uid': 'test_hero'})
+
 
 if __name__ == '__main__':
     unittest.main()

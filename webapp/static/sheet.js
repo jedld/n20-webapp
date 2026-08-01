@@ -305,6 +305,16 @@ $(document).ready(function () {
         $('#dm-free-text-group').show();
     }
 
+    function containerToggleLabel(btn, open) {
+        const openLabel = btn.data('open-label') || 'Open';
+        const closeLabel = btn.data('close-label') || 'Close';
+        btn.text(open ? closeLabel : openLabel);
+    }
+
+    function setContainerExpanded(wrapper, expanded) {
+        wrapper.closest('.inventory-slot').toggleClass('container-expanded', expanded);
+    }
+
     $('.equipment-container').on('click', '.container-toggle-btn', function(e) {
         e.preventDefault();
         const btn = $(this);
@@ -315,23 +325,30 @@ $(document).ready(function () {
         const containerDiv = $(`#container-${containerId}`);
 
         if (wrapper.is(':visible')) {
-            wrapper.slideUp(200);
-            btn.text('Open Backpack');
+            wrapper.slideUp(200, function() {
+                setContainerExpanded(wrapper, false);
+            });
+            containerToggleLabel(btn, false);
             return;
         }
 
         fetchContainerStatus(entityUid, containerName, function(status) {
             renderContainerContents(containerDiv, entityUid, containerName, status);
+            setContainerExpanded(wrapper, true);
             wrapper.slideDown(200);
-            btn.text('Close Backpack');
+            containerToggleLabel(btn, true);
         });
     });
 
     $('.equipment-container').on('click', '.container-close-btn', function(e) {
         e.preventDefault();
         const containerId = $(this).data('container');
-        $(`#container-wrapper-${containerId}`).slideUp(200);
-        $(`.container-toggle-btn[data-container="${containerId.replace(/-/g, ' ')}"]`).text('Open Backpack');
+        const wrapper = $(`#container-wrapper-${containerId}`);
+        wrapper.slideUp(200, function() {
+            setContainerExpanded(wrapper, false);
+        });
+        const btn = $(`.container-toggle-btn[data-container="${containerId.replace(/-/g, ' ')}"]`);
+        containerToggleLabel(btn, false);
     });
 
     $('.equipment-container').on('click', '.container-add-btn', function(e) {

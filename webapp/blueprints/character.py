@@ -10,11 +10,21 @@ from flask import Blueprint, request, jsonify, session, redirect, url_for, rende
 
 from natural20.player_character import PlayerCharacter
 from natural20.utils.char_class_spells import spell_availability_map
+from natural20.utils.character_profile import (
+    ALIGNMENT_OPTIONS,
+    extract_profile,
+    merge_profile_into_mapping,
+    profile_from_form,
+    randomize_profile,
+    resolve_size,
+    sync_profile_keys,
+)
 
 from webapp.dndbeyond_import import (
     import_character_from_dndbeyond,
     parse_character_id_from_url,
     prepare_imported_pc_dict,
+    download_ddb_character_portraits,
 )
 from .helpers.auth_utils import logged_in, user_role
 from .helpers.pvp import ensure_character_entity_loaded
@@ -38,7 +48,11 @@ from .helpers.character_builder_utils import (
     _save_character_images,
     _register_new_character_in_campaign,
     _persist_outward_appearance_for_entity,
+    collect_granted_languages,
+    filter_language_pool,
+    validate_background_language_selections,
 )
+from .helpers.character_builder_restrictions import load_character_builder_restrictions
 from .helpers.character_builder_levels import (
     BUILDER_MAX_LEVEL,
     asi_required,
@@ -59,6 +73,77 @@ from .helpers.journal_utils import (
 )
 
 character_bp = Blueprint('character', __name__)
+
+
+def _profile_edit_dict(pc: dict) -> dict:
+    return extract_profile(pc)
+
+
+def _apply_profile_form_to_pc(pc: dict, form) -> None:
+    merge_profile_into_mapping(pc, profile_from_form(form))
+
+
+def _sync_profile_entity_properties(entity, pc: dict) -> None:
+    if entity is None or not isinstance(getattr(entity, 'properties', None), dict):
+        return
+    for key in sync_profile_keys():
+        if key in pc:
+            entity.properties[key] = pc.get(key)
+        elif key in entity.properties:
+            entity.properties.pop(key, None)
+
+
+def _character_builder_view_context(*, edit_klass=None, **extra):
+    """Shared template context for builder/editor with campaign limits applied."""
+    game_session = get_game_session()
+    restrictions = load_character_builder_restrictions(game_session)
+    classes = restrictions.filter_classes(game_session.load_classes() or {})
+    if edit_klass and edit_klass not in classes:
+        full_classes = game_session.load_classes() or {}
+        if edit_klass in full_classes:
+            classes = dict(classes)
+            classes[edit_klass] = full_classes[edit_klass]
+
+    spell_availability = spell_availability_map(game_session, classes)
+    for slug in restrictions.blacklisted_spells:
+        spell_availability[slug] = False
+
+    ctx = {
+        'title': get_title(),
+        'races': game_session.load_races(),
+        'classes': classes,
+        'backgrounds': game_session.load_backgrounds(),
+        'equipment_packs': game_session.load_equipment_packs(),
+        'spell_availability': spell_availability,
+        'builder_restrictions': restrictions.to_client_dict(),
+        'builder_min_level': restrictions.min_level,
+        'builder_max_level': restrictions.max_level,
+        'alignment_options': ALIGNMENT_OPTIONS,
+    }
+    ctx.update(extra)
+    return ctx
+
+
+@character_bp.route('/character_builder/randomize_profile', methods=['POST'])
+def character_builder_randomize_profile():
+    """Roll PHB/DMG profile tables for character builder fields."""
+    if not logged_in():
+        return jsonify(error='Not logged in'), 401
+    payload = request.get_json(silent=True) or {}
+    background = (payload.get('background') or '').strip()
+    race = (payload.get('race') or '').strip()
+    races_def = get_game_session().load_races() or {}
+    race_def = races_def.get(race) if race else None
+    size = resolve_size({}, race_def)
+    profile = randomize_profile(
+        background=background,
+        race_def=race_def,
+        size=size,
+        include_personality=bool(payload.get('include_personality', True)),
+        include_physical=bool(payload.get('include_physical', True)),
+        include_alignment=bool(payload.get('include_alignment', True)),
+    )
+    return jsonify(profile=profile)
 
 
 @character_bp.route('/character_builder/prebuilt_images', methods=['GET'])
@@ -150,20 +235,10 @@ def character_builder():
         return redirect(url_for('auth.login'))
 
     try:
-        races = get_game_session().load_races()
-        classes = get_game_session().load_classes()
-        backgrounds = get_game_session().load_backgrounds()
-        equipment_packs = get_game_session().load_equipment_packs()
-        spell_availability = spell_availability_map(get_game_session(), classes)
-        return render_template('character_builder.html',
-                               title=get_title(),
-                               races=races,
-                               classes=classes,
-                               backgrounds=backgrounds,
-                               equipment_packs=equipment_packs,
-                               spell_availability=spell_availability,
-                               edit_mode=False,
-                               cancel_url='/')
+        return render_template(
+            'character_builder.html',
+            **_character_builder_view_context(edit_mode=False, cancel_url='/'),
+        )
     except Exception as e:
         get_logger().exception('Failed to load character builder')
         return jsonify(error='Failed to load character builder'), 500
@@ -227,22 +302,19 @@ def character_editor(character_name):
             'feats': list(pc.get('feats') or []),
             'inventory': list(pc.get('inventory') or []),
             'outward_appearance': pc.get('outward_appearance') or pc.get('appearance') or '',
+            **_profile_edit_dict(pc),
         }
 
         cancel_url = request.args.get('next') or '/'
-        spell_availability = spell_availability_map(get_game_session(), classes)
         return render_template(
             'character_builder.html',
-            title=get_title(),
-            races=races,
-            classes=classes,
-            backgrounds=backgrounds,
-            equipment_packs=equipment_packs,
-            spell_availability=spell_availability,
-            edit_mode=True,
-            edit_character=edit_character,
-            editing_character=character_name,
-            cancel_url=cancel_url,
+            **_character_builder_view_context(
+                edit_mode=True,
+                edit_character=edit_character,
+                editing_character=character_name,
+                cancel_url=cancel_url,
+                edit_klass=klass,
+            ),
         )
     except Exception:
         get_logger().exception('Failed to load character editor')
@@ -284,7 +356,25 @@ def update_character(character_name):
         if background_key and background_def is None:
             return jsonify(error='Unknown background selection'), 400
 
+        races_def = get_game_session().load_races() or {}
+        race_key = (pc.get('race') or '').strip()
+        subrace_key = (pc.get('subrace') or '').strip()
+        race_def = races_def.get(race_key) if race_key else None
+        subrace_def = {}
+        if race_def and subrace_key:
+            subrace_def = (race_def.get('subrace') or {}).get(subrace_key, {})
+
+        ok, bg_lang_error = validate_background_language_selections(
+            background_def,
+            background_language_selections,
+            race_def=race_def,
+            subrace_def=subrace_def,
+        )
+        if not ok:
+            return jsonify(error=bg_lang_error), 400
+
         classes_def = get_game_session().load_classes() or {}
+        restrictions = load_character_builder_restrictions()
         cdef = classes_def.get(klass, {}) or {}
         subclass_options = list_subclass_options(klass, cdef)
         if subclass_required(level) and subclass_options and not subclass_choice:
@@ -295,6 +385,17 @@ def update_character(character_name):
             ok, asi_error = validate_asi_boosts(asi_boosts)
             if not ok:
                 return jsonify(error=asi_error), 400
+
+        restriction_errors = restrictions.validate_selection(
+            klass=klass,
+            level=level,
+            cantrips=selected_cantrips,
+            spells_by_level=spells_by_level,
+            feats=selected_feats,
+            subclass=subclass_choice,
+        )
+        if restriction_errors:
+            return jsonify(error=restriction_errors[0]), 400
 
         class_skill_pool = set(cdef.get('available_skills') or [])
         existing_skills = list(pc.get('skills') or [])
@@ -312,6 +413,7 @@ def update_character(character_name):
             spells_by_level=spells_by_level,
             subclass_choice=subclass_choice,
             asi_boosts=asi_boosts,
+            restrictions=restrictions,
         )
 
         if non_class_skills:
@@ -332,6 +434,8 @@ def update_character(character_name):
         else:
             pc.pop('outward_appearance', None)
             pc.pop('appearance', None)
+
+        _apply_profile_form_to_pc(pc, request.form)
 
         if background_key and background_def:
             pc['background'] = background_key
@@ -395,14 +499,17 @@ def update_character(character_name):
 
         entity = get_current_game().get_entity_by_uid(entity_uid)
         if entity is not None and isinstance(getattr(entity, 'properties', None), dict):
-            for key in ('skills', 'prepared_spells', 'spellbook', 'feats', 'pronoun', 'outward_appearance', 'token_image', 'profile_image'):
+            for key in ('skills', 'prepared_spells', 'spellbook', 'feats', 'pronoun', 'token_image', 'profile_image'):
                 if key in pc:
                     entity.properties[key] = pc.get(key)
                 elif key in entity.properties:
                     entity.properties.pop(key, None)
-            if 'outward_appearance' not in pc:
+            if 'outward_appearance' in pc:
+                entity.properties['outward_appearance'] = pc.get('outward_appearance')
+            else:
                 entity.properties.pop('outward_appearance', None)
                 entity.properties.pop('appearance', None)
+            _sync_profile_entity_properties(entity, pc)
         # Refresh entity inventory if loaded in session
         if entity is not None and hasattr(entity, 'inventory') and 'inventory' in pc:
             try:
@@ -494,7 +601,7 @@ def import_dndbeyond_character():
     ), 400
 
   try:
-    pc, import_warnings = import_character_from_dndbeyond(
+    pc, import_warnings, raw_data = import_character_from_dndbeyond(
       character_id,
       cobalt_token=cobalt_token,
     )
@@ -514,6 +621,18 @@ def import_dndbeyond_character():
   pc, safe_name = prepare_imported_pc_dict(pc)
   if not pc.get('name'):
     return jsonify(error='Imported character has no name'), 400
+
+  entity_uid = str(pc.get('entity_uid') or safe_name)
+  assets_dir = os.path.join(get_game_session().root_path, 'assets')
+  os.makedirs(assets_dir, exist_ok=True)
+  import_warnings.extend(
+      download_ddb_character_portraits(
+          raw_data,
+          entity_uid=entity_uid,
+          assets_dir=assets_dir,
+          cobalt_token=cobalt_token,
+      )
+  )
 
   races_def = get_game_session().load_races() or {}
   if pc.get('race') and pc['race'] not in races_def:
@@ -546,10 +665,10 @@ def import_dndbeyond_character():
 
   _register_new_character_in_campaign(pc, safe_name)
 
+  next_url = '/character_selection' if 'dm' not in user_role() else '/'
   if get_builder_only_mode():
-    redirect_to = url_for('character.character_builder')
-  else:
-    redirect_to = '/character_selection' if 'dm' not in user_role() else '/'
+    next_url = url_for('character.character_builder')
+  redirect_to = url_for('character.character_editor', character_name=safe_name, next=next_url)
 
   return jsonify(
       status='ok',
@@ -572,10 +691,11 @@ def create_character():
         race = (request.form.get('race') or '').strip()
         subrace = (request.form.get('subrace') or '').strip()
         klass = (request.form.get('klass') or '').strip()
+        restrictions = load_character_builder_restrictions()
         try:
-            level = clamp_builder_level(request.form.get('level') or 1)
+            level = restrictions.clamp_level(request.form.get('level') or 1)
         except Exception:
-            level = 1
+            level = restrictions.min_level
 
         subclass_choice = (request.form.get('subclass') or '').strip()
         asi_boosts = _parse_json_dict_form(request.form, 'asi_boosts')
@@ -594,6 +714,23 @@ def create_character():
 
         if not name or not race or not klass:
             return jsonify(error='Name, race, and class are required'), 400
+
+        selected_skills = _parse_json_list_form(request.form, 'skills')
+        selected_cantrips = _parse_json_list_form(request.form, 'cantrips')
+        selected_level1 = _parse_json_list_form(request.form, 'level1_spells')
+        spells_by_level = _parse_spells_by_level_form(request.form, selected_level1)
+        selected_feats = _parse_json_list_form(request.form, 'feats')
+
+        restriction_errors = restrictions.validate_selection(
+            klass=klass,
+            level=level,
+            cantrips=selected_cantrips,
+            spells_by_level=spells_by_level,
+            feats=selected_feats,
+            subclass=subclass_choice,
+        )
+        if restriction_errors:
+            return jsonify(error=restriction_errors[0]), 400
 
         classes_def = get_game_session().load_classes() or {}
         cdef = classes_def.get(klass, {}) or {}
@@ -615,11 +752,6 @@ def create_character():
         if subrace:
             subrace_def = (race_def.get('subrace') or {}).get(subrace, {})
 
-        selected_skills = _parse_json_list_form(request.form, 'skills')
-        selected_cantrips = _parse_json_list_form(request.form, 'cantrips')
-        selected_level1 = _parse_json_list_form(request.form, 'level1_spells')
-        spells_by_level = _parse_spells_by_level_form(request.form, selected_level1)
-        selected_feats = _parse_json_list_form(request.form, 'feats')
         race_bonus_map = _parse_json_dict_form(request.form, 'race_ability_bonuses')
         race_skill_selections = _parse_json_list_form(request.form, 'race_skills')
         race_language_selections = _parse_json_list_form(request.form, 'race_languages')
@@ -673,7 +805,10 @@ def create_character():
         language_choice_cfg = subrace_def.get('language_choices') or race_def.get('language_choices') or {}
         if language_choice_cfg.get('count'):
             expected_language_count = int(language_choice_cfg['count'])
-            options = set(language_choice_cfg.get('options') or [])
+            granted_race_langs = collect_granted_languages(race_def, subrace_def)
+            options = set(filter_language_pool(
+                language_choice_cfg.get('options') or [], granted_race_langs
+            ))
             if len(race_language_selections) != expected_language_count:
                 plural = '' if expected_language_count == 1 else 's'
                 return jsonify(error=f'Choose {expected_language_count} bonus language{plural}.'), 400
@@ -706,6 +841,15 @@ def create_character():
             if lang_src:
                 base_languages.extend([str(l) for l in lang_src])
 
+        ok, bg_lang_error = validate_background_language_selections(
+            background_def,
+            background_language_selections,
+            race_def=race_def,
+            subrace_def=subrace_def,
+        )
+        if not ok:
+            return jsonify(error=bg_lang_error), 400
+
         # Build PC YAML compatible with existing templates
         # Basic defaults: level 1, hit_die inherit, simple equipment empty
         entity_uid = re.sub(r'[^a-zA-Z0-9_\-]', '_', name).lower()
@@ -730,6 +874,7 @@ def create_character():
             pc['pronoun'] = pronoun
         if outward_appearance:
             pc['outward_appearance'] = outward_appearance
+        _apply_profile_form_to_pc(pc, request.form)
         if subrace:
             pc['subrace'] = subrace
 
@@ -773,6 +918,7 @@ def create_character():
                 spells_by_level=spells_by_level,
                 subclass_choice=subclass_choice,
                 asi_boosts=asi_boosts,
+                restrictions=restrictions,
             )
 
             # Apply equipment pack if selected

@@ -92,15 +92,17 @@
           <div class="brightness-overlay" style="opacity: {{ tile['opacity'] }};"></div>
           {% if tile['objects'] %}
             {% for obj in tile['objects'] %}
-              {% if pov_entity and obj.get('quick_interact') %}
+              {% if pov_entity and obj.get('quick_interact') and (not tile.get('id') or tile.get('id') != pov_entity.entity_uid) %}
                 <div class="object-quick-interact-layer"
                      data-object-id="{{ obj['id'] }}"
+                     {% if obj.get('door_approach_anchors') %}data-door-approach="{{ obj['door_approach_anchors']|join(',') }}"{% endif %}
                      style="width: {{ tile_size_px }}px; height: {{ tile_size_px }}px;">
                   {% include '_object_quick_interact.html' %}
                 </div>
               {% endif %}
             {% endfor %}
           {% endif %}
+          {% include '_entity_quick_interact.html' %}
           {% if tile.get('id') and tile.get('entity') %}
             {% set jrpg_talkable = not tile.get('dead') and not tile.get('unconscious') and (not pov_entity or pov_entity.entity_uid != tile.id) %}
             {% set jrpg_dialog_entity = tile.get('dialog') or (viewer_is_dm and tile.get('is_npc')) %}
