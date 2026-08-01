@@ -24,6 +24,11 @@ from natural20.web.web_controller import WebController
 from natural20.dm import DungeonMaster
 from natural20.die_roll import DieRoll
 from natural20.utils.action_builder import acquire_targets
+from natural20.utils.target_validation import (
+    add_validation_issue,
+    issue as targeting_issue,
+    validation_response_payload,
+)
 
 from .helpers.auth_utils import logged_in, user_role
 from .helpers.pvp import autofill_pvp_battle_turn_order
@@ -38,6 +43,7 @@ from .helpers.template_globals import (
     entity_owners,
     controller_of,
     visible_log_messages_for_username,
+    reaction_template_for,
 )
 from .helpers.action_utils import action_type_to_class, resolve_requested_action_type, resolve_use_item_name
 from .helpers.action_bar import resolve_actions_for_id
@@ -258,6 +264,55 @@ def get_hiding_spots():
     hiding_spots = battle_map.hiding_spots_for(entity, battle)
     return jsonify(hiding_spots=hiding_spots)
 
+def _entity_target_preview(entity, target_entity, action_info, opts, battle_map, battle):
+    """Validate hover/click targets for entity-target actions (e.g. Bardic Inspiration)."""
+    try:
+        action_class = action_type_to_class(action_info)
+    except ValueError:
+        return None
+
+    resolved_action_type = resolve_requested_action_type(
+        entity,
+        get_game_session(),
+        battle,
+        battle_map,
+        action_class,
+        opts.get('action_type'),
+    )
+    try:
+        action_inst = action_class(get_game_session(), entity, resolved_action_type, opts)
+    except TypeError:
+        action_inst = action_class(get_game_session(), entity, resolved_action_type)
+    build_map = action_inst.build_map()
+    if not isinstance(build_map, dict):
+        return None
+    params = build_map.get('param') or []
+    if not params or params[0].get('type') != 'select_target':
+        return None
+
+    if hasattr(action_inst, 'validate'):
+        try:
+            action_inst.validate(battle_map, target_entity, battle=battle)
+        except TypeError:
+            try:
+                action_inst.validate(battle_map, target=target_entity, battle=battle)
+            except TypeError:
+                action_inst.validate(battle_map, target_entity)
+        if action_inst.validation_failed():
+            return {'valid_target': False, **validation_response_payload(action_inst)}
+
+    if battle is not None:
+        valid_targets = battle.valid_targets_for(entity, action_inst)
+        if target_entity not in valid_targets:
+            try:
+                holder = action_class(get_game_session(), entity, resolved_action_type, opts)
+            except TypeError:
+                holder = action_class(get_game_session(), entity, resolved_action_type)
+            add_validation_issue(holder, targeting_issue('validation.targeting.unavailable'))
+            return {'valid_target': False, **validation_response_payload(holder)}
+    return {'valid_target': True}
+
+
 @battle_bp.route('/target', methods=['GET'])
 def get_target():
    
@@ -289,6 +344,18 @@ def get_target():
         if battle:
             valid_targets = battle.valid_targets_for(entity, action)
             valid_target = target_entity in valid_targets
+        if not valid_target:
+            invalid = targeting_issue('validation.targeting.not_enemy').to_dict()
+            return jsonify(
+                valid_target=False,
+                adv_mod=adv_mod,
+                adv_info=adv_info,
+                attack_mod=attack_mod,
+                errors=[invalid['key']],
+                error_details=[invalid],
+                error_messages=[invalid['message']],
+                primary_error=invalid['message'],
+            )
         return jsonify(valid_target=valid_target, adv_mod=adv_mod, adv_info=adv_info, attack_mod=attack_mod)
 
     elif entity and (target_entity or target_position) and action_info =='SpellAction':
@@ -371,14 +438,18 @@ def get_target():
             return jsonify(valid_target=valid_target, target_squares=target_squares, adv_mod=adv_mod, adv_info=adv_info, attack_mod=attack_mod)
         else:
             validate_target = target_entity if target_entity is not None else [x, y]
-            action.validate(battle_map, validate_target)
-            if len(action.errors)  > 0:
-                return jsonify(valid_target=False, errors=action.errors)
+            action.validate(battle_map, validate_target, battle=battle)
+            if action.validation_failed():
+                return jsonify(valid_target=False, target_squares=target_squares, **validation_response_payload(action))
             return jsonify(valid_target=True, target_squares=target_squares, errors=action.errors)
     elif entity and target_entity and action_info == 'UseItemAction':
         action = UseItemAction(get_game_session(), entity, 'use_item')
         valid_target = True
         return jsonify(valid_target=valid_target, adv_info=[[],[]], attack_mod=0)
+    elif entity and target_entity:
+        preview = _entity_target_preview(entity, target_entity, action_info, opts, battle_map, battle)
+        if preview is not None:
+            return jsonify(**preview)
     else:
         success_rate = None
 
@@ -411,7 +482,7 @@ def get_spell():
 def get_reaction():
     battle = get_current_game().get_current_battle()
     reaction_type = get_current_game().waiting_for_reaction_input()[1].reaction_type
-    return render_template(f"reactions/{reaction_type}.html",
+    return render_template(reaction_template_for(reaction_type),
                            username=session['username'],
                            waiting_for_reaction=get_current_game().waiting_for_reaction,
                            battle=battle)
@@ -1025,7 +1096,7 @@ def action():
                                 if isinstance(failed_action, Action):
                                     failed_action.validate(battle_map)
                                     if len(failed_action.errors) > 0:
-                                        return jsonify(status='error', errors=failed_action.errors)
+                                        return jsonify(status='error', **validation_response_payload(failed_action))
                                     get_current_game().commit_and_update(
                                         session['username'], failed_action, pov_entities,
                                     )
@@ -1088,13 +1159,21 @@ def action():
 
             action.validate(battle_map, target=target)
            
-            if len(action.errors) > 0:
-                return jsonify(status='error', errors=action.errors)
+            if action.validation_failed():
+                return jsonify(status='error', **validation_response_payload(action))
 
             result = get_current_game().commit_and_update(session['username'], action, pov_entities)
             if isinstance(result, dict) and result.get('status') == 'bardic_inspiration_prompt':
                 return jsonify(result)
-            return jsonify(status='ok')
+            response = {'status': 'ok'}
+            if getattr(action, 'action_type', None) == 'look':
+                from natural20.battle import _look_perception_roll_payload
+                perception_roll, perception_roll_label = _look_perception_roll_payload(action)
+                if perception_roll is not None:
+                    response['perception_roll'] = perception_roll
+                if perception_roll_label:
+                    response['perception_roll_label'] = perception_roll_label
+            return jsonify(response)
         return jsonify(action_info)
     except BardicInspirationPrompt as e:
         get_logger().info("BardicInspirationPrompt during action: %s", e)

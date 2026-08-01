@@ -53,6 +53,7 @@ from webapp.blueprints.helpers.template_globals import (
     entities_controlled_by,
     entity_owners,
     register_template_globals,
+    reaction_template_for,
 )
 from webapp.blueprints.helpers.object_spawner_utils import (
     SPAWNER_CATEGORIES,
@@ -3822,7 +3823,7 @@ def get_reaction():
     global current_game
     battle = current_game.get_current_battle()
     reaction_type = current_game.waiting_for_reaction_input()[1].reaction_type
-    return render_template(f"reactions/{reaction_type}.html",
+    return render_template(reaction_template_for(reaction_type),
                            username=session['username'],
                            waiting_for_reaction=current_game.waiting_for_reaction,
                            battle=battle)
@@ -4410,7 +4411,15 @@ def action():
                 return jsonify(status='error', errors=action.errors)
 
             current_game.commit_and_update(session['username'], action, pov_entities)
-            return jsonify(status='ok')
+            response = {'status': 'ok'}
+            if getattr(action, 'action_type', None) == 'look':
+                from natural20.battle import _look_perception_roll_payload
+                perception_roll, perception_roll_label = _look_perception_roll_payload(action)
+                if perception_roll is not None:
+                    response['perception_roll'] = perception_roll
+                if perception_roll_label:
+                    response['perception_roll_label'] = perception_roll_label
+            return jsonify(response)
         return jsonify(action_info)
     except AsyncReactionHandler as e:
         logger.info(f"AsyncReactionHandler during action: {e}")

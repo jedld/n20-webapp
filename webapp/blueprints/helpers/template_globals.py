@@ -323,6 +323,21 @@ def describe_terrain(tile):
 # Registration helper — call once from app.py or each blueprint
 # ---------------------------------------------------------------------------
 
+def reaction_template_for(reaction_type):
+    """Resolve a reaction partial template, falling back to generic."""
+    from jinja2 import TemplateNotFound
+
+    if not reaction_type:
+        return 'reactions/generic.html'
+    candidate = f'reactions/{reaction_type}.html'
+    try:
+        from flask import current_app
+        current_app.jinja_env.get_template(candidate)
+        return candidate
+    except (TemplateNotFound, Exception):
+        return 'reactions/generic.html'
+
+
 def format_outward_appearance(entity):
     from natural20.utils.outward_appearance import (
         explicit_outward_appearance,
@@ -367,6 +382,7 @@ def register_template_globals(flask_app):
     flask_app.add_template_global(t, name='t')
     flask_app.add_template_global(describe_terrain, name='describe_terrain')
     flask_app.add_template_global(process_action_hash, name='process_action_hash')
+    flask_app.add_template_global(reaction_template_for, name='reaction_template_for')
 
     from webapp.blueprints.helpers.campaign_config import character_description_suppressed_for, highlight_doors_enabled
 

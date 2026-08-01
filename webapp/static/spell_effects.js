@@ -4029,6 +4029,67 @@
     });
   });
 
+  // Look / Perception: outward sight wave scanning from the observer.
+  register('look', function(payload){
+    return new Promise((resolve)=>{
+      const src = payload && payload.source ? centerOfEntity(payload.source) : null;
+      if (!src) return resolve();
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const radius = Math.max(tileSize * 4.5, tileSize * 8);
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const start = performance.now();
+      const dur = 980;
+      requestAnimationFrame(function pulse(now){
+        const t = Math.min(1, (now - start) / dur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (let wave = 0; wave < 3; wave++) {
+          const waveT = Math.min(1, Math.max(0, t * 1.15 - wave * 0.22));
+          if (waveT <= 0) continue;
+          const waveR = radius * (0.25 + 0.85 * waveT);
+          const alpha = (0.42 - wave * 0.08) * (1 - waveT);
+          const grad = ctx.createRadialGradient(src.x, src.y, waveR * 0.08, src.x, src.y, waveR);
+          grad.addColorStop(0, `rgba(255, 230, 150, ${(alpha * 0.35).toFixed(2)})`);
+          grad.addColorStop(0.45, `rgba(120, 200, 255, ${(alpha * 0.55).toFixed(2)})`);
+          grad.addColorStop(1, 'rgba(80, 160, 220, 0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(src.x, src.y, waveR, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = `rgba(255, 245, 200, ${(alpha * 1.4).toFixed(2)})`;
+          ctx.lineWidth = 2 - wave * 0.35;
+          ctx.beginPath();
+          ctx.arc(src.x, src.y, waveR * 0.9, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        const rays = 8;
+        for (let i = 0; i < rays; i++) {
+          const ang = (i / rays) * Math.PI * 2 + t * 0.5;
+          const len = radius * (0.15 + 0.75 * t);
+          ctx.strokeStyle = `rgba(200, 235, 255, ${(0.35 * (1 - t)).toFixed(2)})`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(src.x, src.y);
+          ctx.lineTo(src.x + Math.cos(ang) * len, src.y + Math.sin(ang) * len);
+          ctx.stroke();
+        }
+        const glintR = 6 + 4 * Math.sin(now * 0.02);
+        const glint = ctx.createRadialGradient(src.x, src.y, 0, src.x, src.y, glintR);
+        glint.addColorStop(0, `rgba(255, 255, 220, ${(0.7 * (1 - t * 0.5)).toFixed(2)})`);
+        glint.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = glint;
+        ctx.beginPath();
+        ctx.arc(src.x, src.y, glintR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(pulse);
+        else { destroy(); resolve(); }
+      });
+    });
+  });
+  register('perception', function(payload){ return play('look', payload); });
+
   // Expose API
   global.SpellEffects = { register, play };
 })(window);

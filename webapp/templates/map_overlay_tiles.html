@@ -103,6 +103,7 @@
             {% endfor %}
           {% endif %}
           {% include '_entity_quick_interact.html' %}
+          {% include '_pov_self_quick_interact.html' %}
           {% if tile.get('id') and tile.get('entity') %}
             {% set jrpg_talkable = not tile.get('dead') and not tile.get('unconscious') and (not pov_entity or pov_entity.entity_uid != tile.id) %}
             {% set jrpg_dialog_entity = tile.get('dialog') or (viewer_is_dm and tile.get('is_npc')) %}

@@ -1077,6 +1077,34 @@ input.initiative-input.form-control {
   z-index: 99;
 }
 
+.target-validation-hint {
+  display: none;
+  position: fixed;
+  left: 50%;
+  bottom: 120px;
+  transform: translateX(-50%);
+  max-width: min(90vw, 520px);
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: rgba(40, 20, 0, 0.92);
+  border: 1px solid #ffb74d;
+  color: #ffb74d;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  z-index: 1200;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.target-validation-hint.is-visible {
+  display: block;
+}
+
+#coords-box .target-invalid-reason {
+  margin-top: 6px;
+  font-weight: 600;
+}
 
 
 /* Adjustments for Smaller Screens */
@@ -2132,10 +2160,40 @@ body.highlight-doors .tile.tile-door-highlight {
 .tile:hover .object-quick-actions.hover-only,
 .object-container:hover .object-quick-actions.hover-only,
 .object-quick-interact-layer:hover .object-quick-actions.hover-only,
+.pov-self-quick-interact-layer:hover .object-quick-actions.hover-only,
+.tile:hover .pov-self-quick-interact-layer .object-quick-actions.hover-only,
 .object-quick-actions.hover-only:hover,
 .object-quick-actions.hover-only:focus-within {
   opacity: 1;
   visibility: visible;
+}
+
+.pov-self-quick-interact-layer.is-suppressed,
+.pov-self-quick-interact-layer.is-suppressed .object-quick-actions,
+.tile:hover .pov-self-quick-interact-layer.is-suppressed .object-quick-actions.hover-only {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.pov-self-quick-interact-layer .object-quick-actions {
+  z-index: calc(var(--tile-interact-z, 1125) + 4);
+}
+
+.pov-self-quick-interact-layer .object-quick-action--labeled {
+  max-width: 140px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.pov-self-quick-interact-layer .object-quick-action-icon {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.pov-self-quick-interact-layer .object-quick-action {
+  background-color: rgba(34, 34, 34, 0.82);
 }
 
 .object-quick-action {
@@ -2426,6 +2484,112 @@ body.dialog-manual-mode-active #dialogChatInput::placeholder {
 
 .map-toast-text {
   display: inline;
+}
+
+.map-toast.perception-check-toast {
+  background: rgba(24, 36, 52, 0.94);
+  border: 1px solid rgba(140, 210, 255, 0.45);
+  color: #eef8ff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.map-toast.perception-check-toast .map-toast-text {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Floating damage numbers on map tiles */
+.floating-combat-number-anchor {
+  pointer-events: none;
+}
+
+.floating-combat-number.damage-number,
+.damage-number {
+  font-weight: 800;
+  font-size: 18px;
+  line-height: 1;
+  color: #ff6b4a;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 8px rgba(255, 80, 40, 0.35);
+  white-space: nowrap;
+  animation: damage-float 1.2s ease-out forwards;
+  font-variant-numeric: tabular-nums;
+}
+
+.floating-combat-number.is-hit-roll {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
+  color: #f4f8ff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  white-space: nowrap;
+  animation: hit-roll-float 1s ease-out forwards;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.95;
+}
+
+.floating-combat-number.damage-number.is-critical,
+.damage-number.is-critical {
+  font-size: 26px;
+  color: #ff2e2e;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.95), 0 0 12px rgba(255, 40, 40, 0.55);
+}
+
+.floating-combat-number.damage-number.is-half,
+.damage-number.is-half {
+  font-size: 15px;
+  color: #ffc285;
+  opacity: 0.92;
+}
+
+.floating-combat-number.dtype-fire,
+.damage-number.dtype-fire { color: #ff8a45; }
+.floating-combat-number.dtype-cold,
+.damage-number.dtype-cold { color: #7fd4ff; }
+.floating-combat-number.dtype-lightning,
+.damage-number.dtype-lightning { color: #f0e68c; }
+.floating-combat-number.dtype-thunder,
+.damage-number.dtype-thunder { color: #c8b6ff; }
+.floating-combat-number.dtype-poison,
+.damage-number.dtype-poison { color: #7ddf7a; }
+.floating-combat-number.dtype-acid,
+.damage-number.dtype-acid { color: #b8ff66; }
+.floating-combat-number.dtype-necrotic,
+.damage-number.dtype-necrotic { color: #b58cff; }
+.floating-combat-number.dtype-radiant,
+.damage-number.dtype-radiant { color: #fff3a8; }
+.floating-combat-number.dtype-psychic,
+.damage-number.dtype-psychic { color: #ff8fd8; }
+.floating-combat-number.dtype-force,
+.damage-number.dtype-force { color: #d8e8ff; }
+
+@keyframes hit-roll-float {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.7);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-28px) scale(0.95);
+  }
+}
+
+@keyframes damage-float {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.55);
+  }
+  18% {
+    opacity: 1;
+    transform: translateY(-10px) scale(1.12);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-36px) scale(1);
+  }
 }
 
 /* Flying Entity Animation */

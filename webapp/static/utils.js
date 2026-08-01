@@ -103,6 +103,7 @@ const Utils = {
           Utils.ensurePopoverMenusOnTop();
           // Restore map toasts after full refresh
           try { if (Utils.restoreAllToasts) Utils.restoreAllToasts(_activeToasts); } catch (e) { console.warn('Failed to restore map toasts after full refresh', e); }
+          try { if (typeof applyPovPerceptionQuickActionVisibility === 'function') applyPovPerceptionQuickActionVisibility(); } catch (_) { }
         } else {
           console.log('Ignoring out-of-order tile update (full): ' + currentSequence + ' < ' + window.lastAppliedSequence);
         }
@@ -125,6 +126,7 @@ const Utils = {
       if ($newContent.find('[data-stack-id]').length) {
         $('.tiles-container').html(data);
         window.lastAppliedSequence = currentSequence;
+        try { if (typeof applyPovPerceptionQuickActionVisibility === 'function') applyPovPerceptionQuickActionVisibility(); } catch (_) { }
         if (callback) callback();
         Utils.reloadEditOverlayIfNeeded();
         return;
@@ -203,6 +205,7 @@ const Utils = {
         }
         // For safety, if optimized path caused a full container update elsewhere, attempt toast restore too
         try { if (Utils.restoreAllToasts) Utils.restoreAllToasts(_activeToasts, true /*skipExisting*/); } catch (e) { }
+        try { if (typeof applyPovPerceptionQuickActionVisibility === 'function') applyPovPerceptionQuickActionVisibility(); } catch (_) { }
       } else {
         console.log('Ignoring out-of-order tile update (optimized): ' + currentSequence + ' < ' + window.lastAppliedSequence);
       }

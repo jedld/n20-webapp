@@ -741,7 +741,7 @@
                     <form id="reaction-form"  method="post" action="/reaction" class="form-horizontal" role="form" style="margin-top: 20px;" data-remote="true">
                         <div class="reaction-content">
                             {% if waiting_for_reaction %}
-                                {% include "reactions/" ~ waiting_for_reaction[1].reaction_type ~ ".html" %}
+                                {% include reaction_template_for(waiting_for_reaction[1].reaction_type) %}
                             {% endif %}
                         </div>
                         
@@ -1176,6 +1176,7 @@
             &nbsp;&middot;&nbsp; <kbd>Esc</kbd> cancel
           </span>
         </div>
+        <div id="target-validation-hint" class="target-validation-hint" role="status" aria-live="polite"></div>
         <div id="centerActionBar" class="center-action-bar" style="display: none;">
           <div class="center-action-bar-panel actions-container" role="region" aria-labelledby="centerActionBarTitle">
             <div class="center-action-bar-header">

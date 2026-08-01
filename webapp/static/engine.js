@@ -107,11 +107,81 @@ let moveRequestTimeouts = new Map(); // entityId -> timeoutId for cleanup
 // Mode & State Variables (global scope for access by functions)
 let valid_target_cache = {};
 
+function extractTargetValidation(data) {
+  if (!data || typeof data !== 'object') {
+    return { valid: true, primary_error: null, error_messages: [] };
+  }
+  const hasValidityFlag = Object.prototype.hasOwnProperty.call(data, 'valid_target');
+  const valid = hasValidityFlag ? data.valid_target !== false : true;
+  let primary_error = null;
+  if (!valid) {
+    primary_error = data.primary_error
+      || (data.error_messages && data.error_messages.length ? data.error_messages[0] : null)
+      || (data.errors && data.errors.length ? data.errors[0] : null);
+  }
+  return {
+    valid,
+    primary_error,
+    error_messages: data.error_messages || [],
+  };
+}
+
+function cacheTargetValidation(cacheKey, validation) {
+  valid_target_cache[cacheKey] = validation;
+}
+
+function getCachedTargetValidation(cacheKey) {
+  return Object.prototype.hasOwnProperty.call(valid_target_cache, cacheKey)
+    ? valid_target_cache[cacheKey]
+    : null;
+}
+
+function showTargetValidationHint(message) {
+  const $hint = $('#target-validation-hint');
+  if (!$hint.length) {
+    return;
+  }
+  if (message) {
+    $hint.text(message).addClass('is-visible');
+  } else {
+    $hint.removeClass('is-visible').text('');
+  }
+}
+
+function hideTargetValidationHint() {
+  showTargetValidationHint(null);
+}
+
+function formatTargetInvalidTooltip(reason) {
+  if (!reason) {
+    return '';
+  }
+  const escaped = $('<div>').text(reason).html();
+  return `<p class="target-invalid-reason"><span style="color: #ffb74d;">${escaped}</span></p>`;
+}
+
+function updateCoordsBox(showX, showY, tooltip) {
+  $("#coords-box").html(`<p>X: ${showX}</p><p>Y: ${showY}</p>${tooltip || ''}`);
+}
+
+function blockInvalidTargetClick(cacheKey, e) {
+  const cached = getCachedTargetValidation(cacheKey);
+  if (cached && cached.valid === false) {
+    showTargetValidationHint(cached.primary_error || 'Invalid target');
+    if (e) {
+      e.stopPropagation();
+    }
+    return true;
+  }
+  return false;
+}
+
 function exitTargetMode() {
   targetMode = false;
   coneMode = false;
   aoePointTargetMode = false;
   valid_target_cache = {};
+  hideTargetValidationHint();
   setStackTargetPointerEvents(false);
   document.body.classList.remove('aoe-point-targeting');
   if (globalCtx && globalCanvas) {
@@ -619,6 +689,7 @@ function runTeleporterApproach(povUid, tileX, tileY) {
         path,
       },
       (moveData) => {
+        noteMoveActionCompleted(povUid, moveData);
         if (moveData && moveData.status === 'ok') {
           finish();
           return;
@@ -682,8 +753,13 @@ function activateObjectQuickAction(btn) {
     }
     return;
   }
-  const objectUid = $btn.attr('data-object-id') || $btn.data('objectId');
   const objectAction = $btn.attr('data-object-action') || $btn.data('objectAction');
+  const quickKind = $btn.attr('data-quick-kind') || $btn.data('quickKind');
+  if (objectAction === 'perception_check' || quickKind === 'pov_perception') {
+    runPovPerceptionQuickAction(povUid);
+    return;
+  }
+  const objectUid = $btn.attr('data-object-id') || $btn.data('objectId');
   const needsApproach = String($btn.attr('data-needs-approach') ?? $btn.data('needsApproach')) === '1';
   const $tile = $btn.closest('.tile');
   const pathCoords = resolveStackPathCoords($tile);
@@ -717,6 +793,81 @@ function handleObjectQuickActionActivate(event) {
 }
 
 document.addEventListener('click', handleObjectQuickActionActivate, true);
+
+let povPerceptionQuickActionSuppressedFor = null;
+
+function applyPovPerceptionQuickActionVisibility() {
+  $('.pov-self-quick-interact-layer').each(function () {
+    const $layer = $(this);
+    const objectId = $layer.attr('data-object-id');
+    const suppress = povPerceptionQuickActionSuppressedFor
+      && objectId === povPerceptionQuickActionSuppressedFor;
+    $layer.toggleClass('is-suppressed', !!suppress);
+  });
+}
+
+function suppressPovPerceptionQuickAction(entityUid) {
+  if (!entityUid) {
+    return;
+  }
+  povPerceptionQuickActionSuppressedFor = entityUid;
+  applyPovPerceptionQuickActionVisibility();
+}
+
+function restorePovPerceptionQuickAction(entityUid) {
+  if (!entityUid || povPerceptionQuickActionSuppressedFor === entityUid) {
+    povPerceptionQuickActionSuppressedFor = null;
+    applyPovPerceptionQuickActionVisibility();
+  }
+}
+
+function noteMoveActionCompleted(entityUid, data) {
+  if (entityUid && data && data.status === 'ok') {
+    restorePovPerceptionQuickAction(entityUid);
+  }
+}
+
+function runPovPerceptionQuickAction(povUid) {
+  if (!povUid || isInteractionLocked()) {
+    return;
+  }
+  if (typeof perceptionCheckProcessing !== 'undefined' && perceptionCheckProcessing) {
+    return;
+  }
+
+  suppressPovPerceptionQuickAction(povUid);
+
+  const finishWithNarrative = () => {
+    if (typeof window.sendDialogPerceptionCheck === 'function') {
+      window.sendDialogPerceptionCheck({ targetId: povUid });
+      return;
+    }
+    if (typeof Utils !== 'undefined' && Utils.showToast) {
+      Utils.showToast('Perception check unavailable.');
+    }
+  };
+
+  ajaxPost(
+    '/action',
+    { id: povUid, action: 'LookAction', opts: { action_type: 'look' } },
+    (data) => {
+      if (data && data.status === 'error') {
+        finishWithNarrative();
+        return;
+      }
+      if (data && data.status === 'ok' && data.perception_roll != null && typeof playPerceptionCheckFeedback === 'function') {
+        playPerceptionCheckFeedback(povUid, data.perception_roll, data.perception_roll_label);
+      }
+      if (typeof continueActionFromResponse === 'function') {
+        continueActionFromResponse(povUid, 'LookAction', { action_type: 'look' }, null, null, data);
+      }
+      if (typeof refreshTurn === 'function') {
+        refreshTurn();
+      }
+    },
+    true,
+  );
+}
 
 function runObjectQuickInteract(povUid, objectUid, objectAction, needsApproach, tileX, tileY, btn) {
   if (!povUid || !objectUid || !objectAction || objectQuickInteractInFlight) {
@@ -758,6 +909,7 @@ function runObjectQuickInteract(povUid, objectUid, objectAction, needsApproach, 
         path,
       },
       (moveData) => {
+        noteMoveActionCompleted(povUid, moveData);
         if (moveData && moveData.status === 'ok') {
           executeInteract();
           return;
@@ -820,6 +972,7 @@ function runTalkWithApproach(povUid, npcUid, npcName, options) {
         path,
       },
       (moveData) => {
+        noteMoveActionCompleted(povUid, moveData);
         if (moveData && moveData.status === 'ok') {
           openDialog();
           finish();
@@ -2347,6 +2500,7 @@ class EventQueue {
     // Track originals hidden during movement so we only restore them after
     // a server tile refresh confirms final positions.
     const hiddenOriginals = new Map(); // entity_uid -> jQuery element
+    const movedEntities = new Set();
     // Track entities whose tiles are missing to avoid repeated retries and warnings
     const missingEntities = new Set();
     const warnedMissingEntities = new Set();
@@ -2462,6 +2616,7 @@ class EventQueue {
     const animateFunction = (animationLog, idx) => {
       if (idx >= animationLog.length) {
         console.log('Animation sequence complete, refreshing tile set');
+        movedEntities.forEach((entityUid) => restorePovPerceptionQuickAction(entityUid));
         try {
           // Keep movement sprites visible at destination until tile refresh
           // finishes so the token does not vanish during a slow /update.
@@ -2510,6 +2665,11 @@ class EventQueue {
             );
           } catch (e) { console.warn('Inline contextual_sound failed', e, entry); }
           animateFunction(animationLog, idx + 1);
+        } else if (t === 'damage_number') {
+          try {
+            showDamageNumber(entry);
+          } catch (e) { console.warn('Inline damage_number failed', e, entry); }
+          animateFunction(animationLog, idx + 1);
         } else {
           // Unknown inline event; skip
           console.warn('Skipping unknown inline animation entry:', t);
@@ -2518,6 +2678,7 @@ class EventQueue {
         return;
       }
       const [entity_uid, path, action] = entry;
+      movedEntities.add(entity_uid);
 
       // Record the last intended position for this entry so we can request a targeted refresh if needed
       if (Array.isArray(path) && path.length > 0) {
@@ -2840,6 +3001,7 @@ class EventQueue {
     try {
       const msg = data && data.message ? data.message : data;
       const spellKey = (msg && (msg.spell || msg.label)) || '';
+      const spellKeyNorm = String(spellKey || '').toLowerCase().replace(/\s+/g, '_');
       const refreshAfter = (cb) => {
         try {
           // Targeted refresh for source and all targets to update effect icons and concentration
@@ -2862,13 +3024,23 @@ class EventQueue {
           try { Utils.refreshTileSet(false, false, 0, 0, null, () => { try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { } if (typeof cb === 'function') cb(); }); } catch (_) { if (typeof cb === 'function') cb(); }
         }
       };
+      if ((spellKeyNorm === 'look' || spellKeyNorm === 'perception') && msg && msg.source) {
+        playPerceptionCheckFeedback(msg.source, msg.perception_roll, msg.perception_roll_label)
+          .then(() => refreshAfter(resolve))
+          .catch(() => refreshAfter(resolve));
+        return;
+      }
+      const finishSpell = () => {
+        try { playDamageEvents(msg && msg.damage_events); } catch (_) { }
+        refreshAfter(resolve);
+      };
       if (window.SpellEffects && typeof window.SpellEffects.play === 'function') {
-        window.SpellEffects.play(spellKey, msg).then(() => { refreshAfter(resolve); }).catch(() => { refreshAfter(resolve); });
+        window.SpellEffects.play(spellKey, msg).then(() => { finishSpell(); }).catch(() => { finishSpell(); });
         return;
       }
       // Fallback: log only if SpellEffects registry isn’t loaded
       console.log('Casting spell (no SpellEffects registry found):', msg);
-      try { refreshAfter(resolve); } catch (e) { resolve(); }
+      try { finishSpell(); } catch (e) { resolve(); }
     } catch (e) {
       console.warn('processSpellEvent failed', e);
       try { Utils.refreshTileSet(false, false, 0, 0, null, () => { try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { } try { resolve(); } catch (_) { } }); } catch (_) { try { resolve(); } catch (__) { } }
@@ -2880,12 +3052,17 @@ class EventQueue {
   processAttackEvent(data, resolve) {
     try {
       const msg = data && data.message ? data.message : data;
+      const finishAttack = () => {
+        try { playDamageEvents(msg && msg.damage_events); } catch (_) { }
+        try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { }
+        resolve();
+      };
       if (window.SpellEffects && typeof window.SpellEffects.play === 'function') {
-        window.SpellEffects.play('attack', msg).then(() => { try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { } resolve(); }).catch(() => { try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { } resolve(); });
+        window.SpellEffects.play('attack', msg).then(() => { finishAttack(); }).catch(() => { finishAttack(); });
         return;
       }
       console.log('Attack animation (no SpellEffects registry found):', msg);
-      resolve();
+      finishAttack();
     } catch (e) {
       console.warn('processAttackEvent failed', e);
       try { resolve(); } catch (_) { }
@@ -3006,6 +3183,191 @@ function enqueueTileRefresh(opts = {}) {
 }
 
 // Helper: show an on-map "toaster" message near a tile coordinate or an entity id
+function isDmUser() {
+  return ($('body').attr('data-role') || '').indexOf('dm') >= 0;
+}
+
+function isDamageTargetVisibleToPov(targetUid, position) {
+  if (isDmUser()) {
+    return true;
+  }
+  let $tile = $();
+  if (targetUid) {
+    $tile = $(`.tile[data-coords-id="${targetUid}"]`);
+  }
+  if ((!$tile || !$tile.length) && Array.isArray(position) && position.length >= 2) {
+    $tile = $(`.tile[data-coords-x="${position[0]}"][data-coords-y="${position[1]}"]`);
+  }
+  if (!$tile || !$tile.length) {
+    return false;
+  }
+  return $tile.find('.fog-of-war').length === 0;
+}
+
+function damageNumberLabel(event) {
+  const amount = event && event.amount;
+  if (amount == null) {
+    return '';
+  }
+  const suffix = event.critical ? '!' : '';
+  return `-${amount}${suffix}`;
+}
+
+function mountFloatingCombatNumber(event, options = {}) {
+  const kind = options.kind || 'damage';
+  const value = options.value;
+  if (value == null || value === '') {
+    return;
+  }
+
+  const mountAtTile = ($tile) => {
+    const anchor = getTileAnchorInFxLayer($tile);
+    if (!anchor) {
+      return;
+    }
+    const $layer = ensureMapFxLayer();
+    const $anchor = $('<div class="floating-combat-number-anchor"></div>').css({
+      position: 'absolute',
+      left: `${anchor.left}px`,
+      top: `${anchor.top}px`,
+      transform: 'translate(-50%, -50%)',
+      zIndex: kind === 'hit' ? 2101 : 2102,
+    });
+    const $num = $('<div class="floating-combat-number"></div>');
+    if (kind === 'hit') {
+      $num.addClass('is-hit-roll');
+    } else {
+      $num.addClass('damage-number');
+      if (event.critical) {
+        $num.addClass('is-critical');
+      }
+      if (event.half) {
+        $num.addClass('is-half');
+      }
+      if (event.damage_type) {
+        $num.addClass(`dtype-${String(event.damage_type).toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}`);
+      }
+    }
+    $num.text(String(value));
+    $anchor.append($num);
+    $layer.append($anchor);
+    setTimeout(() => {
+      try { $anchor.remove(); } catch (_) { }
+    }, options.durationMs || 1400);
+  };
+
+  const resolveTile = () => {
+    if (event.target) {
+      const $byEntity = $(`.tile[data-coords-id="${event.target}"]`);
+      if ($byEntity.length) {
+        return $byEntity;
+      }
+    }
+    if (Array.isArray(event.position) && event.position.length >= 2) {
+      const $byPos = $(`.tile[data-coords-x="${event.position[0]}"][data-coords-y="${event.position[1]}"]`);
+      if ($byPos.length) {
+        return $byPos;
+      }
+    }
+    return $();
+  };
+
+  const attemptMount = (attemptsLeft = 8) => {
+    const $tile = resolveTile();
+    if ($tile && $tile.length) {
+      mountAtTile($tile);
+      return;
+    }
+    if (attemptsLeft <= 0) {
+      return;
+    }
+    try {
+      if (event.target) {
+        enqueueTileRefresh({ is_setup: false, pov: true, x: 0, y: 0, entity_uid: event.target });
+      } else if (Array.isArray(event.position) && event.position.length >= 2) {
+        enqueueTileRefresh({
+          is_setup: false,
+          pov: true,
+          x: event.position[0],
+          y: event.position[1],
+        });
+      }
+    } catch (_) { }
+    setTimeout(() => attemptMount(attemptsLeft - 1), 120);
+  };
+
+  attemptMount();
+}
+
+function showDamageNumber(event) {
+  if (!event || event.amount == null || event.amount <= 0) {
+    return;
+  }
+  if (!isDamageTargetVisibleToPov(event.target, event.position)) {
+    return;
+  }
+
+  if (event.attack_roll_total != null) {
+    mountFloatingCombatNumber(event, { kind: 'hit', value: event.attack_roll_total, durationMs: 1100 });
+    setTimeout(() => {
+      mountFloatingCombatNumber(event, {
+        kind: 'damage',
+        value: damageNumberLabel(event),
+        durationMs: 1400,
+      });
+    }, 120);
+    return;
+  }
+
+  mountFloatingCombatNumber(event, { kind: 'damage', value: damageNumberLabel(event), durationMs: 1400 });
+}
+
+function playDamageEvents(damageEvents, staggerMs = 110) {
+  if (!Array.isArray(damageEvents) || !damageEvents.length) {
+    return;
+  }
+  damageEvents.forEach((evt, idx) => {
+    setTimeout(() => showDamageNumber(evt), idx * staggerMs);
+  });
+}
+window.playDamageEvents = playDamageEvents;
+
+function showPerceptionRollToast(entityUid, rollTotal, rollLabel) {
+  if (rollTotal == null && !rollLabel) {
+    return;
+  }
+  const text = rollLabel ? String(rollLabel) : `Perception ${rollTotal}`;
+  showMapToast(text, null, entityUid, 3800, {
+    className: 'map-toast perception-check-toast',
+    prefix: '👁',
+  });
+}
+
+function playPerceptionCheckFeedback(entityUid, rollTotal, rollLabel) {
+  if (!entityUid) {
+    return Promise.resolve();
+  }
+  const key = `${entityUid}:${rollTotal == null ? '' : rollTotal}:${rollLabel || ''}`;
+  const now = Date.now();
+  if (window.__n20_lastPerceptionFeedbackKey === key && now - (window.__n20_lastPerceptionFeedbackAt || 0) < 800) {
+    return Promise.resolve();
+  }
+  window.__n20_lastPerceptionFeedbackKey = key;
+  window.__n20_lastPerceptionFeedbackAt = now;
+  const payload = {
+    source: entityUid,
+    spell: 'look',
+    perception_roll: rollTotal,
+    perception_roll_label: rollLabel,
+  };
+  showPerceptionRollToast(entityUid, rollTotal, rollLabel);
+  if (window.SpellEffects && typeof window.SpellEffects.play === 'function') {
+    return window.SpellEffects.play('look', payload);
+  }
+  return Promise.resolve();
+}
+window.playPerceptionCheckFeedback = playPerceptionCheckFeedback;
+
 function showMapToast(text, position, sourceEntityId = null, durationMs = 10000, options = null) {
   try {
     const opts = (options && typeof options === 'object') ? options : {};
@@ -3281,7 +3643,11 @@ function continueActionFromResponse(entity_uid, action, opts, coordsx, coordsy, 
     console.warn('continueActionFromResponse: handleAction not ready', data);
   }
   if (data && data.status === 'error') {
-    const message = data.error || data.message || (data.errors && data.errors.join(', '));
+    const message = data.primary_error
+      || data.error
+      || data.message
+      || (data.error_messages && data.error_messages.length ? data.error_messages[0] : null)
+      || (data.errors && data.errors.join(', '));
     if (message && typeof Utils !== 'undefined' && Utils.showToast) {
       Utils.showToast(message);
     } else if (message) {
@@ -3902,6 +4268,48 @@ const ensureMovementSpriteLayer = () => {
   return $layer;
 };
 
+// Persistent overlay for floating combat numbers (survives tile refresh).
+const ensureMapFxLayer = () => {
+  const $mapRoot = $('.image-container').first();
+  if (!$mapRoot.length) {
+    return $('.tiles-container').first();
+  }
+  let $layer = $mapRoot.children('#map-fx-layer');
+  if (!$layer.length) {
+    $layer = $('<div id="map-fx-layer"></div>').css({
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      width: '100%',
+      height: '100%',
+      pointerEvents: 'none',
+      zIndex: 2100,
+      overflow: 'visible',
+    });
+    $mapRoot.append($layer);
+  }
+  return $layer;
+};
+
+function getTileAnchorInFxLayer($tile) {
+  if (!$tile || !$tile.length || !$tile[0] || !$tile[0].getBoundingClientRect) {
+    return null;
+  }
+  const $layer = ensureMapFxLayer();
+  if (!$layer.length || !$layer[0].getBoundingClientRect) {
+    return null;
+  }
+  const tileRect = $tile[0].getBoundingClientRect();
+  const layerRect = $layer[0].getBoundingClientRect();
+  if (tileRect.width <= 0 || layerRect.width <= 0) {
+    return null;
+  }
+  return {
+    left: tileRect.left - layerRect.left + tileRect.width / 2,
+    top: tileRect.top - layerRect.top + tileRect.height / 2,
+  };
+}
+
 // Parent for movement sprites — must live inside the panned/zoomed map tree.
 const getMovementSpriteContainer = () => ensureMovementSpriteLayer();
 
@@ -4350,6 +4758,7 @@ function executeKeyboardMovement(entity_uid, action, opts) {
     },
     (data) => {
       console.log("Movement executed:", data);
+      noteMoveActionCompleted(entity_uid, data);
       if (data.status === 'ok') {
         refreshTurn();
         // hide the popover menu
@@ -4362,6 +4771,7 @@ function executeKeyboardMovement(entity_uid, action, opts) {
             { id: entity_uid, action, opts, path },
             (data) => {
               console.log("Action request successful:", data);
+              noteMoveActionCompleted(entity_uid, data);
               refreshTurn();
             },
             true
@@ -4428,13 +4838,14 @@ function handleDirectWSADMovement(event) {
     lastHoverCoords = null;
     movePath = [];
 
-    // Store the movement callback that will be called when the user commits (via spacebar)
+    // Store the movement callback that will be called when the user commits (via Space/Enter)
     moveModeCallback = (path) => {
       ajaxPost(
         "/action",
         { id: entity_uid, action: "MoveAction", opts: {}, path, manual_jump: null },
         (data) => {
           console.log("Direct WSAD movement executed:", data);
+          noteMoveActionCompleted(entity_uid, data);
           refreshTurn();
         },
         true
@@ -5622,6 +6033,9 @@ $(document).ready(() => {
         e.stopPropagation();
         return;
       }
+      if (blockInvalidTargetClick(cacheKey, e)) {
+        return;
+      }
       // Check if there are multiple valid targets at this position
       if (globalActionInfo && (
         globalActionInfo === 'AttackAction' ||
@@ -5641,9 +6055,15 @@ $(document).ready(() => {
             // Show target selection modal
             showTargetSelectionModal(data.targets, { x: coordsx, y: coordsy });
           } else if (data.success && data.targets && data.targets.length === 1) {
+            if (blockInvalidTargetClick(cacheKey, e)) {
+              return;
+            }
             targetModeCallback({ x: coordsx, y: coordsy, target_id: data.targets[0].id });
             exitTargetMode();
           } else {
+            if (blockInvalidTargetClick(cacheKey, e)) {
+              return;
+            }
             // No targets, proceed with coordinates (server validates)
             targetModeCallback({ x: coordsx, y: coordsy });
             exitTargetMode();
@@ -5846,6 +6266,41 @@ $(document).ready(() => {
     ctx.stroke();
   }
 
+  function applyTargetPreview(targetX, targetY, showX, showY, $tile, data, baseTooltip) {
+    const validation = extractTargetValidation(data);
+    const cacheKey = `${targetX}-${targetY}`;
+    let tooltip = baseTooltip || '';
+
+    if (data && data.target_squares && data.target_squares.length > 0) {
+      $(".tile").css("border", "none");
+      data.target_squares.forEach((value) => {
+        $(`.tile[data-coords-x="${value[0]}"][data-coords-y="${value[1]}"]`).css("border", "2px solid red");
+      });
+    } else {
+      cacheTargetValidation(cacheKey, validation);
+      drawTargetLine(globalCtx, source, targetX, targetY, validation.valid, $tile);
+    }
+
+    if (data && data.adv_info) {
+      data.adv_info[0].forEach(
+        (value) => (tooltip += `<p><span style="color: green;">+${value}</span></p>`),
+      );
+      data.adv_info[1].forEach(
+        (value) => (tooltip += `<p><span style="color: red;">-${value}</span></p>`),
+      );
+    }
+
+    if (!validation.valid && validation.primary_error) {
+      tooltip += formatTargetInvalidTooltip(validation.primary_error);
+      showTargetValidationHint(validation.primary_error);
+    } else {
+      hideTargetValidationHint();
+    }
+
+    updateCoordsBox(showX, showY, tooltip);
+    return validation;
+  }
+
 
   // Character switcher
   window.initDmPortraitSections = function initDmPortraitSections() {
@@ -5937,41 +6392,28 @@ $(document).ready(() => {
         opts: globalOpts,
       });
 
-      if (valid_target_cache[cacheKey]) {
-        drawTargetLine(globalCtx, source, targetX, targetY, valid_target_cache[cacheKey], $tile);
+      const cachedValidation = getCachedTargetValidation(cacheKey);
+      if (cachedValidation) {
+        let tooltip = $tile.data("tooltip") || "";
+        const $tpMarkerCached = $tile.find('.teleporter-marker[data-destination]').first();
+        if ($tpMarkerCached.length) {
+          const dest = $tpMarkerCached.attr('data-destination') || '';
+          if (dest) {
+            tooltip += `<p class="teleporter-destination-hint"><span style="color: var(--teleporter-marker-color, #22c55e);">→ ${dest}</span></p>`;
+          }
+        }
+        applyTargetPreview(targetX, targetY, showX, showY, $tile, {
+          valid_target: cachedValidation.valid,
+          primary_error: cachedValidation.primary_error,
+          error_messages: cachedValidation.error_messages,
+        }, tooltip);
       } else {
         Utils.ajaxGet("/target", { payload: data_payload }, (data) => {
-          const { adv_info, valid_target } = data;
-          // cache the valid_target value based on the x, y coords
-
-          if (data.target_squares && data.target_squares.length > 0) {
-            // set the target squares
-            // unset all tiles
-            $(".tile").css("border", "none");
-            data.target_squares.forEach((value) => {
-              $(`.tile[data-coords-x="${value[0]}"][data-coords-y="${value[1]}"]`).css("border", "2px solid red");
-            });
-          } else {
-            valid_target_cache[cacheKey] = valid_target;
-            drawTargetLine(globalCtx, source, targetX, targetY, valid_target, $tile);
-          }
-          if (adv_info) {
-            adv_info[0].forEach(
-              (value) =>
-                (tooltip += `<p><span style="color: green;">+${value}</span></p>`),
-            );
-            adv_info[1].forEach(
-              (value) =>
-                (tooltip += `<p><span style="color: red;">-${value}</span></p>`),
-            );
-          }
-
-          $("#coords-box").html(
-            `<p>X: ${showX}</p><p>Y: ${showY}</p>${tooltip}`,
-          );
+          applyTargetPreview(targetX, targetY, showX, showY, $tile, data, tooltip);
         });
       }
     } else {
+      hideTargetValidationHint();
       $("#coords-box").html(
         `<p>X: ${showX}</p><p>Y: ${showY}</p>${tooltip}`,
       );
@@ -7244,6 +7686,7 @@ $(document).ready(() => {
             },
             (data) => {
               console.log("Action request successful:", data);
+              noteMoveActionCompleted(entity_uid, data);
               refreshTurn();
             },
             true,
@@ -8829,6 +9272,9 @@ $(document).ready(() => {
       data: JSON.stringify(payload),
       success: (data) => {
         removeWaitingIndicator(waitingId);
+        if (data.perception && data.perception.roll_total != null) {
+          playPerceptionCheckFeedback(currentPovEntity, data.perception.roll_total);
+        }
         if (data.success && data.perception && data.perception.description) {
           const targetLabel = data.perception.target || 'the scene';
           const messageText = data.already_checked
@@ -9823,8 +10269,8 @@ function makeFloatingWindowsDraggable() {
   $(document).on('keydown', function(event) {
     const key = event.key;
 
-    // Handle spacebar to commit movement
-    if (key === ' ' && moveMode) {
+    // Handle Space / Enter to commit movement
+    if ((key === ' ' || key === 'Enter' || key === 'Spacebar') && moveMode) {
       event.preventDefault();
       moveMode = false;
       clearMovePathCache();

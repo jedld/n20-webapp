@@ -9,6 +9,7 @@
               data-object-id="{{ obj['id'] }}"
               data-object-action="{{ qa['action'] }}"
               data-needs-approach="{{ '1' if qa.get('needs_approach') else '0' }}"
+              {% if qa.get('kind') %}data-quick-kind="{{ qa['kind'] }}"{% endif %}
               {% if qa.get('disabled') %}disabled{% endif %}>
         {% if qa.get('image') %}
           <img class="object-quick-action-icon"

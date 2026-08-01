@@ -1,0 +1,13 @@
+{% if pov_entity and tile.get('id') == pov_entity.entity_uid and tile.get('pov_self_quick_interact') %}
+  <div class="object-quick-interact-layer entity-quick-interact-layer pov-self-quick-interact-layer"
+       data-object-id="{{ tile['id'] }}"
+       style="width: {{ tile_size_px }}px; height: {{ tile_size_px }}px;">
+    {% with obj = {
+      'id': tile['id'],
+      'quick_interact': tile['pov_self_quick_interact'],
+      'quick_interact_anchor': tile.get('pov_self_quick_interact_anchor')
+    } %}
+      {% include '_object_quick_interact.html' %}
+    {% endwith %}
+  </div>
+{% endif %}
