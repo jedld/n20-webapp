@@ -161,7 +161,9 @@ const expose = new vm.Script(`({
   centerOnTileXY: (typeof centerOnTileXY !== 'undefined') ? centerOnTileXY : undefined,
   centerOnEntityId: (typeof centerOnEntityId !== 'undefined') ? centerOnEntityId : undefined,
   getTilePositionInContainer: (typeof getTilePositionInContainer !== 'undefined') ? getTilePositionInContainer : undefined,
-  getTilePositionForGridCoords: (typeof getTilePositionForGridCoords !== 'undefined') ? getTilePositionForGridCoords : undefined
+  getTilePositionForGridCoords: (typeof getTilePositionForGridCoords !== 'undefined') ? getTilePositionForGridCoords : undefined,
+  renderMoveQuickAction: (typeof renderMoveQuickAction !== 'undefined') ? renderMoveQuickAction : undefined,
+  executeMoveQuickAction: (typeof executeMoveQuickAction !== 'undefined') ? executeMoveQuickAction : undefined
 })`);
 const Engine = expose.runInContext(context);
 
@@ -708,6 +710,127 @@ describe('engine.js basic behavior', () => {
 
     global.$ = orig$;
     global.document.querySelector = origQS;
+    global.Utils = origUtils;
+  });
+
+  test('renderMoveQuickAction shows quick icon for reachable empty hovered tile', () => {
+    const orig$ = global.$;
+
+    const tileStub = {
+      length: 1,
+      is: (selector) => selector === ':hover',
+      find: () => ({ length: 0, remove: () => {} })
+    };
+
+    const rendered = { count: 0 };
+    const originals = new vm.Script(`({
+      shouldEnableMoveQuickAction,
+      isTileOccupiedForMoveQuickAction,
+      resolveMoveQuickActionPathToTile,
+      ensureMoveQuickActionLayer
+    })`).runInContext(context);
+
+    new vm.Script(`
+      shouldEnableMoveQuickAction = () => true;
+      isTileOccupiedForMoveQuickAction = () => false;
+      resolveMoveQuickActionPathToTile = (_tile, done) => done({ path: [[1,1],[1,2]], placeable: true, cost: { budget: 0, original_budget: 30 } });
+      ensureMoveQuickActionLayer = () => { __renderedCounter.count += 1; return {}; };
+    `).runInContext(context);
+
+    context.__renderedCounter = rendered;
+    Engine.renderMoveQuickAction(tileStub);
+    expect(rendered.count).toBe(1);
+    delete context.__renderedCounter;
+
+    context.__origQuickMoveFns = originals;
+    new vm.Script(`
+      shouldEnableMoveQuickAction = __origQuickMoveFns.shouldEnableMoveQuickAction;
+      isTileOccupiedForMoveQuickAction = __origQuickMoveFns.isTileOccupiedForMoveQuickAction;
+      resolveMoveQuickActionPathToTile = __origQuickMoveFns.resolveMoveQuickActionPathToTile;
+      ensureMoveQuickActionLayer = __origQuickMoveFns.ensureMoveQuickActionLayer;
+    `).runInContext(context);
+    delete context.__origQuickMoveFns;
+
+    global.$ = orig$;
+  });
+
+  test('executeMoveQuickAction posts MoveAction with resolved path', () => {
+    const orig$ = global.$;
+    const origUtils = global.Utils;
+    const oldAjax = global.$.ajax;
+    const calls = [];
+    const originals = new vm.Script(`({
+      getMoveQuickActionPovUid,
+      resolveMoveQuickActionPathToTile,
+      noteMoveActionCompleted,
+      hideMoveQuickActionLayer,
+      clearMoveQuickActionPreview
+    })`).runInContext(context);
+
+    const tileStub = {
+      length: 1,
+      find: () => ({ remove: () => {} })
+    };
+
+    const btnStub = {};
+    const btnJq = {
+      length: 1,
+      closest: () => tileStub,
+      prop: () => btnJq,
+      is: () => false,
+    };
+
+    global.$ = (selectorOrObj) => {
+      if (selectorOrObj === btnStub) {
+        return btnJq;
+      }
+      if (selectorOrObj === 'body') {
+        return { attr: () => 'hero-1' };
+      }
+      return orig$(selectorOrObj);
+    };
+
+    global.Utils = {
+      ...(global.Utils || {}),
+      showToast: jest.fn(),
+    };
+
+    new vm.Script(`
+      getMoveQuickActionPovUid = () => 'hero-1';
+      resolveMoveQuickActionPathToTile = (_tile, done) => done({ path: [[3,3],[3,4]], placeable: true, cost: { budget: 0, original_budget: 30 } });
+      noteMoveActionCompleted = () => {};
+      hideMoveQuickActionLayer = () => {};
+      clearMoveQuickActionPreview = () => {};
+    `).runInContext(context);
+
+    context.__ajaxCalls = calls;
+    global.$.ajax = (opts) => {
+      calls.push({ url: opts.url, payload: JSON.parse(opts.data || '{}') });
+      if (opts && typeof opts.success === 'function') {
+        opts.success({ status: 'ok' });
+      }
+    };
+    Engine.executeMoveQuickAction(btnStub);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('/action');
+    expect(calls[0].payload.id).toBe('hero-1');
+    expect(calls[0].payload.action).toBe('MoveAction');
+    expect(calls[0].payload.path).toEqual([[3, 3], [3, 4]]);
+
+    delete context.__ajaxCalls;
+    context.__origExecuteMoveQuickFns = originals;
+    new vm.Script(`
+      getMoveQuickActionPovUid = __origExecuteMoveQuickFns.getMoveQuickActionPovUid;
+      resolveMoveQuickActionPathToTile = __origExecuteMoveQuickFns.resolveMoveQuickActionPathToTile;
+      noteMoveActionCompleted = __origExecuteMoveQuickFns.noteMoveActionCompleted;
+      hideMoveQuickActionLayer = __origExecuteMoveQuickFns.hideMoveQuickActionLayer;
+      clearMoveQuickActionPreview = __origExecuteMoveQuickFns.clearMoveQuickActionPreview;
+    `).runInContext(context);
+    delete context.__origExecuteMoveQuickFns;
+
+    global.$.ajax = oldAjax;
+    global.$ = orig$;
     global.Utils = origUtils;
   });
 

@@ -359,9 +359,12 @@ let globalActionInfo = null,
   globalSourceEntity = null;
 let pathDebounceTimer = null;
 const ACTION_BAR_STORAGE_PREFIX = 'natural20.actionBarHotkeys';
+const ACTION_BAR_PREFS_PREFIX = 'natural20.actionBarPrefs';
 let actionBarState = {
   visible: false,
   bindingMode: false,
+  customizeMode: false,
+  expanded: false,
   pendingBinding: null,
   activeEntityUid: null,
   activeCoords: null,
@@ -485,9 +488,252 @@ function getEntityTile(entityUid) {
 let objectQuickInteractInFlight = false;
 let teleporterApproachInFlight = false;
 let talkApproachInFlight = false;
+let moveQuickActionPathRequest = null;
+let moveQuickActionHoverRequestToken = 0;
+let moveQuickActionPreviewActive = false;
+let moveQuickActionInFlight = false;
 
 function isBattleInProgress() {
   return String($('body').attr('data-battle_in_progress') || '').toLowerCase() === 'true';
+}
+
+function clearMoveQuickActionPreview() {
+  moveQuickActionPreviewActive = false;
+  if (
+    !moveMode
+    && !targetMode
+    && !multiTargetMode
+    && !coneMode
+    && !aoePointTargetMode
+    && !keyboardMovementMode
+    && globalCtx
+    && globalCanvas
+  ) {
+    globalCtx.clearRect(0, 0, globalCanvas.width, globalCanvas.height);
+  }
+}
+
+function hideMoveQuickActionLayer($tile) {
+  if (!$tile || !$tile.length) {
+    return;
+  }
+  $tile.find('.move-quick-action-layer').remove();
+}
+
+function cancelMoveQuickActionPathRequest() {
+  if (moveQuickActionPathRequest && typeof moveQuickActionPathRequest.abort === 'function') {
+    try { moveQuickActionPathRequest.abort(); } catch (_) { /* ignore */ }
+  }
+  moveQuickActionPathRequest = null;
+}
+
+function isTileOccupiedForMoveQuickAction($tile) {
+  if (!$tile || !$tile.length) {
+    return true;
+  }
+  const primaryId = $tile.data('coords-id');
+  if (primaryId) {
+    return true;
+  }
+  return $tile.find('.entity[data-id], .npc[data-id]').length > 0;
+}
+
+function shouldEnableMoveQuickAction() {
+  if (isInteractionLocked()) {
+    return false;
+  }
+  if (forcedConversationMode) {
+    return false;
+  }
+  if (moveMode || targetMode || multiTargetMode || coneMode || aoePointTargetMode || keyboardMovementMode) {
+    return false;
+  }
+  return true;
+}
+
+function getMoveQuickActionPovUid() {
+  return $('body').attr('data-pov-entity')
+    || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity())
+    || null;
+}
+
+function resolveMoveQuickActionSourceCoords(povUid) {
+  if (!povUid) {
+    return null;
+  }
+  const $srcTile = getEntityTile(povUid);
+  if (!$srcTile.length) {
+    return null;
+  }
+  const sourceCoords = Utils.pathCoordsFromTile
+    ? Utils.pathCoordsFromTile($srcTile)
+    : { x: Number($srcTile.data('coords-x')), y: Number($srcTile.data('coords-y')) };
+  if (!sourceCoords || !Number.isFinite(sourceCoords.x) || !Number.isFinite(sourceCoords.y)) {
+    return null;
+  }
+  return sourceCoords;
+}
+
+function resolveMoveQuickActionPathToTile($tile, done) {
+  if (!$tile || !$tile.length) {
+    done(null);
+    return;
+  }
+
+  const povUid = getMoveQuickActionPovUid();
+  const from = resolveMoveQuickActionSourceCoords(povUid);
+  const to = resolveStackPathCoords($tile);
+  if (!from || !to || !Number.isFinite(to.x) || !Number.isFinite(to.y)) {
+    done(null);
+    return;
+  }
+  if (from.x === to.x && from.y === to.y) {
+    done(null);
+    return;
+  }
+
+  const cacheKey = `quick-${povUid}-${from.x}-${from.y}-${to.x}-${to.y}-${stackDescentModeActive() ? 'sd' : 'n'}`;
+  if (move_path_cache[cacheKey]) {
+    done(move_path_cache[cacheKey]);
+    return;
+  }
+
+  const localData = computeLocalPathResponse(from, to, []);
+  if (localData && localData.path && localData.placeable && pathReachesTile(localData.path, to.x, to.y)) {
+    setMovePathCache(cacheKey, localData);
+    done(localData);
+    return;
+  }
+
+  cancelMoveQuickActionPathRequest();
+  moveQuickActionPathRequest = $.ajax({
+    url: '/path',
+    type: 'GET',
+    data: Object.assign({
+      from,
+      to,
+      accumulatedPath: null,
+    }, stackPathRequestExtras(to.x, to.y)),
+    success: (data) => {
+      moveQuickActionPathRequest = null;
+      if (data && data.path && data.placeable !== false && pathReachesTile(data.path, to.x, to.y)) {
+        setMovePathCache(cacheKey, data);
+        done(data);
+        return;
+      }
+      done(null);
+    },
+    error: (jqXHR, textStatus) => {
+      moveQuickActionPathRequest = null;
+      if (textStatus !== 'abort') {
+        done(null);
+      }
+    },
+  });
+}
+
+function ensureMoveQuickActionLayer($tile) {
+  let $layer = $tile.find('.move-quick-action-layer');
+  if ($layer.length) {
+    return $layer;
+  }
+
+  $layer = $(
+    '<div class="move-quick-action-layer" aria-hidden="false">'
+    + '<button type="button" class="move-quick-action" title="Move here" aria-label="Move here">'
+    + '<i class="fas fa-location-arrow" aria-hidden="true"></i>'
+    + '</button>'
+    + '</div>'
+  );
+  $layer.appendTo($tile);
+  return $layer;
+}
+
+function renderMoveQuickAction($tile) {
+  if (!$tile || !$tile.length || !$tile.is(':hover')) {
+    return;
+  }
+  if (!shouldEnableMoveQuickAction()) {
+    hideMoveQuickActionLayer($tile);
+    return;
+  }
+  if (isTileOccupiedForMoveQuickAction($tile)) {
+    hideMoveQuickActionLayer($tile);
+    return;
+  }
+
+  const currentToken = ++moveQuickActionHoverRequestToken;
+  resolveMoveQuickActionPathToTile($tile, (data) => {
+    if (currentToken !== moveQuickActionHoverRequestToken) {
+      return;
+    }
+    if (!$tile.is(':hover')) {
+      return;
+    }
+    if (!data || !Array.isArray(data.path) || data.path.length <= 1) {
+      hideMoveQuickActionLayer($tile);
+      return;
+    }
+    ensureMoveQuickActionLayer($tile);
+  });
+}
+
+function executeMoveQuickAction(btn) {
+  const $btn = $(btn);
+  if (!$btn.length || moveQuickActionInFlight) {
+    return;
+  }
+
+  const povUid = getMoveQuickActionPovUid();
+  if (!povUid) {
+    if (typeof Utils !== 'undefined' && Utils.showToast) {
+      Utils.showToast('Select a character first.');
+    }
+    return;
+  }
+
+  const $tile = $btn.closest('.tile');
+  if (!$tile.length) {
+    return;
+  }
+
+  moveQuickActionInFlight = true;
+  $btn.prop('disabled', true);
+  const finish = () => {
+    moveQuickActionInFlight = false;
+    $btn.prop('disabled', false);
+  };
+
+  resolveMoveQuickActionPathToTile($tile, (data) => {
+    if (!data || !Array.isArray(data.path) || data.path.length <= 1) {
+      if (typeof Utils !== 'undefined' && Utils.showToast) {
+        Utils.showToast('Cannot move to that tile from here.');
+      }
+      finish();
+      return;
+    }
+    ajaxPost(
+      '/action',
+      {
+        id: povUid,
+        action: 'MoveAction',
+        opts: { action_type: 'move', source: povUid },
+        path: data.path,
+      },
+      (moveData) => {
+        noteMoveActionCompleted(povUid, moveData);
+        if (!moveData || moveData.status !== 'ok') {
+          if (typeof Utils !== 'undefined' && Utils.showToast) {
+            Utils.showToast('Could not move to that tile.');
+          }
+        }
+        hideMoveQuickActionLayer($tile);
+        clearMoveQuickActionPreview();
+        finish();
+      },
+      true,
+    );
+  });
 }
 
 function neighborApproachCoords(objectX, objectY) {
@@ -1012,6 +1258,38 @@ function setActionBarInstructions(message) {
   $('#centerActionBarInstructions').text(message);
 }
 
+function setActionBarExpanded(expanded) {
+  actionBarState.expanded = !!expanded;
+  const $panel = $('#centerActionBar .center-action-bar-panel');
+  const $btn = $('#centerActionBarExpand');
+  $panel.toggleClass('is-expanded', actionBarState.expanded);
+  $btn.toggleClass('is-expanded', actionBarState.expanded)
+    .attr('aria-expanded', actionBarState.expanded ? 'true' : 'false');
+  const label = actionBarState.expanded ? 'Collapse action bar' : 'Expand action bar';
+  $btn.attr('title', label).attr('aria-label', label);
+  $btn.find('.center-action-bar-expand-icon').text(actionBarState.expanded ? '▼' : '▲');
+}
+
+function showPickerInCenterActionBar(entityUid, title, html, coordsx, coordsy) {
+  const $content = $('#centerActionBarContent');
+  const $entry = $('<div class="popover-actions-entry center-action-entry is-active action-picker-entry"></div>')
+    .attr('data-entity-uid', entityUid)
+    .attr('data-coords-x', coordsx)
+    .attr('data-coords-y', coordsy);
+  const $header = $('<div class="popover-actions-header"></div>');
+  $('<span class="popover-actions-title"></span>').text(title).appendTo($header);
+  $entry.append($header);
+  const $body = $('<div class="popover-actions-body"></div>').html(html);
+  $entry.append($body);
+  $content.html($('<div class="popover-actions-stack"></div>').append($entry));
+  decorateCenterActionSection($body, { id: entityUid }, coordsx, coordsy);
+  $('#centerActionBarTitle').text(title);
+  $('#centerActionBarSubtitle').text('Choose an option below.');
+  $('#centerActionBar').show();
+  actionBarState.visible = true;
+  activateCenterActionEntry($entry);
+}
+
 function actionBarStorageKey(entityUid) {
   return `${ACTION_BAR_STORAGE_PREFIX}:${entityUid || 'global'}`;
 }
@@ -1031,6 +1309,154 @@ function saveActionBarBindings(entityUid, bindings) {
     window.localStorage.setItem(actionBarStorageKey(entityUid), JSON.stringify(bindings || {}));
   } catch (_error) {
     // ignore storage errors
+  }
+}
+
+function currentActionBarUsername() {
+  return ($('body').data('username') || 'player').toString();
+}
+
+function actionBarPrefsKey(entityUid) {
+  return `${ACTION_BAR_PREFS_PREFIX}:${currentActionBarUsername()}:${entityUid || 'global'}`;
+}
+
+function loadActionBarPrefs(entityUid) {
+  try {
+    const raw = window.localStorage.getItem(actionBarPrefsKey(entityUid));
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function saveActionBarPrefs(entityUid, prefs) {
+  try {
+    window.localStorage.setItem(actionBarPrefsKey(entityUid), JSON.stringify(prefs || {}));
+  } catch (_error) {
+    // ignore storage errors
+  }
+}
+
+function selectActionBarTab($tabs, tabId) {
+  if (!$tabs || !$tabs.length || !tabId) {
+    return;
+  }
+  const $buttons = $tabs.find('.action-bar-tab-btn');
+  const $panels = $tabs.find('.action-bar-tab-panel');
+  const $targetBtn = $buttons.filter(`[data-tab="${tabId}"]`);
+  const $targetPanel = $panels.filter(`[data-tab="${tabId}"]`);
+  if (!$targetBtn.length || !$targetPanel.length) {
+    return;
+  }
+  $buttons.removeClass('is-active').attr('aria-selected', 'false');
+  $panels.removeClass('is-active').attr('hidden', true);
+  $targetBtn.addClass('is-active').attr('aria-selected', 'true');
+  $targetPanel.addClass('is-active').removeAttr('hidden');
+}
+
+function hideEmptyActionBarTabs($tabs) {
+  $tabs.find('.action-bar-tab-btn').each(function () {
+    const tabId = $(this).data('tab');
+    const $panel = $tabs.find(`.action-bar-tab-panel[data-tab="${tabId}"]`);
+    const hasActions = $panel.find('.action-button, .action-end-turn, .talk-action, .merchant-shop-action, .jrpg-dialog-action, .set-pov-action, .delete-entity-btn, .action-bar-spell-card').length > 0;
+    const alwaysShow = tabId === 'common' || tabId === 'utility';
+    const visible = alwaysShow || hasActions;
+    $(this).toggle(visible);
+    if (!visible) {
+      $panel.removeClass('is-active').attr('hidden', true);
+    }
+  });
+}
+
+function applyActionBarTabOrder($tabs, tabOrder) {
+  if (!Array.isArray(tabOrder) || !tabOrder.length) {
+    return;
+  }
+  const $nav = $tabs.find('.action-bar-tab-nav').first();
+  tabOrder.forEach((tabId) => {
+    const $btn = $nav.find(`.action-bar-tab-btn[data-tab="${tabId}"]`);
+    if ($btn.length) {
+      $nav.append($btn);
+    }
+  });
+}
+
+function applyActionBarPins($tabs) {
+  const entityUid = $tabs.data('entityUid');
+  const prefs = loadActionBarPrefs(entityUid);
+  const pins = Array.isArray(prefs.pins) ? prefs.pins : [];
+  const $pinnedRow = $tabs.find('.action-bar-pinned-row').first();
+  $pinnedRow.empty();
+  if (!pins.length) {
+    $pinnedRow.attr('hidden', true);
+    return;
+  }
+  pins.forEach((descriptor) => {
+    const $sourceCell = $tabs.find('[data-action-descriptor]').filter(function () {
+      return $(this).attr('data-action-descriptor') === descriptor;
+    }).first();
+    if (!$sourceCell.length) {
+      return;
+    }
+    const $clone = $sourceCell.clone(false);
+    $clone.addClass('is-pinned-clone');
+    $clone.find('.action-bar-pin-btn').toggleClass('is-pinned', true);
+    $pinnedRow.append($clone);
+  });
+  $pinnedRow.removeAttr('hidden');
+}
+
+function syncActionBarPinButtons($tabs) {
+  const entityUid = $tabs.data('entityUid');
+  const prefs = loadActionBarPrefs(entityUid);
+  const pins = new Set(Array.isArray(prefs.pins) ? prefs.pins : []);
+  $tabs.find('.action-bar-pin-btn').each(function () {
+    const $btn = $(this);
+    const descriptor = $btn.closest('[data-action-descriptor]').attr('data-action-descriptor');
+    $btn.toggleClass('is-pinned', pins.has(descriptor));
+  });
+}
+
+function toggleActionBarPin(entityUid, descriptor) {
+  const prefs = loadActionBarPrefs(entityUid);
+  const pins = new Set(Array.isArray(prefs.pins) ? prefs.pins : []);
+  if (pins.has(descriptor)) {
+    pins.delete(descriptor);
+  } else {
+    pins.add(descriptor);
+  }
+  prefs.pins = Array.from(pins);
+  saveActionBarPrefs(entityUid, prefs);
+}
+
+function initializeActionBarTabs($root) {
+  const $tabs = $root.find('.action-bar-tabs').addBack('.action-bar-tabs');
+  $tabs.each(function () {
+    const $tabRoot = $(this);
+    const entityUid = $tabRoot.data('entityUid');
+    const prefs = loadActionBarPrefs(entityUid);
+    const defaultTab = prefs.lastTab || $tabRoot.data('defaultTab') || 'common';
+    const tabOrder = prefs.tabOrder || $tabRoot.data('tabOrder') || [];
+
+    hideEmptyActionBarTabs($tabRoot);
+    applyActionBarTabOrder($tabRoot, tabOrder);
+    applyActionBarPins($tabRoot);
+    syncActionBarPinButtons($tabRoot);
+    selectActionBarTab($tabRoot, defaultTab);
+  });
+}
+
+function setActionBarCustomizeMode(enabled) {
+  actionBarState.customizeMode = !!enabled;
+  $('#actionBarCustomizeToggle').toggleClass('active', actionBarState.customizeMode)
+    .text(actionBarState.customizeMode ? 'Done' : 'Customize');
+  $('#centerActionBar').toggleClass('action-bar-customize-mode', actionBarState.customizeMode);
+  $('#centerActionBar .action-bar-pin-btn').prop('hidden', !actionBarState.customizeMode);
+  if (actionBarState.customizeMode) {
+    setActionBarInstructions('Click ★ to pin actions to the Common tab. Pins are saved per character for your account.');
+  } else {
+    setActionBarInstructions('Press 1-9 to trigger assigned actions. Use Bind Hotkeys to customize them.');
   }
 }
 
@@ -1054,10 +1480,16 @@ function clearPendingHotkeySelection() {
 function closeCenterActionBar() {
   actionBarState.visible = false;
   actionBarState.bindingMode = false;
+  actionBarState.customizeMode = false;
   actionBarState.activeEntityUid = null;
   actionBarState.activeCoords = null;
   clearPendingHotkeySelection();
+  closeUpcastMenus();
+  setActionBarExpanded(false);
   $('#actionBarHotkeyToggle').removeClass('active').text('Bind Hotkeys');
+  $('#actionBarCustomizeToggle').removeClass('active').text('Customize');
+  $('#centerActionBar').removeClass('action-bar-customize-mode');
+  $('#actionBarCustomizeToggle, #actionBarHotkeyToggle').show();
   $('#centerActionBar').hide();
   $('#centerActionBarContent').empty();
   setActionBarInstructions('Press 1-9 to trigger assigned actions. Use Bind Hotkeys to customize them.');
@@ -1105,7 +1537,20 @@ function decorateCenterActionSection($body, entry, coordsx, coordsy) {
       .attr('data-overlay-entity-uid', entry.id);
   });
 
-  $body.find('.action-button, .action-end-turn, .talk-action').addClass('hotkey-capable-action');
+  $body.find('.action-button, .action-end-turn, .talk-action, .action-bar-upcast-level').addClass('hotkey-capable-action');
+  initializeActionBarTabs($body);
+}
+
+function closeUpcastMenus($exceptCard) {
+  $('#centerActionBar .action-bar-spell-card').each(function () {
+    const $card = $(this);
+    if ($exceptCard && $exceptCard.length && $card.is($exceptCard)) {
+      return;
+    }
+    $card.removeClass('is-upcast-open');
+    $card.find('.action-bar-upcast-menu').attr('hidden', true);
+    $card.find('.action-bar-upcast-toggle').removeClass('is-open').attr('aria-expanded', 'false');
+  });
 }
 
 function fetchActionBarSections(occupantEntries) {
@@ -1163,7 +1608,7 @@ function actionHtmlHasActionableContent(html) {
     // at least one of: a regular action button, end-turn, talk button,
     // or DM delete control.
     const actionable = $probe.find(
-      '.action-button, .action-end-turn, .talk-action, .jrpg-dialog-action, .set-pov-action, .delete-entity-btn'
+      '.action-button, .action-end-turn, .talk-action, .jrpg-dialog-action, .set-pov-action, .delete-entity-btn, .action-bar-spell-card'
     );
     return actionable.length > 0;
   } catch (e) {
@@ -1487,6 +1932,18 @@ function deliverConversationPayload(messagePayload, resolve) {
   if (shouldShowMessageInJrpgDialog(entity_id, targets)) {
     console.log('Adding conversation message to dialog panel:', message);
     try {
+      if (!isSystemMessage && (data.message.gallery_image || data.message.gallery_image_id)) {
+        const gallery = $('#dialogEntityProfilePanel').data('imageGallery') || [];
+        applyDialogEntityPortrait({
+          name: data.message.speaker_name || $('#dialogEntityName').text(),
+          token_image: null,
+          profile_image: data.message.gallery_image || null,
+          has_full_portrait: true,
+          gallery_image: data.message.gallery_image || null,
+          gallery_image_id: data.message.gallery_image_id || null,
+          image_gallery: gallery,
+        });
+      }
       Chat.addDialogMessage('entity', message || '', 'entity', {
         displayName: data.message.speaker_name || null,
         narrative: narrativeEntries,
@@ -1979,6 +2436,18 @@ class EventQueue {
             // Show toast but don't block the queue for the full duration
             showMapToast(text, position, source, 10000);
           } catch (e) { console.warn('Failed to show message_toaster', e, data); }
+          resolve();
+          break;
+        }
+        case "message_spell_link": {
+          try {
+            const text = (data && data.message) || 'Message link opened. Whisper in Local Chat.';
+            const source = data && (data.source || data.entity_id);
+            showMapToast(text, null, source, 12000);
+            if (window.Chat && typeof Chat.openMessageSpellLink === 'function') {
+              Chat.openMessageSpellLink(data);
+            }
+          } catch (e) { console.warn('Failed to show message_spell_link', e, data); }
           resolve();
           break;
         }
@@ -2653,6 +3122,15 @@ class EventQueue {
             showMapToast(text, position, source, 10000);
           } catch (e) { console.warn('Inline message_toaster failed', e, entry); }
           // Continue immediately
+          animateFunction(animationLog, idx + 1);
+        } else if (t === 'message_spell_link') {
+          try {
+            const text = (entry && entry.message) || 'Message link opened. Whisper in Local Chat.';
+            showMapToast(text, null, entry && entry.source, 12000);
+            if (window.Chat && typeof Chat.openMessageSpellLink === 'function') {
+              Chat.openMessageSpellLink(entry);
+            }
+          } catch (e) { console.warn('Inline message_spell_link failed', e, entry); }
           animateFunction(animationLog, idx + 1);
         } else if (t === 'contextual_sound') {
           try {
@@ -6012,7 +6490,7 @@ $(document).ready(() => {
   });
 
   $(".tiles-container").on("click", ".tile", function (e) {
-    if ($(e.target).closest('.object-quick-action, .object-quick-actions, .object-quick-interact-layer').length) {
+    if ($(e.target).closest('.object-quick-action, .object-quick-actions, .object-quick-interact-layer, .move-quick-action, .move-quick-action-layer').length) {
       return;
     }
     if (isInteractionLocked()) {
@@ -6097,6 +6575,8 @@ $(document).ready(() => {
         ajaxPost("/focus", { x: coordsx, y: coordsy }, (data) => {
           console.log("Focus request successful:", data);
         });
+      } else if (isEditMode()) {
+        // Tile clicks in edit mode open the fixture property editor (edit_mode.js).
       } else {
         $(".popover-menu").hide();
         closeCenterActionBar();
@@ -6341,7 +6821,7 @@ $(document).ready(() => {
   initDmPortraitSections();
 
   $('#floating-entity-portraits').on('click', '.floating-entity-portrait', function (event) {
-    if ($(event.target).closest('.dm-portrait-section-toggle').length) {
+    if ($(event.target).closest('.dm-portrait-section-toggle, .portrait-quick-action').length) {
       return;
     }
     const entity_uid = $(this).data('id');
@@ -6351,7 +6831,63 @@ $(document).ready(() => {
     }, 150);
   });
 
+  $('#floating-entity-portraits').on('click', '.portrait-quick-action[data-portrait-action="character-sheet"]', function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const entityUid = $(this).data('entityUid') || $(this).attr('data-entity-uid');
+    if (!entityUid) {
+      return;
+    }
+    window.open(`info?id=${encodeURIComponent(entityUid)}`, '_blank');
+  });
+
   // Highlight tile info or draw movement data on hover.
+  $(".tiles-container").on("mouseenter", ".tile", function () {
+    renderMoveQuickAction($(this));
+  });
+
+  $(".tiles-container").on("mouseleave", ".tile", function () {
+    hideMoveQuickActionLayer($(this));
+    clearMoveQuickActionPreview();
+    cancelMoveQuickActionPathRequest();
+  });
+
+  $(".tiles-container").on('mouseenter', '.move-quick-action', function (event) {
+    event.stopPropagation();
+    const $btn = $(this);
+    const $tile = $btn.closest('.tile');
+    resolveMoveQuickActionPathToTile($tile, (data) => {
+      if (!$btn.is(':hover')) {
+        return;
+      }
+      if (!data || !data.path || data.path.length <= 1) {
+        return;
+      }
+      moveQuickActionPreviewActive = true;
+      const availableCost = data.cost && data.cost.original_budget != null && data.cost.budget != null
+        ? (data.cost.original_budget - data.cost.budget) * 5
+        : 0;
+      Utils.drawMovementPath(
+        globalCtx,
+        data.path,
+        availableCost,
+        data.placeable !== false,
+        data.terrain_info,
+        movementPathDrawOptions(data),
+      );
+    });
+  });
+
+  $(".tiles-container").on('mouseleave', '.move-quick-action', function () {
+    clearMoveQuickActionPreview();
+  });
+
+  $(".tiles-container").on('click', '.move-quick-action', function (event) {
+    event.stopPropagation();
+    event.preventDefault();
+    executeMoveQuickAction(this);
+  });
+
   $(".tiles-container").on("mouseover", ".tile", function () {
     const $tile = $(this);
     const moveDest = resolveStackMovementDest($tile);
@@ -7732,30 +8268,16 @@ $(document).ready(() => {
         break;
       }
       case "select_spell":
-        closeCenterActionBar();
         Utils.ajaxGet("/spells", { id: entity_uid, action, opts }, (data) => {
-          $("#modal-1 .modal-content").html(data);
-          $("#modal-1").modal("show");
+          showPickerInCenterActionBar(entity_uid, 'Cast Spell', data, coordsx, coordsy);
         });
         break;
       case "select_item": {
-        const $entity_tile = $(`.tile[data-coords-id="${entity_uid}"]`);
-        closeCenterActionBar();
         Utils.ajaxGet(
           "/usable_items",
           { id: entity_uid, action, opts },
           (data) => {
-            if (!$entity_tile.length) {
-              console.warn("select_item: entity tile not found", entity_uid);
-              return;
-            }
-            const $menu = $entity_tile.find(".popover-menu");
-            $menu.html(data).show();
-            $entity_tile.find(".popover-menu-2").hide();
-            // Ensure the popover menu stays on top after content update
-            if (Utils && Utils.ensurePopoverMenusOnTop) {
-              Utils.ensurePopoverMenusOnTop();
-            }
+            showPickerInCenterActionBar(entity_uid, 'Use Item', data, coordsx, coordsy);
           },
         );
         break;
@@ -8285,7 +8807,16 @@ $(document).ready(() => {
     closeCenterActionBar();
   });
 
+  $('#centerActionBarExpand').on('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    setActionBarExpanded(!actionBarState.expanded);
+  });
+
   $('#actionBarHotkeyToggle').on('click', function () {
+    if (actionBarState.customizeMode) {
+      setActionBarCustomizeMode(false);
+    }
     actionBarState.bindingMode = !actionBarState.bindingMode;
     clearPendingHotkeySelection();
     $(this).toggleClass('active', actionBarState.bindingMode).text(actionBarState.bindingMode ? 'Cancel Binding' : 'Bind Hotkeys');
@@ -8294,6 +8825,69 @@ $(document).ready(() => {
     } else {
       setActionBarInstructions('Press 1-9 to trigger assigned actions. Use Bind Hotkeys to customize them.');
     }
+  });
+
+  $('#actionBarCustomizeToggle').on('click', function () {
+    if (actionBarState.bindingMode) {
+      actionBarState.bindingMode = false;
+      $('#actionBarHotkeyToggle').removeClass('active').text('Bind Hotkeys');
+      clearPendingHotkeySelection();
+    }
+    setActionBarCustomizeMode(!actionBarState.customizeMode);
+  });
+
+  $(document).on('click', '#centerActionBar .action-bar-tab-btn', function (e) {
+    e.preventDefault();
+    const tabId = $(this).data('tab');
+    const $tabs = $(this).closest('.action-bar-tabs');
+    selectActionBarTab($tabs, tabId);
+    const entityUid = $tabs.data('entityUid');
+    const prefs = loadActionBarPrefs(entityUid);
+    prefs.lastTab = tabId;
+    saveActionBarPrefs(entityUid, prefs);
+  });
+
+  $(document).on('click', '#centerActionBar .action-bar-pin-btn', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const $cell = $(this).closest('[data-action-descriptor]');
+    const descriptor = $cell.attr('data-action-descriptor');
+    const $tabs = $(this).closest('.action-bar-tabs');
+    const entityUid = $tabs.data('entityUid');
+    if (!descriptor || !entityUid) {
+      return;
+    }
+    toggleActionBarPin(entityUid, descriptor);
+    applyActionBarPins($tabs);
+    syncActionBarPinButtons($tabs);
+  });
+
+  $(document).on('click', '#centerActionBar .action-bar-upcast-toggle', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (actionBarState.bindingMode) {
+      return;
+    }
+    const $card = $(this).closest('.action-bar-spell-card');
+    const $menu = $card.find('.action-bar-upcast-menu');
+    const isOpen = !$menu.prop('hidden');
+    closeUpcastMenus();
+    if (!isOpen) {
+      $menu.removeAttr('hidden');
+      $card.addClass('is-upcast-open');
+      $(this).addClass('is-open').attr('aria-expanded', 'true');
+    }
+  });
+
+  $(document).on('click', '#centerActionBar .action-bar-upcast-level', function () {
+    closeUpcastMenus();
+  });
+
+  $(document).on('click', function (e) {
+    if ($(e.target).closest('.action-bar-upcast-toggle, .action-bar-upcast-menu').length) {
+      return;
+    }
+    closeUpcastMenus();
   });
 
   $(document).on('click', '#centerActionBar .center-action-entry', function (e) {
@@ -8307,6 +8901,9 @@ $(document).ready(() => {
   $(".actions-container").on("click", ".action-button", function (e) {
     if ($(this).hasClass('edit-fixture-remove-btn') || $(this).hasClass('edit-fixture-properties-btn')) {
       return;
+    }
+    if ($(this).hasClass('action-bar-upcast-level')) {
+      closeUpcastMenus();
     }
     e.stopPropagation();
     const $button = $(this);
@@ -8938,17 +9535,29 @@ $(document).ready(() => {
   function applyDialogEntityPortrait(entity) {
     const $profilePanel = $('#dialogEntityProfilePanel');
     const $portrait = $('#dialogEntityPortrait');
+    const gallery = (entity && entity.image_gallery) || [];
+    if (gallery.length) {
+      $profilePanel.data('imageGallery', gallery);
+    }
     const tokenPath = entity && entity.token_image;
     const profilePath = entity && entity.profile_image;
-    const hasFullPortrait = !!(entity && entity.has_full_portrait);
+    const hasFullPortrait = !!(entity && entity.has_full_portrait) || gallery.length > 0;
     const tokenSrc = dialogAssetUrl(tokenPath) || '/static/assets/token_player.png';
     const profileSrc = dialogAssetUrl(profilePath) || tokenSrc;
 
-    $profilePanel
-      .toggleClass('has-full-portrait', hasFullPortrait)
-      .toggleClass('has-token-portrait', !hasFullPortrait);
+    let preferredSrc = hasFullPortrait ? profileSrc : tokenSrc;
+    if (entity && entity.gallery_image) {
+      preferredSrc = dialogAssetUrl(entity.gallery_image) || preferredSrc;
+    } else if (entity && entity.gallery_image_id && gallery.length) {
+      const match = gallery.find((entry) => entry.id === entity.gallery_image_id);
+      if (match && match.image) {
+        preferredSrc = dialogAssetUrl(match.image) || preferredSrc;
+      }
+    }
 
-    const preferredSrc = hasFullPortrait ? profileSrc : tokenSrc;
+    $profilePanel
+      .toggleClass('has-full-portrait', hasFullPortrait || preferredSrc !== tokenSrc)
+      .toggleClass('has-token-portrait', !hasFullPortrait && preferredSrc === tokenSrc);
     $portrait.off('error.dialogPortrait').on('error.dialogPortrait', function onPortraitError() {
       const $img = $(this);
       $img.off('error.dialogPortrait');
@@ -8966,6 +9575,7 @@ $(document).ready(() => {
     $portrait.attr('src', preferredSrc);
     $portrait.attr('alt', (entity && entity.name) ? `${entity.name} portrait` : 'Entity portrait');
   }
+  window.applyDialogEntityPortrait = applyDialogEntityPortrait;
 
   function loadEntityProfile(entityId) {
     // Get entity information from the tile data
@@ -9771,8 +10381,21 @@ $(document).ready(() => {
                 message_key: entry.message_key || null,
                 insight_check: entry.insight_check || null,
                 insight_checked: entry.insight_checked || false,
+                gallery_image: entry.gallery_image || null,
+                gallery_image_id: entry.gallery_image_id || null,
               });
             });
+            const lastEntityEntry = data.history.filter((entry) => entry.type === 'entity').pop();
+            if (lastEntityEntry && (lastEntityEntry.gallery_image || lastEntityEntry.gallery_image_id)) {
+              const gallery = $('#dialogEntityProfilePanel').data('imageGallery') || [];
+              applyDialogEntityPortrait({
+                name: lastEntityEntry.source || $('#dialogEntityName').text(),
+                has_full_portrait: true,
+                gallery_image: lastEntityEntry.gallery_image || null,
+                gallery_image_id: lastEntityEntry.gallery_image_id || null,
+                image_gallery: gallery,
+              });
+            }
             Chat.refreshDialogInsightButton();
           } else {
             $historyContainer.append('<div class="no-history">No conversation history available.</div>');
@@ -9937,7 +10560,7 @@ $(document).ready(() => {
     if (isEditMode() && !$tile.find('.entity, .npc, .object-container').length) return;
 
     // Prevent dragging if clicking on action buttons or other interactive elements
-    if ($(e.target).closest('.popover-menu, .popover-menu-2, .action-button, .add-to-turn-order, .dialog-bubble, .conversation-bubble, .close-bubble, .add-to-target, .object-quick-action, .object-quick-actions').length) {
+    if ($(e.target).closest('.popover-menu, .popover-menu-2, .action-button, .add-to-turn-order, .dialog-bubble, .conversation-bubble, .close-bubble, .add-to-target, .object-quick-action, .object-quick-actions, .move-quick-action, .move-quick-action-layer').length) {
       return;
     }
 
