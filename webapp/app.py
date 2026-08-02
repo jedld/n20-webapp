@@ -357,6 +357,23 @@ for blueprint in (assets_bp, auth_bp, ai_bp, navigation_bp, character_bp, battle
 
 register_effect_listeners(_record_narration_for_pcs)
 
+# Load campaign-specific event listeners (if the campaign provides them).
+# Campaigns place a `webapp/custom_listeners.py` file to register custom
+# event listeners on the global ``event_manager``.
+try:
+    _campaign_custom_listeners_path = os.path.join(LEVEL, 'webapp', 'custom_listeners.py')
+    if os.path.isfile(_campaign_custom_listeners_path):
+        import importlib.util as _il
+        _spec = _il.spec_from_file_location('campaign_custom_listeners', _campaign_custom_listeners_path)
+        _mod = _il.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _reg = getattr(_mod, 'register_campaign_listeners', None)
+        if callable(_reg):
+            _reg(event_manager)
+            logger.info('[Boot] Loaded campaign-specific event listeners from custom_listeners.py')
+except Exception as _boot_exc:
+    logger.warning('[Boot] Failed to load campaign custom listeners: %s', _boot_exc)
+
 conversation_service, _conversation_exports = wire_conversation_service(
     app,
     current_game_getter=lambda: current_game,
@@ -3796,26 +3813,25 @@ def get_target():
 
 @app.route('/spells', methods=['GET'])
 def get_spell():
+    from natural20.utils.action_bar import build_spell_tab_groups
+
     global current_game
     battle_map = current_game.get_map_for_user(session['username'])
     battle = current_game.get_current_battle()
 
     entity_id = request.args.get('id')
     entity = battle_map.entity_by_uid(entity_id)
-    if entity.familiar():
-        entity_class_level = entity.owner.class_and_level()
-    else:
-        entity_class_level = entity.class_and_level()
-    spells_by_level = {}
-    for spell_name in entity.available_spells(battle):
-        # get spell available levels
-        if SpellAction.can_cast(entity, battle, spell_name):
-            spell_info = game_session.load_spell(spell_name)
-            spells_by_level[spell_info['level']] = spells_by_level.get(spell_info['level'], []) + [spell_name]
+    spells_by_level = entity.castable_spells_by_level(battle)
+    spell_tab_groups = build_spell_tab_groups(entity, spells_by_level)
 
     entity_x, entity_y = battle_map.entity_or_object_pos(entity)
-    return render_template('spells.html', entity=entity, spells_by_level=spells_by_level,
-                           entity_x=entity_x, entity_y=entity_y, entity_class_level=entity_class_level)
+    return render_template(
+        'spells.html',
+        entity=entity,
+        spell_tab_groups=spell_tab_groups,
+        entity_x=entity_x,
+        entity_y=entity_y,
+    )
 
 
 @app.route('/reaction', methods=['GET'])
@@ -4055,9 +4071,23 @@ def action():
                                 }})
                             battle.clear_animation_logs()
                         else:
-                            animation_log = []
-                            animation_log.append((entity.entity_uid, move_path, None))
-                            socketio.emit('message', {'type': 'move', 'message': {'from': move_path[0], 'to': move_path[-1], 'animation_log': animation_log}})
+                            from webapp.utils import (
+                                _coalesce_animation_log,
+                                build_move_animation_log_entries,
+                            )
+                            animation_entries = build_move_animation_log_entries(
+                                action,
+                                entity_uid=entity.entity_uid,
+                                fallback_path=move_path,
+                            )
+                            if not animation_entries:
+                                return jsonify({'status': 'error', 'message': 'Move produced no path'})
+                            resolved_path = animation_entries[-1][1]
+                            socketio.emit('message', {'type': 'move', 'message': {
+                                'from': resolved_path[0],
+                                'to': resolved_path[-1],
+                                'animation_log': _coalesce_animation_log(animation_entries),
+                            }})
                         # Flush any deferred map switch now that the move
                         # animation event has been queued on the client. This
                         # ensures the entity finishes animating into the
@@ -4068,7 +4098,7 @@ def action():
                         except Exception:
                             pass
                         # Check area narrations after free movement
-                        area_narration = battle_map.check_area_narration(entity, move_path[-1])
+                        area_narration = battle_map.check_area_narration(entity, resolved_path[-1])
                         if area_narration:
                             socketio.emit('message', {'type': 'narration', 'message': area_narration, 'map_name': battle_map.name})
                             narration_entry = area_narration.get('on_enter', {})
@@ -5121,7 +5151,7 @@ def usable_items():
     available_items = entity.usable_items()
     available_items.sort(key=lambda item: item['name'])
     action = UseItemAction(game_session, entity, 'use_item')
-    return render_template('usable_items.html', entity=entity, usable_items=available_items, action=action)
+    return render_template('usable_items.html', entity=entity, usable_items=available_items, use_item_action=action)
 
  
 
