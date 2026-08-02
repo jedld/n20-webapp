@@ -14,6 +14,7 @@ const dom = new JSDOM('<!doctype html><html><body><div id="game-time-text" data-
 global.window = dom.window;
 global.document = dom.window.document;
 global.navigator = dom.window.navigator;
+global.Utils = {};
 // Provide a stable localStorage stub for all tests to prevent async callbacks from failing
 global.localStorage = {
   getItem: () => null,
@@ -43,6 +44,8 @@ function makeJqStub() {
     addClass: () => stub,
     removeClass: () => stub,
     find: () => stub,
+    first: () => stub,
+    closest: () => stub,
     each: () => stub,
     val: () => '',
     width: () => 0,
@@ -416,6 +419,11 @@ describe('engine.js basic behavior', () => {
 
     // Local $ override for this test
     const orig$ = global.$;
+    const origUtils = global.Utils;
+    global.Utils = {
+      ...(origUtils || {}),
+      viewportCoordsFromTile: null,
+    };
     global.$ = (sel) => {
       // The function should receive the tile as a jQuery-like object, so we return our stub when it gets passed in
       if (sel === tileStub) return tileStub;
@@ -466,6 +474,7 @@ describe('engine.js basic behavior', () => {
     expect(calls.addedRed).toBe(true);
 
     global.$ = orig$;
+    global.Utils = origUtils;
   });
 
   test('centerOnTileXY selects tile by coords and triggers centering', () => {
@@ -509,9 +518,16 @@ describe('engine.js basic behavior', () => {
   test('centerOnEntityId selects tile by id and triggers centering', () => {
     const seen = { id: null };
     const orig$ = global.$;
+    const origUtils = global.Utils;
+    global.Utils = {
+      ...(origUtils || {}),
+      getEntityTile: null,
+      viewportCoordsFromTile: null,
+    };
 
     const tileStub = {
       length: 1,
+      first: () => tileStub,
       width: () => 50,
       height: () => 50,
       offset: () => ({ left: 100, top: 200 }),
@@ -542,6 +558,7 @@ describe('engine.js basic behavior', () => {
     expect(seen.id).toBe('E-123');
 
     global.$ = orig$;
+    global.Utils = origUtils;
   });
 
   test('EventQueue focus event centers on coords with highlight', async () => {
@@ -871,6 +888,8 @@ describe('engine.js basic behavior', () => {
       const poll = () => { if (!q.processing && q.queue.length === 0) return resolve(); setTimeout(poll, 5); };
       setTimeout(poll, 5);
     });
+
+    await new Promise((resolve) => setTimeout(resolve, 240));
 
     expect(global.Utils.refreshTileSet).toHaveBeenCalled();
 
@@ -1202,13 +1221,13 @@ describe('engine.js basic behavior', () => {
       return orig$(sel);
     };
     await q.processEvent({ type: 'conversation', message: { entity_id: 'E2', message: 'Hey POV', targets: ['POV'] } });
-    expect(triggerSpy).toHaveBeenCalledWith('E2', 'Hey POV');
+    expect(triggerSpy).toHaveBeenCalledWith('E2', 'Hey POV', expect.any(Object));
     expect(dialogSpy).not.toHaveBeenCalled();
 
     // Case 3: default bubble
     dialogSpy.mockClear(); bubbleSpy.mockClear(); triggerSpy.mockClear();
     await q.processEvent({ type: 'conversation', message: { entity_id: 'E3', message: 'Bubble' } });
-    expect(bubbleSpy).toHaveBeenCalledWith('E3', 'Bubble');
+    expect(bubbleSpy).toHaveBeenCalledWith('E3', 'Bubble', expect.any(Object));
 
     // Case 4: visual-only placeholder updates local chat but does not show dialog or bubble
     dialogSpy.mockClear(); bubbleSpy.mockClear(); triggerSpy.mockClear(); localConversationSpy.mockClear();
@@ -1260,6 +1279,7 @@ describe('engine.js basic behavior', () => {
   });
 
   test('tileCoordsFromClientPoint uses transformed tile bounds', () => {
+    const orig$ = global.$;
     document.body.innerHTML = `
       <div class="tiles-container">
         <div class="tile" data-coords-x="5" data-coords-y="0"
@@ -1281,7 +1301,32 @@ describe('engine.js basic behavior', () => {
       return null;
     };
 
+    global.$ = (arg) => {
+      if (arg && arg.nodeType === 1) {
+        const element = arg;
+        const tileEl = element.classList && element.classList.contains('tile')
+          ? element
+          : (element.closest ? element.closest('.tile') : null);
+        return {
+          length: tileEl ? 1 : 0,
+          closest: () => {
+            if (!tileEl) {
+              return { length: 0, attr: () => undefined };
+            }
+            return {
+              length: 1,
+              attr: (name) => tileEl.getAttribute(name),
+            };
+          },
+          attr: (name) => (tileEl ? tileEl.getAttribute(name) : undefined),
+        };
+      }
+      return orig$(arg);
+    };
+
     const hit = global.tileCoordsFromClientPoint(75, 25);
     expect(hit).toEqual(expect.objectContaining({ x: 6, y: 0 }));
+
+    global.$ = orig$;
   });
 });
