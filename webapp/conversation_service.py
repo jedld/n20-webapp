@@ -35,6 +35,8 @@ from natural20.utils.pickpocket_notification import (
     pickpocket_victim_caught_note,
 )
 from natural20.utils.steal_notification import steal_detection_note
+from natural20.spell.message_spell_link import get_message_spell_link
+from natural20.utils.language_comprehension import comprehends_speech
 
 
 # Recognises a player's request to attempt an Insight (Wisdom) check.
@@ -1163,7 +1165,7 @@ class ConversationService:
 
         return visible_usernames
 
-    def conversation_payload(self, entity, message, targets=None, volume=None, distance_ft=None, mentioned_targets=None, language=None, visual_only_usernames=None, narrative=None, actions=None, segments=None, continuation_id=None, continuation_beats_remaining=0):
+    def conversation_payload(self, entity, message, targets=None, volume=None, distance_ft=None, mentioned_targets=None, language=None, visual_only_usernames=None, narrative=None, actions=None, segments=None, continuation_id=None, continuation_beats_remaining=0, message_spell=False, message_spell_link_id=None, local_chat_only=False, gallery_image_id=None):
         import uuid
 
         targets = unique_entities(targets or [])
@@ -1203,7 +1205,30 @@ class ConversationService:
         if continuation_id:
             payload['continuation_id'] = continuation_id
             payload['continuation_beats_remaining'] = int(continuation_beats_remaining or 0)
+        if message_spell:
+            payload['message_spell'] = True
+            payload['channel'] = 'message_spell'
+        if message_spell_link_id:
+            payload['message_spell_link_id'] = message_spell_link_id
+        if local_chat_only:
+            payload['local_chat_only'] = True
+        self.attach_gallery_image(payload, entity, gallery_image_id)
         return payload
+
+    def attach_gallery_image(self, payload, entity, gallery_image_id=None):
+        gallery_image_id = str(gallery_image_id or '').strip()
+        if not gallery_image_id or entity is None:
+            return
+        payload['gallery_image_id'] = gallery_image_id
+        if hasattr(entity, 'gallery_entry'):
+            entry = entity.gallery_entry(gallery_image_id)
+            if entry:
+                payload['gallery_image'] = entry.get('image')
+                if entry.get('label'):
+                    payload['gallery_label'] = entry.get('label')
+                return
+        if hasattr(entity, 'resolve_gallery_image'):
+            payload['gallery_image'] = entity.resolve_gallery_image(gallery_image_id)
 
     def build_skill_check_request_payload(self, requester, request_check):
         if not request_check or request_check.get('target') is None:
@@ -1286,6 +1311,7 @@ class ConversationService:
                 volume=reply_plan.get('volume'),
                 narrative=narrative,
                 segments=segments,
+                gallery_image_id=reply_plan.get('gallery_image_id'),
             )
         except TypeError:
             response_conversations = receiver.send_conversation(
@@ -1318,6 +1344,7 @@ class ConversationService:
             visual_only_usernames=visual_whisper_usernames,
             narrative=narrative,
             segments=segments,
+            gallery_image_id=reply_plan.get('gallery_image_id'),
         )
         self.attach_skill_check_request(conversation_payload, receiver, reply_plan)
         conversation_payload['tts_pending'] = False
@@ -2156,6 +2183,7 @@ class ConversationService:
         relay_instruction: bool = False,
         npc_initiated: bool = False,
         player_message: str = '',
+        message_spell_private: bool = False,
     ) -> str:
         """Format the standard NPC identity + conversation rules system prompt."""
         system_prompt = self.build_npc_identity_prompt(receiver, conversation_system_prompt)
@@ -2172,6 +2200,7 @@ class ConversationService:
             relay_instruction=relay_instruction,
             npc_initiated=npc_initiated,
             player_message=player_message,
+            message_spell_private=message_spell_private,
         )
         return system_prompt
 
@@ -2183,6 +2212,7 @@ class ConversationService:
         spoken_message,
         *,
         language='common',
+        message_spell_private: bool = False,
     ):
         """Guarantee the current PC line is the latest user turn for NPC LLM replies."""
         spoken = str(spoken_message or '').strip()
@@ -2201,12 +2231,21 @@ class ConversationService:
         if spoken in last_user:
             return
 
-        formatted = llm_conversation_handler._format_incoming_player_turn({
-            'source': speaker,
-            'message': spoken,
-            'language': language,
-            'actions': [],
-        })
+        if message_spell_private:
+            speaker_label = entity_label(speaker)
+            formatted = (
+                "[MESSAGE SPELL — magical whisper, not normal room speech. "
+                "Only you hear this; only the caster will hear your reply. "
+                "Nearby creatures hear nothing.]\n"
+                f"{speaker_label} whispers to you via the Message spell (in {language}): {spoken}"
+            )
+        else:
+            formatted = llm_conversation_handler._format_incoming_player_turn({
+                'source': speaker,
+                'message': spoken,
+                'language': language,
+                'actions': [],
+            })
         if not formatted:
             return
         if formatted.strip() == last_user.strip():
@@ -2230,6 +2269,8 @@ class ConversationService:
         npc_initiated: bool = False,
         open_dialog: bool = False,
         local_chat_only: bool = False,
+        message_spell_private: bool = False,
+        message_spell_link_id: str | None = None,
         player_speaker=None,
         player_language: str = 'common',
     ):
@@ -2246,6 +2287,7 @@ class ConversationService:
             relay_instruction=relay_instruction,
             npc_initiated=npc_initiated,
             player_message=original_player_message,
+            message_spell_private=message_spell_private,
         )
         llm_conversation_handler.create_conversation(receiver.entity_uid, system_prompt)
         try:
@@ -2259,6 +2301,7 @@ class ConversationService:
             speaker,
             original_player_message,
             language=player_language,
+            message_spell_private=message_spell_private,
         )
         for note in inject_system_messages or []:
             text = str(note or '').strip()
@@ -2295,6 +2338,9 @@ class ConversationService:
             llm_conversation_handler,
             player_speaker=player_speaker,
         )
+        if message_spell_private and speaker is not None:
+            reply_plan['volume'] = 'whisper'
+            reply_plan['targets'] = [speaker]
         self.logger.info(
             "[Talk] reply plan for %s skip=%s volume=%s targets=%s plan_ms=%.1f",
             receiver.label(),
@@ -2389,29 +2435,65 @@ class ConversationService:
         reply_plan = self.expand_reply_targets_from_message(receiver, reply_plan)
         if local_chat_only and speaker is not None:
             reply_plan['targets'] = [speaker]
+        if message_spell_private and speaker is not None:
+            reply_plan['targets'] = [speaker]
+            reply_plan['volume'] = 'whisper'
         reply_distance_ft = speech_distance_for(mode=reply_plan['volume'])
-        try:
-            response_conversations = receiver.send_conversation(
-                reply_plan['message'],
-                distance_ft=reply_distance_ft,
-                targets=reply_plan['targets'],
-                language=reply_plan['language'],
-                volume=reply_plan['volume'],
-                narrative=reply_plan.get('narrative') or [],
-                segments=reply_plan.get('segments') or [],
+        if message_spell_private and speaker is not None:
+            reply_language = reply_plan.get('language') or player_language or 'common'
+            reply_message = reply_plan['message']
+            if comprehends_speech(speaker, reply_language, source=receiver, session=self.current_game.game_session):
+                rendered_reply = reply_message
+            else:
+                rendered_reply = gibberish(reply_message, language=reply_language)
+            buffer_entry = {
+                'source': receiver,
+                'message': reply_message,
+                'directed_to': [speaker],
+                'targets': [speaker],
+                'language': reply_language,
+                'distance_ft': reply_distance_ft,
+                'volume': 'whisper',
+                'message_spell': True,
+            }
+            if message_spell_link_id:
+                buffer_entry['message_spell_link_id'] = message_spell_link_id
+            receiver.conversation_buffer.append(buffer_entry)
+            receiver.memory_buffer.append(dict(buffer_entry))
+            speaker.receive_conversation(
+                receiver,
+                rendered_reply,
+                language=reply_language,
+                directed_to=[speaker],
             )
-        except TypeError:
-            response_conversations = receiver.send_conversation(
-                reply_plan['message'],
-                distance_ft=reply_distance_ft,
+            response_conversations = [(speaker, rendered_reply, [speaker])]
+        else:
+            try:
+                response_conversations = receiver.send_conversation(
+                    reply_plan['message'],
+                    distance_ft=reply_distance_ft,
+                    targets=reply_plan['targets'],
+                    language=reply_plan['language'],
+                    volume=reply_plan['volume'],
+                    narrative=reply_plan.get('narrative') or [],
+                    segments=reply_plan.get('segments') or [],
+                    gallery_image_id=reply_plan.get('gallery_image_id'),
+                )
+            except TypeError:
+                response_conversations = receiver.send_conversation(
+                    reply_plan['message'],
+                    distance_ft=reply_distance_ft,
+                    targets=reply_plan['targets'],
+                    language=reply_plan['language'],
+                )
+        if message_spell_private and speaker is not None:
+            recipient_usernames = self.entity_audience_usernames([receiver, speaker], include_dm=True)
+        else:
+            recipient_usernames = self.conversation_audience_usernames(
+                receiver,
+                response_conversations,
                 targets=reply_plan['targets'],
-                language=reply_plan['language'],
             )
-        recipient_usernames = self.conversation_audience_usernames(
-            receiver,
-            response_conversations,
-            targets=reply_plan['targets'],
-        )
         visual_whisper_usernames = set()
         if reply_plan['volume'] == 'whisper':
             visual_whisper_usernames = self.conversation_visible_whisper_usernames(
@@ -2430,6 +2512,7 @@ class ConversationService:
             visual_only_usernames=visual_whisper_usernames,
             narrative=reply_plan.get('narrative') or [],
             segments=reply_plan.get('segments') or [],
+            gallery_image_id=reply_plan.get('gallery_image_id'),
         )
         continuation_id = self._register_reply_continuation(
             receiver,
@@ -2444,6 +2527,12 @@ class ConversationService:
             )
         if local_chat_only:
             conversation_payload['local_chat_only'] = True
+        if message_spell_private:
+            conversation_payload['message_spell'] = True
+            conversation_payload['channel'] = 'message_spell'
+            conversation_payload['local_chat_only'] = True
+            if message_spell_link_id:
+                conversation_payload['message_spell_link_id'] = message_spell_link_id
         self.attach_skill_check_request(conversation_payload, receiver, reply_plan)
         if not isinstance(receiver, PlayerCharacter):
             conversation_payload['tts_pending'] = True
@@ -2566,6 +2655,7 @@ class ConversationService:
         relay_instruction: bool = False,
         npc_initiated: bool = False,
         player_message: str = '',
+        message_spell_private: bool = False,
     ):
         target_entities = self.entity_rag_handler.get_conversation_targets(receiver, speaker=speaker)
         perceivable_entries = self.entity_rag_handler.collect_perceivable_targets(
@@ -2682,10 +2772,29 @@ class ConversationService:
                 "Your line will appear in the local chat panel directed at them, not in a separate "
                 "dialog window. Use [NO_RESPONSE] if you stay completely silent.\n"
             )
+        message_spell_block = ''
+        if message_spell_private:
+            speaker_label = entity_label(speaker) if speaker is not None else 'the caster'
+            message_spell_block = (
+                "\nMessage spell channel (NOT normal speech):\n"
+                "- The speaker cast the Message transmutation cantrip at you. Their words arrive as a "
+                "magical whisper only you can hear — not audible speech in the room.\n"
+                "- Only that caster will hear your reply. Bystanders, allies, and enemies nearby hear "
+                "nothing from either side.\n"
+                f"- Reply to {speaker_label} with [TO: speaker] or their @handle and [VOLUME: whisper]. "
+                "Keep replies to one short whispered beat.\n"
+                "- Do not shout, address the room, summon help aloud, or use movement/hostility tags "
+                "([APPROACH], [GO_HOSTILE], etc.) as if this were a normal conversation.\n"
+                "- You may react in character to a voice in your mind (surprise, recognition of the "
+                "spell, suspicion, etc.).\n"
+            )
         pronoun_block = self._npc_pronoun_guidance(receiver)
+        gallery_block = self.entity_rag_handler.npc_image_gallery_guidance_for_conversation(receiver)
         return (
             "\n\nConversation response rules:\n"
+            f"{message_spell_block}"
             f"{initiative_block}"
+            f"{gallery_block}"
             "- You may choose not to speak. If you do not want to respond, output exactly [NO_RESPONSE].\n"
             "- If you do speak, stay in character and return only optional control tags plus the spoken line.\n"
             "- Keep each reply to one conversational beat: a short spoken line (or two), optional [ASIDE: ...], then stop and wait for the player to answer. Do not deliver escalating multi-paragraph monologues in a single reply.\n"
@@ -2836,6 +2945,9 @@ class ConversationService:
             for entry in history:
                 if entry.get('type') != 'entity':
                     continue
+                gallery_image_id = entry.get('gallery_image_id')
+                if gallery_image_id and hasattr(entity, 'resolve_gallery_image'):
+                    entry['gallery_image'] = entity.resolve_gallery_image(gallery_image_id)
                 recorded = self.get_recorded_insight_check(
                     entity_pov,
                     entity.entity_uid,
@@ -4437,6 +4549,7 @@ class ConversationService:
             'volume': base_plan.get('volume'),
             'tts_emotion': base_plan.get('tts_emotion'),
             'tts_instruct': base_plan.get('tts_instruct'),
+            'gallery_image_id': base_plan.get('gallery_image_id'),
             'skip': False,
         }
         return reply_plan
@@ -4503,6 +4616,7 @@ class ConversationService:
                 volume=reply_plan['volume'],
                 narrative=reply_plan.get('narrative') or [],
                 segments=reply_plan.get('segments') or [],
+                gallery_image_id=reply_plan.get('gallery_image_id'),
             )
         except TypeError:
             response_conversations = receiver.send_conversation(
@@ -4538,6 +4652,7 @@ class ConversationService:
             segments=reply_plan.get('segments') or [],
             continuation_id=active_continuation_id,
             continuation_beats_remaining=beats_remaining,
+            gallery_image_id=reply_plan.get('gallery_image_id'),
         )
         if state.get('local_chat_only'):
             conversation_payload['local_chat_only'] = True
@@ -4614,6 +4729,137 @@ class ConversationService:
             'continuation_beats_remaining': result.get('continuation_beats_remaining', 0),
         }, 200
 
+    def handle_message_spell_talk(
+        self,
+        data,
+        entity,
+        conversation_system_prompt,
+        normalized_requesting_username,
+        http_replies,
+    ):
+        """Deliver a whisper on an active Message cantrip link (caster ↔ target only)."""
+        link_id = data.get('message_spell_link_id')
+        message = data.get('message')
+        language = data.get('language') or 'common'
+        if not link_id:
+            return {'error': 'message_spell_link_id is required'}, 400
+        if message is None or not str(message).strip():
+            return {'error': 'Message is required'}, 400
+
+        game_session = self.current_game.game_session
+        battle = None
+        try:
+            battle = self.current_game.get_current_battle()
+        except Exception:
+            battle = None
+
+        link = get_message_spell_link(game_session, link_id)
+        if link is None:
+            return {'error': 'Message spell link not found'}, 404
+        if not link.is_active(game_session, battle=battle):
+            return {'error': 'Message spell link has expired'}, 410
+        if not link.can_speak(entity):
+            return {'error': 'You are not part of this Message link'}, 403
+
+        recipient = link.other_party(entity)
+        if recipient is None:
+            return {'error': 'Invalid Message link participants'}, 400
+
+        parsed_input = parse_player_conversation_input(message or '')
+        spoken_message = parsed_input.get('spoken') or ''
+        player_actions = parsed_input.get('actions') or []
+        if not spoken_message and not player_actions:
+            return {'error': 'Message or action is required'}, 400
+
+        if isinstance(entity, PlayerCharacter):
+            self.current_game.increment_game_time(entity)
+
+        volume = 'whisper'
+        distance_ft = speech_distance_for(mode=volume)
+        targets = [recipient]
+
+        if comprehends_speech(recipient, language, source=entity, session=game_session):
+            rendered_message = spoken_message
+        else:
+            rendered_message = gibberish(spoken_message, language=language)
+
+        buffer_entry = {
+            'source': entity,
+            'message': spoken_message,
+            'directed_to': targets,
+            'targets': targets,
+            'language': language,
+            'distance_ft': distance_ft,
+            'volume': volume,
+            'narrative': player_actions,
+            'actions': player_actions,
+            'message_spell_link_id': link_id,
+            'message_spell': True,
+        }
+        entity.conversation_buffer.append(buffer_entry)
+        entity.memory_buffer.append(dict(buffer_entry))
+        recipient.receive_conversation(
+            entity,
+            rendered_message,
+            language=language,
+            directed_to=targets,
+            actions=player_actions,
+        )
+
+        speaker_payload = self.conversation_payload(
+            entity,
+            spoken_message,
+            targets=targets,
+            volume=volume,
+            distance_ft=distance_ft,
+            language=language,
+            actions=player_actions,
+            message_spell=True,
+            message_spell_link_id=link_id,
+            local_chat_only=True,
+        )
+        audience = self.entity_audience_usernames([entity, recipient], include_dm=True)
+        emitted_by_username = self.emit_conversation_to_usernames(
+            audience,
+            speaker_payload,
+            source_entity=entity,
+        )
+        self._append_http_reply_for_requester(
+            http_replies,
+            normalized_requesting_username,
+            emitted_by_username,
+            speaker_payload,
+            entity,
+        )
+        self._persist_conversation_line(
+            entity,
+            spoken_message,
+            targets=targets,
+            volume=volume,
+            language=language,
+            username=session.get('username'),
+            narrative=player_actions,
+        )
+
+        if getattr(recipient, 'is_npc', lambda: False)() and getattr(recipient, 'dialog', False):
+            if not self.npc_conversation_mode_is_manual(recipient):
+                self._run_single_npc_reply_turn(
+                    recipient,
+                    entity,
+                    conversation_system_prompt,
+                    llm_conversation_handler=self.llm_conversation_handler,
+                    http_replies=http_replies,
+                    normalized_requesting_username=normalized_requesting_username,
+                    original_player_message=spoken_message or message,
+                    local_chat_only=True,
+                    message_spell_private=True,
+                    message_spell_link_id=link_id,
+                    player_speaker=entity,
+                    player_language=language,
+                )
+
+        return {'success': True, 'replies': http_replies, 'message_spell_link_id': link_id}, 200
+
     def talk_response(self, data, conversation_system_prompt, requesting_username=None):
         talk_started = time.monotonic()
         http_replies = []
@@ -4643,6 +4889,15 @@ class ConversationService:
         entity = self.current_game.get_entity_by_uid(entity_id)
         if not entity:
             return {'error': 'Entity not found'}, 404
+
+        if data.get('message_spell_link_id'):
+            return self.handle_message_spell_talk(
+                data,
+                entity,
+                conversation_system_prompt,
+                normalized_requesting_username,
+                http_replies,
+            )
 
         if data.get('no_response'):
             if not isinstance(entity, PlayerCharacter):
@@ -5160,6 +5415,7 @@ class ConversationService:
                 volume=reply_plan['volume'],
                 narrative=reply_plan.get('narrative') or [],
                 segments=reply_plan.get('segments') or [],
+                gallery_image_id=reply_plan.get('gallery_image_id'),
             )
         except TypeError:
             response_conversations = npc.send_conversation(
@@ -5192,6 +5448,7 @@ class ConversationService:
             visual_only_usernames=visual_whisper_usernames,
             narrative=reply_plan.get('narrative') or [],
             segments=reply_plan.get('segments') or [],
+            gallery_image_id=reply_plan.get('gallery_image_id'),
         )
         conversation_payload['tts_pending'] = True
         conversation_payload['tts_emotion'] = reply_plan.get('tts_emotion')

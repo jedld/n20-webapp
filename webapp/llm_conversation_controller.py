@@ -205,6 +205,29 @@ class LLMConversationController:
         action_text = '; '.join(actions)
         speaker_label = self._entity_label(message.get('source'))
         language = message.get('language') or 'common'
+        if message.get('message_spell_link_id') or message.get('message_spell'):
+            spell_prefix = (
+                "[MESSAGE SPELL — magical whisper, not normal room speech. "
+                "Only you hear this; only the caster will hear your reply. "
+                "Nearby creatures hear nothing.]\n"
+            )
+            if spoken and action_text:
+                return (
+                    f"{spell_prefix}"
+                    f"{speaker_label} whispers to you via the Message spell (in {language}): {spoken}\n"
+                    f"(Non-verbal action — not transmitted by the spell: {action_text})"
+                )
+            if action_text:
+                return (
+                    f"{spell_prefix}"
+                    f"{speaker_label} attempted a non-verbal action via Message spell contact: {action_text}"
+                )
+            if spoken:
+                return (
+                    f"{spell_prefix}"
+                    f"{speaker_label} whispers to you via the Message spell (in {language}): {spoken}"
+                )
+            return ''
         if spoken and action_text:
             return (
                 f"{speaker_label} says to you (in {language}): {spoken}\n"
@@ -235,6 +258,8 @@ class LLMConversationController:
             elif conversation_id in directed_uids or target_uid == conversation_id:
                 role = "user"
                 message_content = self._format_incoming_player_turn(message)
+            elif message.get('message_spell_link_id') or message.get('message_spell'):
+                continue
             else:
                 role = message.get("role", "system")
                 directed_entities = ", ".join([self._entity_label(e) for e in (message.get("directed_to") or [])])

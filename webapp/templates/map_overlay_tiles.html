@@ -71,6 +71,15 @@
                 <div class="grease-marker" aria-hidden="true"
                      style="--grease-seed: '{{ obj['grease_marker_seed'] or 'seed' }}';"></div>
               {% endif %}
+              {% if obj['stinking_cloud_marker'] %}
+                <div class="stinking-cloud-marker" aria-hidden="true"
+                     style="--stink-seed: '{{ obj['stinking_cloud_marker_seed'] or 'seed' }}';"></div>
+              {% endif %}
+              {% if obj['tiny_hut_dome'] %}
+                <div class="tiny-hut-dome-marker" aria-hidden="true"
+                     data-lighting="{{ obj['tiny_hut_lighting'] or 'default' }}"
+                     style="--hut-radius-squares: {{ ((obj['tiny_hut_radius_ft'] or 10) // 5) }}; --hut-color: {{ obj['tiny_hut_color'] or 'sapphire' }};"></div>
+              {% endif %}
               {% if highlight_doors and obj.get('door_highlight') and tile['line_of_sight'] %}
                 <div class="door-highlight-marker {% if obj.get('door_highlight_opened') %}door-highlight-marker-opened{% endif %}" aria-hidden="true" title="{{ obj.get('label') or 'Door' }}">
                   {% if obj.get('door_highlight_edges', {}).get('top') %}

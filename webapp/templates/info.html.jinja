@@ -373,9 +373,31 @@
                     {% if entity.familiar() %}
                     <h4>{{entity.owner.label()}}'s Familiar</h4>
                     {% endif %}
+                    {% set gallery = entity.sheet_images() %}
                     <div class="basic-info-container">
                         <div class="profile-image">
-                            <img src="{{ url_for('static', filename='assets/' ~ entity.profile_image()) }}" alt="Profile Image">
+                            {% if gallery %}
+                            <img id="sheet-primary-image"
+                                 src="/assets/{{ gallery[0].image }}"
+                                 alt="{{ gallery[0].label }}">
+                            {% if gallery|length > 1 %}
+                            <div class="sheet-image-gallery" role="tablist" aria-label="Character images">
+                                {% for item in gallery %}
+                                <button type="button"
+                                        class="sheet-image-thumb{% if loop.first %} active{% endif %}"
+                                        data-image="/assets/{{ item.image }}"
+                                        data-label="{{ item.label }}"
+                                        aria-label="{{ item.label }}"
+                                        aria-selected="{{ 'true' if loop.first else 'false' }}"
+                                        {% if item.description %}title="{{ item.description }}"{% endif %}>
+                                    <img src="/assets/{{ item.image }}" alt="{{ item.label }}">
+                                </button>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                            {% else %}
+                            <img src="/assets/{{ entity.profile_image() }}" alt="Profile Image">
+                            {% endif %}
                         </div>
                         <div class="description">
                             {% if not character_description_suppressed_for(entity, viewer_is_dm=('dm' in role)) %}
@@ -753,7 +775,7 @@
                     {% set _has_bardic = entity.bardic_inspiration_max|default(0) %}
                     {% set _has_wild = entity.wild_shape_max|default(0) %}
                     {% set _has_arcane = entity.arcane_recovery is defined and entity.arcane_recovery is not none %}
-                    {% set _resource_pools = entity.resources if entity.resources is defined else {} %}
+                    {% set _resource_pools = entity.character_resource_pools() if entity.character_resource_pools is defined else (entity.resources if entity.resources is defined else {}) %}
                     {% if _has_ki or _has_rage or _has_sw or _has_loh or _has_bardic or _has_wild or _has_arcane or _resource_pools %}
                     <h3>Class Resources</h3>
                     <table class="class-resources-table">
@@ -1216,6 +1238,7 @@
                     <li class="inventory-slot tile-item" data-item-name="{{ item['name'] }}"">
                         <div class="inventory-slot-face">
                             <img class="item-icon" src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}" alt="{{ item['label'] }}">
+                            {% with item_name=item['name'] %}{% include '_item_charge_badge.html' %}{% endwith %}
                             {% if item.get('qty', 1) > 1 %}
                             <span class="item-quantity">{{ item.get('qty', 1) }}</span>
                             {% endif %}
@@ -1224,6 +1247,10 @@
                             <div class="inventory-slot-menu-title">{{ item['label'] }}</div>
                             {% if item.get('weight') is not none %}
                             <div class="inventory-slot-menu-meta">{{ item['weight'] }} lb{% if item.get('qty', 1) > 1 %} each{% endif %}</div>
+                            {% endif %}
+                            {% set charge = entity.item_charge_summary(item['name']) if entity.item_charge_summary is defined else none %}
+                            {% if charge %}
+                            <div class="inventory-slot-menu-meta">Charges: {{ charge.current }}/{{ charge.max }}</div>
                             {% endif %}
                             <div class="inventory-slot-menu-actions">
                                 <span class="item-use-note">Use from action panel</span>

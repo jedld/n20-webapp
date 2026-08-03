@@ -51,6 +51,7 @@ from .helpers.character_builder_utils import (
     collect_granted_languages,
     filter_language_pool,
     validate_background_language_selections,
+    validate_background_skill_selections,
 )
 from .helpers.character_builder_restrictions import load_character_builder_restrictions
 from .helpers.character_builder_levels import (
@@ -112,7 +113,7 @@ def _character_builder_view_context(*, edit_klass=None, **extra):
         'title': get_title(),
         'races': game_session.load_races(),
         'classes': classes,
-        'backgrounds': game_session.load_backgrounds(),
+        'backgrounds': restrictions.filter_backgrounds(game_session.load_backgrounds()),
         'equipment_packs': game_session.load_equipment_packs(),
         'spell_availability': spell_availability,
         'builder_restrictions': restrictions.to_client_dict(),
@@ -142,6 +143,9 @@ def character_builder_randomize_profile():
         include_personality=bool(payload.get('include_personality', True)),
         include_physical=bool(payload.get('include_physical', True)),
         include_alignment=bool(payload.get('include_alignment', True)),
+        include_harrowing_event=bool(payload.get('include_harrowing_event', False)),
+        include_background_trinket=bool(payload.get('include_background_trinket', False)),
+        campaign_root=get_game_session().root_path,
     )
     return jsonify(profile=profile)
 
@@ -351,6 +355,7 @@ def update_character(character_name):
         asi_boosts = _parse_json_dict_form(request.form, 'asi_boosts')
         background_key = (request.form.get('background') or '').strip()
         background_language_selections = _parse_json_list_form(request.form, 'background_languages')
+        background_skill_selections = _parse_json_list_form(request.form, 'background_skills')
         backgrounds_def = get_game_session().load_backgrounds() or {}
         background_def = backgrounds_def.get(background_key) if background_key else None
         if background_key and background_def is None:
@@ -363,6 +368,17 @@ def update_character(character_name):
         subrace_def = {}
         if race_def and subrace_key:
             subrace_def = (race_def.get('subrace') or {}).get(subrace_key, {})
+
+        restrictions = load_character_builder_restrictions()
+        if background_key and not restrictions.background_allowed(background_key):
+            return jsonify(error='Background is not allowed in this campaign.'), 400
+
+        ok, bg_skill_error = validate_background_skill_selections(
+            background_def,
+            background_skill_selections,
+        )
+        if not ok:
+            return jsonify(error=bg_skill_error), 400
 
         ok, bg_lang_error = validate_background_language_selections(
             background_def,
@@ -438,24 +454,18 @@ def update_character(character_name):
         _apply_profile_form_to_pc(pc, request.form)
 
         if background_key and background_def:
+            from natural20.utils.background_validation import (
+                apply_background_proficiencies,
+                apply_background_starting_equipment,
+            )
             pc['background'] = background_key
-            for skill in background_def.get('skill_proficiencies', []):
-                pc.setdefault('skills', [])
-                if skill not in pc['skills']:
-                    pc['skills'].append(skill)
-            for tool in background_def.get('tool_proficiencies', []):
-                pc.setdefault('tool_proficiencies', [])
-                if tool not in pc['tool_proficiencies']:
-                    pc['tool_proficiencies'].append(tool)
-            for lang in background_def.get('languages', []):
-                if lang and str(lang).lower() != 'none':
-                    pc.setdefault('languages', [])
-                    if lang not in pc['languages']:
-                        pc['languages'].append(lang)
-            if background_language_selections:
-                pc['languages'] = list(dict.fromkeys(
-                    list(pc.get('languages') or []) + background_language_selections
-                ))
+            apply_background_proficiencies(
+                pc,
+                background_def,
+                skill_selections=background_skill_selections,
+                language_selections=background_language_selections,
+            )
+            apply_background_starting_equipment(pc, background_def)
         elif not background_key:
             pc.pop('background', None)
 
@@ -759,10 +769,15 @@ def create_character():
         # Background handling
         background_key = (request.form.get('background') or '').strip()
         background_language_selections = _parse_json_list_form(request.form, 'background_languages')
+        background_skill_selections = _parse_json_list_form(request.form, 'background_skills')
         backgrounds_def = get_game_session().load_backgrounds() or {}
         background_def = backgrounds_def.get(background_key) if background_key else None
         if background_key and background_def is None:
             return jsonify(error='Unknown background selection'), 400
+
+        restrictions = load_character_builder_restrictions()
+        if background_key and not restrictions.background_allowed(background_key):
+            return jsonify(error='Background is not allowed in this campaign.'), 400
 
         flexible_cfg = subrace_def.get('flexible_ability') or race_def.get('flexible_ability') or {}
         expected_picks = flexible_cfg.get('picks') or []
@@ -841,6 +856,13 @@ def create_character():
             if lang_src:
                 base_languages.extend([str(l) for l in lang_src])
 
+        ok, bg_skill_error = validate_background_skill_selections(
+            background_def,
+            background_skill_selections,
+        )
+        if not ok:
+            return jsonify(error=bg_skill_error), 400
+
         ok, bg_lang_error = validate_background_language_selections(
             background_def,
             background_language_selections,
@@ -880,27 +902,22 @@ def create_character():
 
         # Background assignment
         if background_key and background_def:
+            from natural20.utils.background_validation import (
+                apply_background_proficiencies,
+                apply_background_starting_equipment,
+            )
             pc['background'] = background_key
-            # Background skill proficiencies are auto-added to skills list
-            for skill in background_def.get('skill_proficiencies', []):
-                pc.setdefault('skills', [])
-                if skill not in pc['skills']:
-                    pc['skills'].append(skill)
-            # Background tool proficiencies
-            for tool in background_def.get('tool_proficiencies', []):
-                pc.setdefault('tool_proficiencies', [])
-                if tool not in pc['tool_proficiencies']:
-                    pc['tool_proficiencies'].append(tool)
-            # Background fixed languages
-            for lang in background_def.get('languages', []):
-                pc.setdefault('languages', [])
-                if lang not in pc['languages']:
-                    pc['languages'].append(lang)
+            apply_background_proficiencies(
+                pc,
+                background_def,
+                skill_selections=background_skill_selections,
+                language_selections=background_language_selections,
+            )
+            apply_background_starting_equipment(pc, background_def)
 
         languages = list(dict.fromkeys(base_languages + race_language_selections))
-        # Add background language choices
-        if background_language_selections:
-            languages = list(dict.fromkeys(languages + background_language_selections))
+        if pc.get('languages'):
+            languages = list(dict.fromkeys(languages + list(pc.get('languages') or [])))
         if languages:
             pc['languages'] = languages
 
@@ -921,8 +938,10 @@ def create_character():
                 restrictions=restrictions,
             )
 
-            # Apply equipment pack if selected
+            # Apply equipment pack if selected (or background default)
             equipment_pack_id = (request.form.get('equipment_pack') or '').strip()
+            if not equipment_pack_id and background_def:
+                equipment_pack_id = str(background_def.get('default_equipment_pack') or '').strip()
             if equipment_pack_id:
                 equipment_packs = get_game_session().load_equipment_packs() or {}
                 pack = equipment_packs.get(equipment_pack_id)

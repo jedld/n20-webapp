@@ -100,7 +100,7 @@ _NPC_MOVEMENT_MAX_ATTEMPTS = max(5, int(os.environ.get('NPC_MOVEMENT_MAX_ATTEMPT
 _NPC_MOVEMENT_STUCK_TICKS = max(2, int(os.environ.get('NPC_MOVEMENT_STUCK_TICKS', '8')))
 _NPC_MOVEMENT_LLM_STUCK_TICKS = max(1, int(os.environ.get('NPC_MOVEMENT_LLM_STUCK_TICKS', '1')))
 CONTROL_DIRECTIVE_PATTERN = re.compile(
-    r'\[(no_response|to|volume|emotion|tts|tts_instruct|delivery)(?:\s*:\s*([^\]]*))?\]',
+    r'\[(no_response|to|volume|emotion|tts|tts_instruct|delivery|portrait|image)(?:\s*:\s*([^\]]*))?\]',
     re.IGNORECASE,
 )
 ACTION_DIRECTIVE_PATTERN = re.compile(
@@ -117,11 +117,17 @@ SOCIAL_APPROACH_MAX_FT = 5
 
 _ESCORT_PLAYER_REQUEST = re.compile(
     r'\b(?:'
-    r'suite|guest\s+room|upstairs|second\s+floor|private\s+room|'
+    r'suite|guest\s+room|bedroom|upstairs|second\s+floor|private\s+room|'
     r'show\s+me|lead\s+me|take\s+me|escort|where\s+is\s+the|meet\s+me\s+up'
     r')\b',
     re.IGNORECASE,
 )
+_STAFF_HOME_LANDMARKS = frozenset({
+    'amphail_market',
+    'taproom',
+    'behind_the_bar',
+    'stockroom',
+})
 _ESCORT_NPC_AGREE = re.compile(
     r'\b(?:'
     r'follow\s+me|upstairs|up\s+in|right\s+this\s+way|show\s+you|come\s+with|'
@@ -444,6 +450,7 @@ class EntityRAGHandler:
             'volume': None,
             'emotion': None,
             'tts_instruct': None,
+            'gallery_image_id': None,
             'response': response or '',
         }
 
@@ -464,6 +471,8 @@ class EntityRAGHandler:
                     controls['tts_instruct'] = instruct
             elif directive in ('tts', 'tts_instruct', 'delivery') and value:
                 controls['tts_instruct'] = value
+            elif directive in ('portrait', 'image') and value:
+                controls['gallery_image_id'] = value
             return ''
 
         controls['response'] = CONTROL_DIRECTIVE_PATTERN.sub(_replace, controls['response']).strip()
@@ -840,6 +849,7 @@ class EntityRAGHandler:
             'volume': volume,
             'tts_emotion': tts_emotion,
             'tts_instruct': tts_instruct,
+            'gallery_image_id': controls.get('gallery_image_id'),
             'skip': False,
         })
         if plan.get('request_check'):
@@ -2473,6 +2483,30 @@ class EntityRAGHandler:
                 partial = subject
         return exact or partial
 
+    def npc_image_gallery_guidance_for_conversation(self, entity: Entity) -> str:
+        """Prompt block listing portrait ids/descriptions when an NPC has multiple gallery images."""
+        if not hasattr(entity, 'image_gallery'):
+            return ''
+        gallery = entity.image_gallery()
+        if len(gallery) <= 1:
+            return ''
+        lines = []
+        for entry in gallery:
+            entry_id = str(entry.get('id') or '').strip()
+            if not entry_id:
+                continue
+            description = str(entry.get('description') or entry.get('label') or entry_id).strip()
+            lines.append(f"  - {entry_id}: {description}")
+        if not lines:
+            return ''
+        return (
+            "- You may set your JRPG dialog portrait with [PORTRAIT: <id>] before your spoken line. "
+            "Pick the id that best matches mood, pose, outfit, and the current situation. "
+            "Available portraits:\n"
+            + '\n'.join(lines)
+            + "\n- Omit [PORTRAIT: ...] to keep the default portrait. Only use ids from this list.\n"
+        )
+
     def perceivable_targets_guidance_for_entity(
         self,
         entity: Entity,
@@ -2717,6 +2751,33 @@ class EntityRAGHandler:
         parts = header_lines + ([body] if body else [])
         return '\n'.join(parts)
 
+    def _target_info_landmark_id(self, target_info: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not target_info or target_info.get('kind') != 'annotation':
+            return None
+        from natural20.map_annotations import normalize_annotation_id
+
+        annotation = target_info.get('annotation') or {}
+        ann_id = normalize_annotation_id(str(annotation.get('id') or ''))
+        return ann_id or None
+
+    def _is_staff_home_landmark(self, landmark_id: Optional[str]) -> bool:
+        if not landmark_id:
+            return False
+        from natural20.map_annotations import normalize_annotation_id
+
+        return normalize_annotation_id(str(landmark_id)) in _STAFF_HOME_LANDMARKS
+
+    def _is_staff_home_target(self, actor: Entity, target_info: Optional[Dict[str, Any]]) -> bool:
+        return self._is_staff_home_landmark(self._target_info_landmark_id(target_info))
+
+    def _is_escort_destination_target(self, actor: Entity, target_info: Optional[Dict[str, Any]]) -> bool:
+        landmark_id = self._target_info_landmark_id(target_info)
+        if not landmark_id:
+            return False
+        if self._is_staff_home_landmark(landmark_id):
+            return False
+        return landmark_id in self.movement_helper._actor_known_landmark_ids(actor)
+
     def resolve_escort_landmark_id(self, actor: Entity, text: str) -> Optional[str]:
         """Pick a known landmark id when NPC/player text implies escort navigation."""
         if actor is None or not text:
@@ -2727,6 +2788,21 @@ class EntityRAGHandler:
         lowered = str(text).lower()
         if 'suite' in lowered and 'tavern_suite_room' in known:
             return 'tavern_suite_room'
+        if re.search(r'\bbedroom\b', lowered, re.IGNORECASE):
+            if 'tavern_suite_room' in known and re.search(
+                r'private|suite|your\b', lowered, re.IGNORECASE
+            ):
+                return 'tavern_suite_room'
+            for landmark_id in (
+                'landmark_standard_room_1',
+                'landmark_standard_room_2',
+                'landmark_tavern_room_3',
+                'landmark_standard_room_4',
+            ):
+                if landmark_id in known:
+                    return landmark_id
+            if 'landmark_hallway' in known:
+                return 'landmark_hallway'
         if re.search(r'guest\s+room', lowered, re.IGNORECASE):
             for landmark_id in (
                 'landmark_standard_room_1',
@@ -3736,6 +3812,7 @@ class EntityRAGHandler:
             actor,
             target_info,
             distance_ft=5,
+            return_to_post=True,
         )
         if scheduled is not None:
             self._trigger_immediate_npc_movement(actor)
@@ -3755,19 +3832,33 @@ class EntityRAGHandler:
             goal_state = self.current_game.get_short_term_goal(entity)
         except Exception:
             goal_state = None
+        if task.get('return_to_post'):
+            return
         has_active_goal = isinstance(goal_state, dict) and goal_state.get('status') == 'active'
-        if not has_active_goal and not task.get('requester_uid'):
+        if not has_active_goal and not task.get('trigger_arrival_debrief'):
+            return
+        if self._is_staff_home_target(entity, task.get('target_info')) and not has_active_goal:
             return
         if isinstance(goal_state, dict) and goal_state.get('arrival_debrief_done'):
             return
         if isinstance(task, dict) and task.get('arrival_debrief_done'):
             return
+        npc_uid = str(getattr(entity, 'entity_uid', '') or '')
+        requester_uid = (
+            (goal_state or {}).get('requester_uid')
+            or task.get('requester_uid')
+            or ''
+        )
+        session_state = getattr(self.game_session, 'session_state', None) or {}
+        debrief_pairs = session_state.get('goal_arrival_debrief_done_pairs') or {}
+        if npc_uid and requester_uid and debrief_pairs.get(f'{npc_uid}|{requester_uid}'):
+            return
 
         if requester is None:
-            requester_uid = goal_state.get('requester_uid') or task.get('requester_uid')
-            if requester_uid:
+            lookup_uid = (goal_state or {}).get('requester_uid') or task.get('requester_uid')
+            if lookup_uid:
                 try:
-                    requester = self.game_session.entity_by_uid(requester_uid)
+                    requester = self.game_session.entity_by_uid(lookup_uid)
                 except Exception:
                     requester = None
 
@@ -3947,11 +4038,20 @@ class EntityRAGHandler:
                     'move_to skipped (actor is in combat)',
                 )
             else:
+                movement_speaker = speaker
+                trigger_arrival_debrief = False
+                return_to_post = False
+                if self._is_staff_home_target(actor, target_info):
+                    movement_speaker = None
+                elif self._is_escort_destination_target(actor, target_info) and speaker is not None:
+                    trigger_arrival_debrief = True
                 result['scheduled_movement'] = self.current_game.schedule_npc_move_to(
                     actor,
                     target_info,
                     distance_ft=move_directive.get('distance_ft', 5),
-                    speaker=speaker,
+                    speaker=movement_speaker,
+                    trigger_arrival_debrief=trigger_arrival_debrief,
+                    return_to_post=return_to_post,
                 )
                 if result['scheduled_movement'] is not None:
                     result['executed_actions'].append('move_to')
@@ -4048,13 +4148,17 @@ class EntityRAGHandler:
             self.current_game.complete_short_term_goal(actor, status='abandoned', reason='Abandoned by LLM')
             self._finalize_npc_errand(actor, peaceful=True)
 
+        movement_skip = set(skip or ())
+        if result.get('goal_status') in ('completed', 'abandoned'):
+            movement_skip |= {'move_to', 'approach', 'follow', 'set_goal'}
+
         self._apply_exploration_movement_directives(
             plan,
             actor,
             speaker,
             result,
             only=only,
-            skip=skip,
+            skip=movement_skip,
             kick_movement=kick_movement,
         )
         self._apply_item_exchange_directives(
@@ -5565,6 +5669,7 @@ class EntityRAGHandler:
                 entity,
                 speaker=requester,
                 kick_movement=False,
+                skip={'goal_complete', 'goal_give_up', 'set_goal'},
             )
             task = self.current_game.get_npc_movement_task(entity)
             if task is None or task.get('status') != 'active':
@@ -6696,6 +6801,8 @@ class EntityRAGHandler:
             context['profile_image'] = entity.profile_image()
         if hasattr(entity, 'token_image'):
             context['token_image'] = entity.token_image()
+        if hasattr(entity, 'image_gallery'):
+            context['image_gallery'] = entity.image_gallery()
         context['has_full_portrait'] = bool(props.get('profile_image'))
         if character_description_suppressed_for(entity, viewer_is_dm=viewer_is_dm):
             context['description'] = None

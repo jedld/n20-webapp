@@ -12,6 +12,14 @@ class GameEntityRegistry:
     def __init__(self, manager):
         self.manager = manager
 
+    def _assigned_materialization_state(self):
+        """Return mutable state used to dampen repeated materialization noise."""
+        state = getattr(self.manager, '_assigned_materialization_state', None)
+        if state is None:
+            state = {}
+            self.manager._assigned_materialization_state = state
+        return state
+
     def _campaign_default_map_key(self):
         maps = self.manager.maps
         if 'index' in maps:
@@ -150,23 +158,43 @@ class GameEntityRegistry:
         from webapp.blueprints.helpers.pvp import ensure_character_entity_loaded, spawn_deferred_entity
 
         spawned = list(self.spawn_player_for_user(username))
+        materialize_state = self._assigned_materialization_state()
+        retry_cooldown_s = float(getattr(self.manager, '_assigned_materialization_retry_cooldown_s', 1.0))
 
         for controller in self.manager.controllers:
             if username not in controller.get('controllers', []):
                 continue
 
             entity_uid = str(controller['entity_uid'])
+            state_key = (str(username), entity_uid)
             entity = self.get_entity_by_uid(entity_uid)
             if entity is not None and self.get_map_for_entity(entity) is not None:
+                materialize_state.pop(state_key, None)
                 continue
 
             if entity is None:
+                now = time.time()
+                state = materialize_state.setdefault(
+                    state_key,
+                    {'last_attempt_ts': 0.0, 'warned': False},
+                )
+                if state['last_attempt_ts'] and now - state['last_attempt_ts'] < retry_cooldown_s:
+                    continue
+                state['last_attempt_ts'] = now
                 entity = ensure_character_entity_loaded(entity_uid)
             if entity is None:
-                self.manager.logger.warning(
-                    f"Could not materialize assigned character {entity_uid} for user {username}"
+                state = materialize_state.setdefault(
+                    state_key,
+                    {'last_attempt_ts': 0.0, 'warned': False},
                 )
+                if not state.get('warned'):
+                    self.manager.logger.warning(
+                        f"Could not materialize assigned character {entity_uid} for user {username}"
+                    )
+                    state['warned'] = True
                 continue
+
+            materialize_state.pop(state_key, None)
 
             if entity_uid not in self.manager.deferred_players:
                 map_name, position = self._resolve_respawn_location(username, entity_uid)

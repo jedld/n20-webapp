@@ -127,3 +127,44 @@ def test_update_conversation_history_keeps_multiple_player_lines():
     roles = [msg['role'] for msg in controller.conversations['mara_bartender']['messages']]
     assert roles == ['user', 'assistant', 'user']
     assert 'room available' in controller.conversations['mara_bartender']['messages'][-1]['content']
+
+
+def test_message_spell_turn_is_formatted_for_npc_llm():
+    controller = _controller()
+    npc = type('E', (), {'entity_uid': 'guz', 'label': lambda self: 'Guz'})()
+    player = type('E', (), {'entity_uid': 'mira', 'label': lambda self: 'Mira'})()
+    formatted = controller._format_incoming_player_turn({
+        'source': player,
+        'message': 'meet me at the gate',
+        'language': 'common',
+        'message_spell_link_id': 'link-123',
+    })
+    assert 'MESSAGE SPELL' in formatted
+    assert 'Message spell' in formatted
+    assert 'meet me at the gate' in formatted
+    assert 'not normal room speech' in formatted.lower()
+
+
+def test_message_spell_lines_are_not_overheard_in_npc_history():
+    controller = _controller()
+    controller.create_conversation('guz', 'system prompt')
+    npc = type('E', (), {'entity_uid': 'guz', 'label': lambda self: 'Guz'})()
+    player = type('E', (), {'entity_uid': 'mira', 'label': lambda self: 'Mira'})()
+    bystander = type('E', (), {'entity_uid': 'pip', 'label': lambda self: 'Pip'})()
+    controller.update_conversation_history('guz', [{
+        'source': player,
+        'message': 'secret plan',
+        'language': 'common',
+        'directed_to': [npc],
+        'message_spell_link_id': 'link-abc',
+    }])
+    controller.update_conversation_history('pip', [{
+        'source': player,
+        'message': 'secret plan',
+        'language': 'common',
+        'directed_to': [npc],
+        'message_spell_link_id': 'link-abc',
+    }])
+    assert len(controller.conversations['guz']['messages']) == 1
+    assert 'secret plan' in controller.conversations['guz']['messages'][0]['content']
+    assert controller.conversations['pip']['messages'] == []

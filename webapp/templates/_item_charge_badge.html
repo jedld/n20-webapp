@@ -1,0 +1,6 @@
+{% if entity.item_charge_summary is defined %}
+{% set charge = entity.item_charge_summary(item_name) %}
+{% if charge %}
+<span class="item-charges" title="Charges remaining">{{ charge.current }}/{{ charge.max }}</span>
+{% endif %}
+{% endif %}

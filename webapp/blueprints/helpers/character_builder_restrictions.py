@@ -31,6 +31,8 @@ class CharacterBuilderRestrictions:
     blacklisted_spells: Set[str] = field(default_factory=set)
     blacklisted_feats: Set[str] = field(default_factory=set)
     blacklisted_abilities: Set[str] = field(default_factory=set)
+    allowed_backgrounds: Set[str] = field(default_factory=set)
+    blacklisted_backgrounds: Set[str] = field(default_factory=set)
 
     def clamp_level(self, level: Any) -> int:
         try:
@@ -52,6 +54,24 @@ class CharacterBuilderRestrictions:
 
     def ability_allowed(self, ability: str | None) -> bool:
         return _normalize_key(ability) not in self.blacklisted_abilities
+
+    def background_allowed(self, background: str | None) -> bool:
+        key = _normalize_key(background)
+        if not key:
+            return False
+        if key in self.blacklisted_backgrounds:
+            return False
+        if self.allowed_backgrounds and key not in self.allowed_backgrounds:
+            return False
+        return True
+
+    def filter_backgrounds(self, backgrounds: Dict[str, Any] | None) -> Dict[str, Any]:
+        if not backgrounds:
+            return {}
+        return {
+            name: data for name, data in backgrounds.items()
+            if self.background_allowed(name)
+        }
 
     def filter_classes(self, classes_def: Dict[str, Any] | None) -> Dict[str, Any]:
         if not classes_def:
@@ -99,7 +119,9 @@ class CharacterBuilderRestrictions:
                 'spells': sorted(self.blacklisted_spells),
                 'feats': sorted(self.blacklisted_feats),
                 'abilities': sorted(self.blacklisted_abilities),
+                'backgrounds': sorted(self.blacklisted_backgrounds),
             },
+            'allowed_backgrounds': sorted(self.allowed_backgrounds),
         }
 
     def validate_selection(
@@ -202,4 +224,6 @@ def load_character_builder_restrictions(
         blacklisted_spells=_normalize_slug_set(blacklist.get('spells')),
         blacklisted_feats=_normalize_slug_set(blacklist.get('feats')),
         blacklisted_abilities=_normalize_slug_set(blacklist.get('abilities')),
+        allowed_backgrounds=_normalize_slug_set(cfg.get('allowed_backgrounds')),
+        blacklisted_backgrounds=_normalize_slug_set(blacklist.get('backgrounds')),
     )

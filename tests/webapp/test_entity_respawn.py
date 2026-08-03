@@ -132,3 +132,27 @@ def test_ensure_user_entities_spawned_rematerializes_missing_assignment(monkeypa
 
     assert spawned == [pc]
     assert pc in manager.maps['town_market'].entities
+
+
+def test_ensure_user_entities_spawned_logs_missing_assignment_once(monkeypatch):
+    manager = FakeManager()
+    warnings = []
+    manager.logger = SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: warnings.append(args[0] if args else ''),
+        exception=lambda *args, **kwargs: None,
+    )
+    registry = GameEntityRegistry(manager)
+    manager.controllers = [{'entity_uid': 'shorvalu', 'controllers': ['shorvalu']}]
+
+    from webapp.blueprints.helpers import pvp
+
+    monkeypatch.setattr(pvp, 'ensure_character_entity_loaded', lambda _uid: None)
+    monkeypatch.setattr(pvp, 'spawn_deferred_entity', lambda _uid: None)
+
+    registry.ensure_user_entities_spawned('shorvalu')
+    registry.ensure_user_entities_spawned('shorvalu')
+    registry.ensure_user_entities_spawned('shorvalu')
+
+    assert len(warnings) == 1
+    assert 'Could not materialize assigned character shorvalu for user shorvalu' in warnings[0]

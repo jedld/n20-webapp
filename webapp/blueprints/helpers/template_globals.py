@@ -218,6 +218,21 @@ def action_flavors(action):
     return ""
 
 
+def action_descriptor(action):
+    from natural20.utils.action_bar import action_descriptor as _action_descriptor
+    return _action_descriptor(action)
+
+
+def spell_descriptor(spell_name, at_level=0):
+    from natural20.utils.action_bar import spell_descriptor as _spell_descriptor
+    return _spell_descriptor(spell_name, at_level)
+
+
+def item_descriptor(item):
+    from natural20.utils.action_bar import item_descriptor as _item_descriptor
+    return _item_descriptor(item)
+
+
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
@@ -376,6 +391,9 @@ def register_template_globals(flask_app):
     flask_app.add_template_global(transform_for, name='transform_for')
     flask_app.add_template_global(filter_for, name='filter_for')
     flask_app.add_template_global(action_flavors, name='action_flavors')
+    flask_app.add_template_global(action_descriptor, name='action_descriptor')
+    flask_app.add_template_global(spell_descriptor, name='spell_descriptor')
+    flask_app.add_template_global(item_descriptor, name='item_descriptor')
     flask_app.add_template_global(entity_owners, name='entity_owners')
     flask_app.add_template_global(format_languages, name='format_languages')
     flask_app.add_template_global(format_outward_appearance, name='format_outward_appearance')

@@ -26,12 +26,23 @@
   }
 
   function isShiftDraggableItem(item) {
+    if (item.source === 'inline_note') {
+      return false;
+    }
     return (
       item.kind === 'spawn_point' ||
       item.kind === 'object' ||
+      item.kind === 'entity' ||
       item.kind === 'terrain' ||
       item.kind === 'meta'
     );
+  }
+
+  function shouldRenderFixtureLabel(item) {
+    if (item.source === 'inline_note') {
+      return true;
+    }
+    return isShiftDraggableItem(item);
   }
 
   function clearOverlay() {
@@ -71,6 +82,18 @@
     if (item.kind === 'terrain') {
       return 'edit-marker-terrain';
     }
+    if (item.category === 'note' || item.source === 'inline_note') {
+      return 'edit-marker-note';
+    }
+    if (item.category === 'trigger') {
+      return 'edit-marker-trigger';
+    }
+    if (item.category === 'container') {
+      return 'edit-marker-container';
+    }
+    if (item.category === 'trap') {
+      return 'edit-marker-trap';
+    }
     return categoryClass(item.category);
   }
 
@@ -80,6 +103,10 @@
       wall: 100,
       door: 200,
       teleporter: 300,
+      trigger: 310,
+      trap: 315,
+      note: 320,
+      container: 330,
       object: 400,
       spawn_point: 500,
     };
@@ -333,7 +360,7 @@
       if (item.runtime_uid) {
         overlayState.itemsByRuntimeUid[item.runtime_uid] = item;
       }
-      if (isShiftDraggableItem(item)) {
+      if (shouldRenderFixtureLabel(item)) {
         fixtures.push(item);
       }
     });
@@ -403,11 +430,40 @@
     return fixtures.slice().sort(compareFixtureStack);
   }
 
-  function tileHasActionableOccupants($tile) {
-    if ($tile.data('coords-id')) {
-      return true;
+  function collectTileFixtures(x, y, $tile) {
+    const seen = new Set();
+    const fixtures = [];
+
+    function addFixture(item) {
+      if (!item) {
+        return;
+      }
+      const key = item.id != null ? String(item.id) : `${item.kind || 'item'}:${x}:${y}:${seen.size}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      fixtures.push(item);
     }
-    return $tile.find('.entity[data-id], .object-container[data-id]').length > 0;
+
+    getFixturesAt(x, y).forEach(addFixture);
+    if (!fixtures.length) {
+      getEditableFixturesAt(x, y).forEach(addFixture);
+    }
+
+    if ($tile && $tile.length) {
+      $tile.find('.object-container[data-id]').each(function () {
+        const entityUid = $(this).data('id');
+        const fixture = findFixtureForEntityUid(entityUid);
+        if (fixture) {
+          addFixture(fixture);
+        }
+      });
+    }
+
+    const sorted = fixtures.slice().sort(compareFixtureStack);
+    const editableOnly = sorted.filter((item) => item.editable || item.object_type);
+    return editableOnly.length ? editableOnly : sorted;
   }
 
   function showFixturePropertiesBar(fixtures, x, y) {
@@ -440,7 +496,29 @@
     $('#centerActionBarSubtitle').text(
       `Tile (${x}, ${y}) — ${fixtures.length} editable fixture${fixtures.length === 1 ? '' : 's'}.`,
     );
+    $('#actionBarCustomizeToggle, #actionBarHotkeyToggle').hide();
+    $('#centerActionBarInstructions').text(
+      'Use Edit properties to change map object fields. Shift+drag labels to move fixtures.',
+    );
     $('#centerActionBar').show();
+  }
+
+  function openTileFixtureEditor(x, y, $tile) {
+    const fixtures = collectTileFixtures(x, y, $tile);
+    if (!fixtures.length) {
+      return false;
+    }
+    const editable = fixtures.filter((item) => item.object_type && item.editable !== false);
+    if (
+      editable.length === 1
+      && window.EditProperties
+      && typeof window.EditProperties.openFromFixture === 'function'
+    ) {
+      window.EditProperties.openFromFixture(editable[0]);
+      return true;
+    }
+    showFixturePropertiesBar(fixtures, x, y);
+    return true;
   }
 
   function fixturePayloadFromItem(item) {
@@ -882,7 +960,7 @@
       }
       if (
         $(e.target).closest(
-          '.edit-mode-drag-handle, .modal, #centerActionBar, .popover-menu, .popover-menu-2, .entity, .object-container',
+          '.edit-mode-drag-handle, .modal, #centerActionBar, .popover-menu, .popover-menu-2, .edit-fixture-properties-btn, .edit-fixture-remove-btn',
         ).length
       ) {
         return;
@@ -893,21 +971,9 @@
       }
       const x = Number($tile.data('coords-x'));
       const y = Number($tile.data('coords-y'));
-      const fixtures = getFixturesAt(x, y);
-      if (fixtures.length) {
-        showFixturePropertiesBar(fixtures, x, y);
-        e.preventDefault();
-        e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === 'function') {
-          e.stopImmediatePropagation();
-        }
+      if (!openTileFixtureEditor(x, y, $tile)) {
         return;
       }
-      const editableFixtures = getEditableFixturesAt(x, y);
-      if (!editableFixtures.length || tileHasActionableOccupants($tile)) {
-        return;
-      }
-      showFixturePropertiesBar(editableFixtures, x, y);
       e.preventDefault();
       e.stopPropagation();
       if (typeof e.stopImmediatePropagation === 'function') {
@@ -984,6 +1050,8 @@
     snapToTile,
     getEditableFixturesAt,
     getFixturesAt,
+    collectTileFixtures,
+    openTileFixtureEditor,
     showFixturePropertiesBar,
     fixturePayloadFromItem,
     removeFixture,

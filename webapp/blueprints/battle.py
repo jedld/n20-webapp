@@ -457,25 +457,24 @@ def get_target():
 
 @battle_bp.route('/spells', methods=['GET'])
 def get_spell():
+    from natural20.utils.action_bar import build_spell_tab_groups
+
     battle_map = get_current_game().get_map_for_user(session['username'])
     battle = get_current_game().get_current_battle()
 
     entity_id = request.args.get('id')
     entity = battle_map.entity_by_uid(entity_id)
-    if entity.familiar():
-        entity_class_level = entity.owner.class_and_level()
-    else:
-        entity_class_level = entity.class_and_level()
-    spells_by_level = {}
-    for spell_name in entity.available_spells(battle):
-        # get spell available levels
-        if SpellAction.can_cast(entity, battle, spell_name):
-            spell_info = get_game_session().load_spell(spell_name)
-            spells_by_level[spell_info['level']] = spells_by_level.get(spell_info['level'], []) + [spell_name]
+    spells_by_level = entity.castable_spells_by_level(battle)
+    spell_tab_groups = build_spell_tab_groups(entity, spells_by_level)
 
     entity_x, entity_y = battle_map.entity_or_object_pos(entity)
-    return render_template('spells.html', entity=entity, spells_by_level=spells_by_level,
-                           entity_x=entity_x, entity_y=entity_y, entity_class_level=entity_class_level)
+    return render_template(
+        'spells.html',
+        entity=entity,
+        spell_tab_groups=spell_tab_groups,
+        entity_x=entity_x,
+        entity_y=entity_y,
+    )
 
 
 @battle_bp.route('/reaction', methods=['GET'])
@@ -781,9 +780,23 @@ def action():
                                 }})
                             battle.clear_animation_logs()
                         else:
-                            animation_log = []
-                            animation_log.append((entity.entity_uid, move_path, None))
-                            get_socketio().emit('message', {'type': 'move', 'message': {'from': move_path[0], 'to': move_path[-1], 'animation_log': animation_log}})
+                            from webapp.utils import (
+                                _coalesce_animation_log,
+                                build_move_animation_log_entries,
+                            )
+                            animation_entries = build_move_animation_log_entries(
+                                action,
+                                entity_uid=entity.entity_uid,
+                                fallback_path=move_path,
+                            )
+                            if not animation_entries:
+                                return jsonify({'status': 'error', 'message': 'Move produced no path'})
+                            resolved_path = animation_entries[-1][1]
+                            get_socketio().emit('message', {'type': 'move', 'message': {
+                                'from': resolved_path[0],
+                                'to': resolved_path[-1],
+                                'animation_log': _coalesce_animation_log(animation_entries),
+                            }})
                         # Flush any deferred map switch now that the move
                         # animation event has been queued on the client. This
                         # ensures the entity finishes animating into the
@@ -794,7 +807,7 @@ def action():
                         except Exception:
                             pass
                         # Check area narrations after free movement
-                        area_narration = battle_map.check_area_narration(entity, move_path[-1])
+                        area_narration = battle_map.check_area_narration(entity, resolved_path[-1])
                         if area_narration:
                             get_socketio().emit('message', {'type': 'narration', 'message': area_narration, 'map_name': battle_map.name})
                             narration_entry = area_narration.get('on_enter', {})
@@ -807,7 +820,7 @@ def action():
                                 pass
                         try:
                             get_current_game().update_ambient_soundtrack(
-                                entity=entity, battle_map=battle_map, position=move_path[-1]
+                                entity=entity, battle_map=battle_map, position=resolved_path[-1]
                             )
                         except Exception:
                             pass
@@ -1204,6 +1217,30 @@ def bardic_inspiration_choice():
     get_current_game().waiting_for_bardic_inspiration = False
     get_socketio().emit('message', {'type': 'dismiss_bardic_inspiration_prompt', 'message': {}})
     return jsonify(status='ok', used=use_die)
+
+
+@battle_bp.route('/tiny_hut/lighting', methods=['POST'])
+def tiny_hut_lighting():
+    """Command the interior lighting of the caster's active Tiny Hut."""
+    from natural20.spell.leomunds_tiny_hut_spell import LeomundsTinyHutSpell
+
+    payload = request.json or {}
+    entity_id = payload.get('id') or payload.get('entity_uid')
+    mode = (payload.get('mode') or 'default').strip().lower()
+    if mode not in ('default', 'dim', 'dark'):
+        return jsonify(status='error', message='Invalid lighting mode'), 400
+
+    game = get_current_game()
+    session = game.session
+    entity = session.entity_by_uid(entity_id) if entity_id else None
+    if entity is None:
+        return jsonify(status='error', message='Entity not found'), 404
+
+    if not LeomundsTinyHutSpell.set_interior_lighting(entity, mode, session):
+        return jsonify(status='error', message='No active Tiny Hut for this character'), 400
+
+    get_socketio().emit('message', {'type': 'refresh_map', 'message': {}})
+    return jsonify(status='ok', mode=mode)
 
 
 @battle_bp.route('/ready_action', methods=['POST'])

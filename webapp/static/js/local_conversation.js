@@ -23,6 +23,8 @@ window.LocalConversationChatBindings = {
         impersonateNpcId: null,
         impersonatableNpcs: [],
         impersonatePolish: false,
+        messageSpellLinkId: null,
+        messageSpellPeerName: null,
     },
     localConversationStorageKey: 'natural20.localConversationPanel.position',
     localConversationMinimizedStorageKey: 'natural20.localConversationPanel.minimized',
@@ -765,6 +767,10 @@ window.LocalConversationChatBindings = {
         const speakerName = Chat.escapeHtml(payload.speaker_name || payload.entity_id || 'Unknown');
         const targetNames = (payload.target_names || []).length ? ` to ${Chat.escapeHtml(payload.target_names.join(', '))}` : '';
         const volume = Chat.escapeHtml(payload.volume || 'normal');
+        const isMessageSpell = Boolean(payload.message_spell || payload.channel === 'message_spell');
+        const channelBadge = isMessageSpell
+            ? '<span class="local-conversation-channel-badge message-spell" title="Message cantrip — magical whisper, not normal speech">Message ✦</span>'
+            : '';
         const replyStatus = Chat.localConversation.entitiesById[payload.entity_id];
         let note = '';
         if (!isOwnMessage && replyStatus) {
@@ -787,9 +793,9 @@ window.LocalConversationChatBindings = {
                 ? `<div class="local-conversation-message-body">${Chat.escapeHtml(payload.message)}</div>`
                 : '');
         const messageHtml = `
-          <div class="local-conversation-message${isOwnMessage ? ' own' : ''}" data-reply-id="${Chat.escapeHtml(String(payload.reply_id || ''))}">
+          <div class="local-conversation-message${isOwnMessage ? ' own' : ''}${isMessageSpell ? ' message-spell' : ''}" data-reply-id="${Chat.escapeHtml(String(payload.reply_id || ''))}">
             <div class="local-conversation-message-header">
-              <span><strong>${speakerName}</strong>${targetNames}${Chat.renderTtsReplayButton(payload.audio_url, {
+              <span><strong>${speakerName}</strong>${targetNames}${channelBadge}${Chat.renderTtsReplayButton(payload.audio_url, {
                   npcName: payload.speaker_name || payload.entity_id || 'NPC',
                   npcUid: payload.entity_id || '',
                   emotion: payload.tts_emotion || 'calm',
@@ -800,8 +806,9 @@ window.LocalConversationChatBindings = {
                   ttsGain: payload.tts_gain,
                   ttsSkipped: payload.tts_skipped,
               })}</span>
-              <span>${volume} · ${timestamp}</span>
+              <span>${isMessageSpell ? 'message spell' : volume} · ${timestamp}</span>
             </div>
+            ${isMessageSpell ? '<div class="local-conversation-message-spell-note">Magical whisper — not audible to anyone else.</div>' : ''}
             ${spokenHtml}
             ${actionHtml}
             ${narrativeHtml}
@@ -916,6 +923,68 @@ window.LocalConversationChatBindings = {
             Chat.refreshLocalConversationPresence({ silent: true });
         }, state._debounceDelayMs);
     },
+    updateMessageSpellChannelUi: function () {
+        const state = Chat.localConversation;
+        const $panel = $('#localConversationPanel');
+        if (!$panel.length) {
+            return;
+        }
+        let $banner = $('#localConversationMessageSpellBanner');
+        if (!state.messageSpellLinkId) {
+            $panel.removeClass('message-spell-active');
+            if ($banner.length) {
+                $banner.remove();
+            }
+            return;
+        }
+        $panel.addClass('message-spell-active');
+        const peerLabel = Chat.escapeHtml(state.messageSpellPeerName || 'linked creature');
+        if (!$banner.length) {
+            $banner = $('<div id="localConversationMessageSpellBanner" class="local-conversation-message-spell-banner" role="status"></div>');
+            $panel.find('.local-conversation-header').after($banner);
+        }
+        $banner.html(
+            '<span class="local-conversation-message-spell-icon" aria-hidden="true">✦</span>'
+            + `<strong>Message spell</strong> — magical whisper to <em>${peerLabel}</em> only (not normal speech).`
+        );
+    },
+    openMessageSpellLink: function (data) {
+        if (!data || !data.link_id) {
+            return;
+        }
+        const state = Chat.localConversation;
+        const pov = Chat.getCurrentPovEntity();
+        const casterUid = data.source || data.caster_uid;
+        const targetUid = data.target_uid;
+        let otherUid = null;
+        let otherLabel = data.target_name || data.caster_name || 'linked creature';
+        if (pov && casterUid && pov === casterUid) {
+            otherUid = targetUid;
+            otherLabel = data.target_name || otherLabel;
+        } else if (pov && targetUid && pov === targetUid) {
+            otherUid = casterUid;
+            otherLabel = data.caster_name || otherLabel;
+        }
+        state.messageSpellLinkId = data.link_id;
+        state.messageSpellPeerName = otherLabel;
+        if (otherUid) {
+            state.selectedTargets.clear();
+            state.selectedTargets.add(otherUid);
+            Chat.renderLocalConversationTargets();
+        }
+        $('#localConversationVolume').val('whisper').prop('disabled', true);
+        Chat.setLocalConversationStatus(
+            `Message spell channel open with ${otherLabel}. Only they will hear your whisper.`
+        );
+        Chat.setLocalConversationMinimized(false);
+        Chat.updateMessageSpellChannelUi();
+        Chat.refreshLocalConversationPresence({ silent: true });
+        const $input = $('#localConversationInput');
+        if ($input.length) {
+            $input.attr('placeholder', `Whisper via Message spell to ${otherLabel}…`);
+            window.setTimeout(() => { $input.trigger('focus'); }, 50);
+        }
+    },
     sendLocalConversationMessage: function () {
         const speakerEntity = Chat.getLocalConversationSpeakerEntity();
         const message = ($('#localConversationInput').val() || '').trim();
@@ -938,26 +1007,34 @@ window.LocalConversationChatBindings = {
         const dmImpersonate = Chat.isDmUser() && state.impersonateMode && state.impersonateNpcId === speakerEntity;
         const dmImpersonatePolish = dmImpersonate && ($('#localConversationImpersonatePolish').is(':checked') || state.impersonatePolish);
 
+        const payload = {
+            entity_id: speakerEntity,
+            message: message,
+            targets: Array.from(state.selectedTargets),
+            language: $('#localConversationLanguage').val(),
+            volume: Chat.getEffectiveConversationVolume(message, Chat.getLocalConversationVolume()),
+            dm_impersonate: dmImpersonate,
+            dm_impersonate_polish: dmImpersonatePolish,
+        };
+        if (state.messageSpellLinkId) {
+            payload.message_spell_link_id = state.messageSpellLinkId;
+            payload.volume = 'whisper';
+        }
+
         $.ajax({
             type: 'POST',
             url: '/talk',
             contentType: 'application/json',
-            data: JSON.stringify({
-                entity_id: speakerEntity,
-                message: message,
-                targets: Array.from(state.selectedTargets),
-                language: $('#localConversationLanguage').val(),
-                volume: Chat.getEffectiveConversationVolume(message, Chat.getLocalConversationVolume()),
-                dm_impersonate: dmImpersonate,
-                dm_impersonate_polish: dmImpersonatePolish,
-            }),
+            data: JSON.stringify(payload),
             success: () => {
                 $('#localConversationInput').val('');
                 $sendButton.prop('disabled', false);
                 $input.prop('disabled', false).focus();
                 Chat.hideLocalMentionSuggestions();
-                Chat.localConversation.selectedTargets.clear();
-                Chat.renderLocalConversationTargets();
+                if (!state.messageSpellLinkId) {
+                    state.selectedTargets.clear();
+                    Chat.renderLocalConversationTargets();
+                }
                 Chat.refreshLocalConversationPresence({ silent: true });
             },
             complete: (xhr) => {

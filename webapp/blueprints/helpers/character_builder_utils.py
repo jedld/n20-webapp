@@ -83,29 +83,22 @@ def validate_background_language_selections(
     subrace_def=None,
 ):
   """Validate background language picks against the filtered pool."""
-  selections = list(selections or [])
-  if not background_def:
-    if selections:
-      return False, 'Unexpected background language choices'
-    return True, None
-
+  from natural20.utils.background_validation import (
+      validate_background_language_selections as _validate,
+  )
   granted = collect_granted_languages(race_def, subrace_def, background_def)
-  choice_count = int(background_def.get('language_choice_count', 0))
-  if choice_count <= 0:
-    if selections:
-      return False, 'Unexpected background language choices'
-    return True, None
+  return _validate(
+      background_def,
+      selections,
+      granted_languages=granted,
+  )
 
-  pool = filter_language_pool(background_def.get('languages_pool') or [], granted)
-  pool_set = set(pool)
-  if len(pool) < choice_count:
-    return False, 'Not enough background language options for this race/background combination.'
-  if len(selections) != choice_count:
-    plural = '' if choice_count == 1 else 's'
-    return False, f'Choose {choice_count} background language{plural}.'
-  if not all(sel in pool_set for sel in selections):
-    return False, 'Invalid background language choices'
-  return True, None
+
+def validate_background_skill_selections(background_def, selections):
+  from natural20.utils.background_validation import (
+      validate_background_skill_selections as _validate,
+  )
+  return _validate(background_def, selections)
 
 
 def _parse_json_list_form(form, key):

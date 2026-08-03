@@ -529,6 +529,29 @@ class TestEntityRAGHandler(unittest.TestCase):
         self.assertEqual(plan['tts_emotion'], 'fearful')
         self.assertEqual(plan['tts_instruct'], 'trembling, barely holding back tears')
 
+    def test_build_conversation_response_plan_parses_portrait_directive(self):
+        speaker = Mock()
+        speaker.entity_uid = "speaker"
+        speaker.label.return_value = "Speaker"
+
+        receiver = Mock()
+        receiver.entity_uid = "pip"
+        receiver.languages.return_value = ["common"]
+
+        self.rag_handler.get_conversation_targets = Mock(return_value=[speaker])
+        self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
+
+        plan = self.rag_handler.build_conversation_response_plan(
+            "[PORTRAIT: full_body] Come closer, love.",
+            receiver,
+            speaker=speaker,
+            llm_conversation_handler=Mock(),
+        )
+
+        self.assertFalse(plan['skip'])
+        self.assertEqual(plan['message'], 'Come closer, love.')
+        self.assertEqual(plan['gallery_image_id'], 'full_body')
+
     def test_parse_response_controls_treats_long_emotion_as_instruct(self):
         controls = self.rag_handler.parse_response_controls(
             "[EMOTION: soft and urgent, almost sobbing] Stay quiet."
@@ -2120,6 +2143,128 @@ class TestEntityRAGHandler(unittest.TestCase):
         self.assertIn('[TARGETS]', summary)
         self.assertIn('@pip', summary)
         self.assertIn('Pip', summary)
+
+    def test_resolve_escort_landmark_id_matches_bedroom(self):
+        actor = Mock()
+        actor.properties = {
+            'known_places': [
+                'taproom',
+                'landmark_standard_room_1',
+                'tavern_suite_room',
+            ],
+        }
+
+        self.assertEqual(
+            self.rag_handler.resolve_escort_landmark_id(actor, 'Can you show me a bedroom?'),
+            'landmark_standard_room_1',
+        )
+        self.assertEqual(
+            self.rag_handler.resolve_escort_landmark_id(actor, 'Take me to your private bedroom suite'),
+            'tavern_suite_room',
+        )
+
+    def test_apply_response_plan_directives_skips_move_after_goal_complete(self):
+        actor = Mock()
+        actor.entity_uid = 'pip_barmaid'
+        speaker = Mock()
+        speaker.entity_uid = 'aldric'
+
+        taproom_info = {
+            'kind': 'annotation',
+            'annotation': {'id': 'taproom', 'label': 'Taproom'},
+        }
+        self.rag_handler.parse_move_target_info = Mock(return_value=taproom_info)
+        self.mock_current_game.complete_short_term_goal.return_value = {'status': 'completed'}
+        self.rag_handler._finalize_npc_errand = Mock()
+        self.mock_current_game.entity_owners.return_value = ['dm']
+
+        plan = {
+            'goal_complete': True,
+            'move_to': {'target_info': taproom_info, 'distance_ft': 5},
+        }
+        result = self.rag_handler.apply_response_plan_directives(
+            plan,
+            actor,
+            speaker=speaker,
+        )
+
+        self.assertEqual(result['goal_status'], 'completed')
+        self.rag_handler._finalize_npc_errand.assert_called_once()
+        self.mock_current_game.schedule_npc_move_to.assert_not_called()
+
+    def test_maybe_trigger_goal_arrival_debrief_skips_return_to_post(self):
+        npc = Mock()
+        npc.entity_uid = 'pip_barmaid'
+        pc = Mock(spec=PlayerCharacter)
+        pc.entity_uid = 'aldric'
+
+        task = {
+            'return_to_post': True,
+            'requester_uid': 'aldric',
+            'target_info': {
+                'kind': 'annotation',
+                'annotation': {'id': 'taproom'},
+            },
+        }
+        manager = Mock()
+        self.mock_current_game.goal_arrival_manager = manager
+        self.mock_current_game.get_short_term_goal.return_value = None
+        self.mock_game_session.session_state = {}
+
+        self.rag_handler._maybe_trigger_goal_arrival_debrief(npc, task, requester=pc)
+
+        manager.start.assert_not_called()
+
+    def test_maybe_trigger_goal_arrival_debrief_skips_repeat_pair(self):
+        npc = Mock()
+        npc.entity_uid = 'pip_barmaid'
+        pc = Mock(spec=PlayerCharacter)
+        pc.entity_uid = 'aldric'
+
+        task = {
+            'trigger_arrival_debrief': True,
+            'requester_uid': 'aldric',
+            'target_info': {
+                'kind': 'annotation',
+                'annotation': {'id': 'landmark_standard_room_1'},
+            },
+        }
+        manager = Mock()
+        self.mock_current_game.goal_arrival_manager = manager
+        self.mock_current_game.get_short_term_goal.return_value = None
+        self.mock_game_session.session_state = {
+            'goal_arrival_debrief_done_pairs': {'pip_barmaid|aldric': True},
+        }
+
+        self.rag_handler._maybe_trigger_goal_arrival_debrief(npc, task, requester=pc)
+
+        manager.start.assert_not_called()
+
+    def test_schedule_move_to_marks_return_to_post(self):
+        from webapp.npc_movement import NpcMovementManager
+
+        manager = Mock()
+        manager.game_session = self.mock_game_session
+        manager.npc_movements = {}
+        manager.game_state_lock = MagicMock()
+        manager.game_state_lock.__enter__ = Mock(return_value=None)
+        manager.game_state_lock.__exit__ = Mock(return_value=None)
+
+        movement_manager = NpcMovementManager(manager)
+        entity = Mock()
+        entity.entity_uid = 'pip_barmaid'
+        target_info = {'kind': 'annotation', 'annotation': {'id': 'taproom'}}
+
+        task = movement_manager.schedule_move_to(
+            entity,
+            target_info,
+            return_to_post=True,
+            trigger_arrival_debrief=False,
+        )
+
+        self.assertTrue(task['return_to_post'])
+        self.assertFalse(task['trigger_arrival_debrief'])
+        self.assertIsNone(task['requester_uid'])
 
 
 if __name__ == '__main__':

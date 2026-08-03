@@ -1,13 +1,38 @@
 {
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/held_spell.png": {
+    "mtime": 1785580635,
+    "sha1": "49d09c0d8890a7b92b3e316954d5d71136a55b12",
+    "size": 1288
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/life_drain.png": {
+    "mtime": 1785580328,
+    "sha1": "0dfbb72957499ba386fd99dcd276f6e4ac7c6c2d",
+    "size": 782
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/protection.png": {
+    "mtime": 1785580328,
+    "sha1": "58f95405fd04aa8fe323862bbf73524dce1c5e71",
+    "size": 661
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/stench.png": {
+    "mtime": 1785580328,
+    "sha1": "0af3984090a29de9e0dbf2850995efafc7c24292",
+    "size": 951
+  },
+  "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/effect/strength_drain.png": {
+    "mtime": 1785580328,
+    "sha1": "e05b3bbd8073525adfc034ffecaeb555ca70ee00",
+    "size": 1210
+  },
   "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/iron_key.webp": {
     "mtime": 1785255845,
-    "sha1": "b0b6b75dda1100a6de642b78d026a8546d6a870f",
-    "size": 33438
+    "sha1": "695ca0b6e7fff1697f304948a930621f010371c8",
+    "size": 5400
   },
   "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/items/letter_from_a_dead_friend.webp": {
     "mtime": 1785255845,
-    "sha1": "91b0895ba4ca94898a5bce1814de52bcc5df4bbc",
-    "size": 57150
+    "sha1": "a52f54ffbf5a1c4a5373a58cc033593aa886bfaa",
+    "size": 4374
   },
   "/home/jedld/workspace/natural_20.py/n20-webapp/webapp/static/assets/prebuild_character/character6.jpg": {
     "mtime": 1785255845,

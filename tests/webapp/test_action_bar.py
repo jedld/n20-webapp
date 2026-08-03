@@ -79,6 +79,70 @@ class TestActionBarRoutes(unittest.TestCase):
             self.assertTrue(interact_call.get('interact_only'))
             self.assertTrue(other_call.get('except_interact'))
 
+    def test_action_template_context_skips_spells_for_ground_objects(self):
+        from natural20.item_library.common import Ground
+        from webapp.blueprints.helpers.action_bar import _action_template_context
+
+        ground = Ground(self.session, self.battle_map, {
+            'name': 'loot_pile',
+            'entity_uid': 'ground-loot-1',
+            'type': 'ground',
+        })
+
+        with patch('webapp.blueprints.helpers.action_bar.get_game_session', return_value=self.session):
+            ctx = _action_template_context(ground, None, self.battle_map, is_dm=True)
+
+        self.assertEqual(ctx['castable_spells_by_level'], {})
+        self.assertEqual(ctx['spell_tab_groups'], [])
+
+    def test_action_template_context_handles_null_inventory_objects(self):
+        from natural20.item_library.door_object import DoorObject
+        from webapp.blueprints.helpers.action_bar import _action_template_context
+
+        door = DoorObject(self.session, self.battle_map, {
+            'name': 'tavern_suite_door',
+            'entity_uid': 'tavern_suite_door',
+            'type': 'door',
+        })
+
+        with patch('webapp.blueprints.helpers.action_bar.get_game_session', return_value=self.session):
+            ctx = _action_template_context(door, None, self.battle_map, is_dm=True)
+
+        self.assertEqual(ctx['usable_items'], [])
+        self.assertEqual(ctx['other_items'], [])
+
+    def test_actions_batch_handles_null_inventory_objects(self):
+        from natural20.item_library.door_object import DoorObject
+
+        door = DoorObject(self.session, self.battle_map, {
+            'name': 'tavern_suite_door',
+            'entity_uid': 'tavern_suite_door',
+            'type': 'door',
+        })
+
+        current_game = Mock()
+        current_game.get_current_battle.return_value = None
+        current_game.get_map_for_user.return_value = self.battle_map
+        current_game.get_entity_by_uid = lambda uid: door if uid == 'tavern_suite_door' else None
+        current_game.get_map_for_entity.return_value = self.battle_map
+
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess['username'] = 'dm'
+
+        with patch('webapp.blueprints.helpers.action_bar.get_current_game', return_value=current_game), \
+             patch('webapp.blueprints.helpers.action_bar.get_game_session', return_value=self.session), \
+             patch('webapp.blueprints.helpers.action_bar.entity_owners', return_value=['dm']):
+            response = client.get(
+                '/actions/batch',
+                query_string={'ids': 'tavern_suite_door'},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(len(payload['sections']), 1)
+        self.assertTrue(payload['sections'][0].get('html'))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,0 +1,24 @@
+{% if usable_items %}
+  {% for items in usable_items|batch(10) %}
+  <tr class="usable-item-row">
+    {% for item in items %}
+    <td class="action-bar-action-cell" data-action-descriptor="{{ item_descriptor(item) }}">
+      <div class="action-bar-action-wrap">
+      <button class="action-button action-image item-image usable-item-button"
+              title="{{ item.label }}"
+              data-action-type="{{ use_item_action.__class__.__name__ }}"
+              data-action-opts='{{ item|tojson }}'
+              data-action-descriptor="{{ item_descriptor(item) }}"
+              data-tooltip="{{ item.label }}"
+              style="position: relative;">
+        <img src="{{ url_for('static', filename='assets/items/' + item.image + '.png') }}"
+             alt="{{ item.label }}" style="width: 50px; height: 50px;">
+        {% with item_name=item.name %}{% include '_item_charge_badge.html' %}{% endwith %}
+      </button>
+      <button type="button" class="action-bar-pin-btn" title="Pin to Common tab" aria-label="Pin to Common tab" hidden>★</button>
+      </div>
+    </td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+{% endif %}

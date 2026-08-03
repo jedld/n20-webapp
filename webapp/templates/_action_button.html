@@ -1,8 +1,10 @@
-<td>
+<td class="action-bar-action-cell" data-action-descriptor="{{ action_descriptor(action) }}">
     {% set fallback_label = action.button_label() or action.label() %}
+    <div class="action-bar-action-wrap">
     <button class="action-button action-image {{ 'bonus-action' if action.as_bonus_action else '' }} {{ 'hide-action' if action.action_type in ['hide', 'hide_bonus'] else '' }}"
         data-action-type="{{ action.__class__.__name__ }}"
         data-action-opts='{{ action.to_h() | tojson }}'
+        data-action-descriptor="{{ action_descriptor(action) }}"
         title="{{ action.label() }}"
         style="position: relative;"
         {{'disabled' if action.disabled else ''}}
@@ -33,6 +35,12 @@
         Thrown
       </div>
       {% endif %}
+      {% if action.__class__.__name__ == 'UseItemAction' and action.charge_badge_text is defined %}
+        {% set charge_badge = action.charge_badge_text() %}
+        {% if charge_badge %}
+        <span class="item-charges item-charges-action" title="Charges remaining">{{ charge_badge }}</span>
+        {% endif %}
+      {% endif %}
       {% if action.action_type == 'interact' and action.object_action[0] == 'give' and action.target %}
       <div style="position: absolute; bottom: 0; right: 0; width: 25px; height: 25px; border-radius: 50%; overflow: hidden; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.3);">
         {% set target_entity = action.target %}
@@ -48,4 +56,6 @@
       </div>
       {% endif %}
     </button>
+    <button type="button" class="action-bar-pin-btn" title="Pin to Common tab" aria-label="Pin to Common tab" hidden>★</button>
+    </div>
 </td>

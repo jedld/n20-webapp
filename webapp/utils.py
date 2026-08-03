@@ -10,7 +10,7 @@ from natural20.llm_controller import LlmMcpController
 from natural20.web.web_controller import WebController, ManualControl
 from natural20.player_character import PlayerCharacter
 from natural20.actions.attack_action import AttackAction
-from natural20.actions.spell_action import SpellAction
+from natural20.actions.spell_action import SpellAction, spell_action_provokes_hostility
 from natural20.actions.shove_action import ShoveAction
 from natural20.actions.grapple_action import GrappleAction
 import uuid
@@ -66,11 +66,72 @@ def _coalesce_animation_log(animation_log):
     return coalesced
 
 
+def build_move_animation_log_entries(action, entity_uid=None, fallback_path=None):
+    """Build client move animation tuples from a resolved MoveAction."""
+    entries = []
+    source = getattr(action, 'source', None)
+    uid = entity_uid or getattr(source, 'entity_uid', None)
+    if not uid:
+        return entries
+    for item in list(getattr(action, 'result', None) or []):
+        if not isinstance(item, dict) or item.get('type') != 'move':
+            continue
+        if source is not None and item.get('source') is not source:
+            continue
+        path = item.get('path')
+        if isinstance(path, list) and len(path) >= 2:
+            entries.append((uid, path, None))
+    if not entries and fallback_path and len(fallback_path) >= 2:
+        entries.append((uid, list(fallback_path), None))
+    return entries
+
+
+def resolved_move_animation_path(action, fallback=None):
+    """Return the path the engine actually committed for a MoveAction."""
+    entries = build_move_animation_log_entries(action, fallback_path=fallback)
+    if entries:
+        return entries[-1][1]
+    return list(fallback or getattr(action, 'move_path', None) or [])
+
+
 def _json_safe_uid(uid):
     """Normalize ids for SocketIO payloads (uuid.UUID is not JSON-serializable)."""
     if uid is None:
         return None
     return str(uid)
+
+
+def emit_message_spell_link(socketio, result_item, *, suppress_ui=False):
+    """Broadcast Message cantrip link UI (toast + local chat prompt)."""
+    if suppress_ui or socketio is None or not result_item:
+        return
+    source = result_item.get('source')
+    target = result_item.get('target')
+    target_name = getattr(target, 'name', None)
+    if target_name is None and target is not None and callable(getattr(target, 'label', None)):
+        try:
+            target_name = target.label()
+        except Exception:
+            target_name = None
+    caster_name = getattr(source, 'name', None)
+    if caster_name is None and source is not None and callable(getattr(source, 'label', None)):
+        try:
+            caster_name = source.label()
+        except Exception:
+            caster_name = None
+    label = target_name or 'the target'
+    socketio.emit('message', {
+        'type': 'message_spell_link',
+        'link_id': result_item.get('link_id'),
+        'source': _json_safe_uid(getattr(source, 'entity_uid', None)),
+        'target_uid': _json_safe_uid(getattr(target, 'entity_uid', None)),
+        'target_name': target_name,
+        'caster_name': caster_name,
+        'message': (
+            f'Message spell link — magical whisper only. Whisper to {label} in Local Chat '
+            '(not normal speech).'
+        ),
+    })
 
 
 from natural20.utils.conversation import audible_entities
@@ -1185,6 +1246,8 @@ class GameManagement:
     def _hostile_targets_for_action(self, action):
         if not isinstance(action, (AttackAction, SpellAction, ShoveAction, GrappleAction)):
             return set()
+        if isinstance(action, SpellAction) and not spell_action_provokes_hostility(action):
+            return set()
 
         source = getattr(action, 'source', None)
         source_group = self._entity_group(source) if source else None
@@ -1210,17 +1273,64 @@ class GameManagement:
                 hostile_targets.add(target)
         return hostile_targets
 
-    def _add_entities_to_initiative(self, add_to_initiative_set, entity_by_groups, battle_map, anchor, group, include_allies=False):
+    def _npc_witnesses_fight(self, witness, participants, battle_map):
+        """True when an NPC can see or hear any combatant in a fight starting nearby."""
+        participants = [p for p in (participants or []) if p is not None and p is not witness]
+        if not participants:
+            return False
+
+        from natural20.utils.conversation import (
+            SPEECH_BASE_RANGES,
+            acoustic_profile,
+            effective_hearing_distance,
+        )
+        combat_noise_ft = SPEECH_BASE_RANGES['shout']
+
+        for participant in participants:
+            try:
+                if battle_map.can_see(witness, participant):
+                    return True
+            except Exception:
+                pass
+            try:
+                raw_distance_ft = battle_map.distance(witness, participant) * battle_map.feet_per_grid
+                acoustic = acoustic_profile(participant, witness, battle_map)
+                adjusted_distance_ft = raw_distance_ft + float(acoustic.get('penalty_ft', 0) or 0)
+                if adjusted_distance_ft <= effective_hearing_distance(witness, combat_noise_ft):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _add_entities_to_initiative(
+        self,
+        add_to_initiative_set,
+        entity_by_groups,
+        battle_map,
+        anchor,
+        group,
+        include_allies=False,
+        fight_participants=None,
+    ):
         add_to_initiative_set.add((anchor, group))
+        participants = set(fight_participants or [anchor])
         for ally in entity_by_groups.get(group, set()):
             if ally == anchor or not ally.conscious():
-                continue
-            if self.get_map_for_entity(ally) != battle_map:
                 continue
             ally_group = self._entity_group(ally)
             if ally_group and self._faction_is_neutral(ally_group):
                 continue
-            if include_allies or battle_map.can_see(ally, anchor) or self._entity_group(ally) == 'a':
+            if group == 'a':
+                # Party-wide: every conscious PC joins when any party member enters combat.
+                should_add = True
+            else:
+                if self.get_map_for_entity(ally) != battle_map:
+                    continue
+                if include_allies:
+                    should_add = self._npc_witnesses_fight(ally, participants, battle_map)
+                else:
+                    should_add = battle_map.can_see(ally, anchor)
+            if should_add:
                 add_to_initiative_set.add((ally, ally_group or group))
 
     def loop_environment(self, aggressive_pairs=None):
@@ -1323,8 +1433,25 @@ class GameManagement:
 
                                 if aggressive_trigger or proximity_trigger or visibility_trigger:
                                     include_allies = aggressive_trigger or proximity_trigger
-                                    self._add_entities_to_initiative(add_to_initiative_set, entity_by_groups, battle_map, entity1, group1, include_allies=include_allies)
-                                    self._add_entities_to_initiative(add_to_initiative_set, entity_by_groups, battle_map, entity2, group2, include_allies=include_allies)
+                                    fight_participants = {entity1, entity2}
+                                    self._add_entities_to_initiative(
+                                        add_to_initiative_set,
+                                        entity_by_groups,
+                                        battle_map,
+                                        entity1,
+                                        group1,
+                                        include_allies=include_allies,
+                                        fight_participants=fight_participants,
+                                    )
+                                    self._add_entities_to_initiative(
+                                        add_to_initiative_set,
+                                        entity_by_groups,
+                                        battle_map,
+                                        entity2,
+                                        group2,
+                                        include_allies=include_allies,
+                                        fight_participants=fight_participants,
+                                    )
                                     start_battle = True
         add_to_initiative = list(add_to_initiative_set)
 
@@ -1897,6 +2024,13 @@ class GameManagement:
 
 
     def end_current_battle(self):
+        battle = self.get_current_battle()
+        if battle is not None:
+            try:
+                from natural20.environment_zones import demote_battle_zones_to_environment
+                demote_battle_zones_to_environment(battle)
+            except Exception:
+                self.logger.exception('Failed to demote battle zones to environment ticking')
         self.trigger_event('on_battle_end')
         self.set_current_battle(None)
         self.restore_ambient_soundtrack_after_battle()
@@ -1941,6 +2075,17 @@ class GameManagement:
         if max_player_time > self.previous_time:
             self.previous_time = max_player_time
             self.game_session.increment_game_time()
+            if not self.get_current_battle():
+                self._tick_exploration_environment()
+
+    def _tick_exploration_environment(self):
+        if self.get_current_battle() is not None:
+            return
+        try:
+            from natural20.environment_zones import tick_environment_zones
+            tick_environment_zones(self.maps, event_manager=self.game_session.event_manager)
+        except Exception:
+            self.logger.exception('Exploration environment zone tick failed')
 
     def realtime_ui_suppressed(self) -> bool:
         try:
@@ -1955,6 +2100,7 @@ class GameManagement:
             self.game_session.increment_game_time(seconds)
             if trigger_environment and not self.get_current_battle():
                 self.loop_environment()
+                self._tick_exploration_environment()
             new_time = int(self.game_session.game_time)
         if trigger_environment and not self.get_current_battle():
             try:
@@ -1993,8 +2139,24 @@ class GameManagement:
     def complete_short_term_goal(self, entity, status='completed', reason=None):
         return self.goal_manager.complete_short_term_goal(entity, status=status, reason=reason)
 
-    def schedule_npc_move_to(self, entity, target_info, distance_ft=5, speaker=None):
-        return self.movement_manager.schedule_move_to(entity, target_info, distance_ft=distance_ft, speaker=speaker)
+    def schedule_npc_move_to(
+        self,
+        entity,
+        target_info,
+        distance_ft=5,
+        speaker=None,
+        *,
+        return_to_post=False,
+        trigger_arrival_debrief=False,
+    ):
+        return self.movement_manager.schedule_move_to(
+            entity,
+            target_info,
+            distance_ft=distance_ft,
+            speaker=speaker,
+            return_to_post=return_to_post,
+            trigger_arrival_debrief=trigger_arrival_debrief,
+        )
 
     def schedule_npc_follow(self, entity, target, distance_ft=5, speaker=None):
         return self.movement_manager.schedule_follow(entity, target, distance_ft=distance_ft, speaker=speaker)
@@ -2231,6 +2393,10 @@ class GameManagement:
                             _src = result_item.get("source")
                             _src_uid = getattr(_src, "entity_uid", None) if _src is not None else None
                             self.socketio.emit('message', {"type": "message_toaster", "source": _json_safe_uid(_src_uid), "message": result_item["message"], "position": result_item["position"]})
+                    elif result_item.get('type') == 'message_spell':
+                        if not suppress_ui:
+                            from webapp.utils import emit_message_spell_link
+                            emit_message_spell_link(self.socketio, result_item, suppress_ui=suppress_ui)
                     elif result_item.get("type") == "contextual_sound":
                         if not suppress_ui:
                             from webapp.blueprints.helpers.contextual_sound_ui import emit_contextual_sound_payload
@@ -2251,10 +2417,7 @@ class GameManagement:
                 and getattr(action, 'action_type', None) == 'move'
                 and getattr(action, 'source', None) is not None
             ):
-                try:
-                    self.movement_manager.on_entity_moved(action.source)
-                except Exception as exc:
-                    self.logger.debug("NPC follow hook skipped: %s", exc)
+                self._schedule_npc_follow_after_move(action.source)
                 if forced_manager is not None:
                     try:
                         forced_manager.check_after_move(action.source)
@@ -2267,26 +2430,53 @@ class GameManagement:
             self.save_game_async()
         return True
 
+    def _schedule_npc_follow_after_move(self, entity) -> None:
+        """Run NPC follow hooks after the player move animation is queued."""
+        movement_manager = getattr(self, 'movement_manager', None)
+        if movement_manager is None or entity is None:
+            return
+
+        def _run() -> None:
+            try:
+                movement_manager.on_entity_moved(entity)
+            except Exception as exc:
+                self.logger.debug("NPC follow hook skipped: %s", exc)
+
+        socketio = getattr(self, 'socketio', None)
+        start_background = getattr(socketio, 'start_background_task', None) if socketio is not None else None
+        if callable(start_background):
+            try:
+                start_background(_run)
+                return
+            except Exception:
+                pass
+        _run()
+
     def emit_out_of_combat_move_animation(self, action, username=None):
         """Broadcast a path-based move animation for exploration-mode moves."""
         if self.realtime_ui_suppressed():
             return False
         if getattr(action, 'action_type', None) != 'move':
             return False
-        move_path = getattr(action, 'move_path', None) or []
-        if len(move_path) < 2:
+        entries = build_move_animation_log_entries(
+            action,
+            fallback_path=getattr(action, 'move_path', None),
+        )
+        if not entries:
             return False
         entity = getattr(action, 'source', None)
         entity_uid = getattr(entity, 'entity_uid', None)
         if not entity_uid:
             return False
-        animation_log = [(entity_uid, move_path, None)]
+        first_path = entries[0][1]
+        last_path = entries[-1][1]
+        animation_log = _coalesce_animation_log(entries)
         self.socketio.emit('message', {
             'type': 'move',
             'message': {
-                'from': move_path[0],
-                'to': move_path[-1],
-                'animation_log': _coalesce_animation_log(animation_log),
+                'from': first_path[0],
+                'to': last_path[-1],
+                'animation_log': animation_log,
             },
         })
         if username:

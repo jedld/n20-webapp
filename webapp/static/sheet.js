@@ -1,6 +1,19 @@
 $(document).ready(function () {
     var entityId = $('body').data('id');
 
+    $('.sheet-image-gallery').on('click', '.sheet-image-thumb', function () {
+        const $thumb = $(this);
+        const imageSrc = $thumb.data('image');
+        const label = $thumb.data('label') || 'Character image';
+        const $primary = $('#sheet-primary-image');
+        if (!imageSrc || !$primary.length) {
+            return;
+        }
+        $('.sheet-image-thumb').removeClass('active').attr('aria-selected', 'false');
+        $thumb.addClass('active').attr('aria-selected', 'true');
+        $primary.attr('src', imageSrc).attr('alt', label);
+    });
+
     // Handle section expansion
     $('.section-header').on('click', function () {
         const section = $(this).closest('.section');

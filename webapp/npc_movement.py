@@ -974,6 +974,9 @@ class NpcMovementManager:
         target_info: Dict[str, Any],
         distance_ft: int = 5,
         speaker=None,
+        *,
+        return_to_post: bool = False,
+        trigger_arrival_debrief: bool = False,
     ) -> Optional[Dict[str, Any]]:
         if entity is None or not target_info:
             return None
@@ -995,6 +998,8 @@ class NpcMovementManager:
             'attempts': 0,
             'history': [],
             'requester_uid': requester_uid,
+            'return_to_post': bool(return_to_post),
+            'trigger_arrival_debrief': bool(trigger_arrival_debrief),
             'last_error': None,
             'running': False,
         }

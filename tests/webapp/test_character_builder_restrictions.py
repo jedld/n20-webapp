@@ -33,6 +33,24 @@ class TestCharacterBuilderRestrictions(unittest.TestCase):
         self.assertFalse(restrictions.feat_allowed('sharpshooter'))
         self.assertFalse(restrictions.ability_allowed('action_surge'))
 
+    def test_allowed_backgrounds_filter(self):
+        session = type('S', (), {
+            'game_properties': {
+                'character_builder': {
+                    'allowed_backgrounds': ['haunted_one'],
+                },
+            },
+        })()
+        restrictions = load_character_builder_restrictions(session, index_data={})
+        backgrounds = {
+            'haunted_one': {'label': 'Haunted One'},
+            'acolyte': {'label': 'Acolyte'},
+        }
+        filtered = restrictions.filter_backgrounds(backgrounds)
+        self.assertEqual(set(filtered.keys()), {'haunted_one'})
+        self.assertTrue(restrictions.background_allowed('haunted_one'))
+        self.assertFalse(restrictions.background_allowed('acolyte'))
+
     def test_game_yml_overrides_index_json(self):
         session = type('S', (), {
             'game_properties': {'character_builder': {'max_level': 2}},

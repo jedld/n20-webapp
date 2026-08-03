@@ -589,7 +589,77 @@
   });
   register('color spray', function(payload){ return play('color_spray', payload); });
 
-  // Grease: oily splash burst around a target square.
+  register('leomunds_tiny_hut', function(payload){
+    return new Promise((resolve) => {
+      const src = payload && payload.source ? centerOfEntity(payload.source) : null;
+      if (!src) return resolve();
+      const { overlay, ctx, destroy } = createOverlay(1102);
+      const start = performance.now();
+      const duration = 900;
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const radius = Math.max(tileSize * 2.2, 96);
+      const draw = (now) => {
+        const t = Math.min(1, (now - start) / duration);
+        const fade = 1 - Math.max(0, (t - 0.65) / 0.35);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const r = radius * (0.35 + 0.65 * t);
+        const grad = ctx.createRadialGradient(src.x, src.y - tileSize * 0.2, r * 0.1, src.x, src.y - tileSize * 0.2, r);
+        grad.addColorStop(0, `rgba(210, 235, 255, ${(0.35 * fade).toFixed(2)})`);
+        grad.addColorStop(0.55, `rgba(90, 150, 255, ${(0.28 * fade).toFixed(2)})`);
+        grad.addColorStop(1, `rgba(40, 80, 180, 0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(src.x, src.y - tileSize * 0.15, r, r * 0.72, 0, Math.PI, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = `rgba(160, 210, 255, ${(0.75 * fade).toFixed(2)})`;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      requestAnimationFrame(draw);
+    });
+  });
+  register('leomund\'s tiny hut', function(payload){ return window.SpellEffects && SpellEffects.play ? SpellEffects.play('leomunds_tiny_hut', payload) : Promise.resolve(); });
+
+  register('message', function(payload){
+    return new Promise((resolve) => {
+      const src = payload && payload.source ? centerOfEntity(payload.source) : null;
+      const tgt = payload && payload.target ? centerOfEntity(payload.target) : null;
+      if (!src || !tgt) return resolve();
+      const { overlay, ctx, destroy } = createOverlay(1101);
+      const start = performance.now();
+      const duration = 700;
+      const draw = (now) => {
+        const t = Math.min(1, (now - start) / duration);
+        const fade = 1 - Math.max(0, (t - 0.7) / 0.3);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.strokeStyle = `rgba(180, 220, 255, ${(0.85 * fade).toFixed(2)})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 8]);
+        ctx.beginPath();
+        ctx.moveTo(src.x, src.y - 8);
+        ctx.lineTo(tgt.x, tgt.y - 8);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(200, 235, 255, ${(0.55 * fade).toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(src.x, src.y - 10, 5 + 3 * t, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(tgt.x, tgt.y - 10, 4 + 2 * t, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      requestAnimationFrame(draw);
+    });
+  });
+
   register('grease', function(payload){
     return new Promise((resolve) => {
       const src = payload && payload.source ? centerOfEntity(payload.source) : null;
@@ -3889,6 +3959,72 @@
         if (tt < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
       };
       try { if (window.SFX && SFX.play) SFX.play('rage_calm'); } catch(e){}
+      requestAnimationFrame(draw);
+    });
+  });
+
+  // Stinking Cloud: sickly yellow-green gas billows over the target point.
+  register('stinking_cloud', function(payload){
+    return new Promise((resolve) => {
+      let targetCenter = null;
+      const target = payload && payload.target;
+      if (Array.isArray(target) && target.length === 2 && typeof target[0] === 'number') {
+        targetCenter = tileCenterByCoords(target[0], target[1]);
+      } else if (typeof target === 'string') {
+        targetCenter = centerOfEntity(target);
+      }
+      if (!targetCenter && payload && payload.source) {
+        targetCenter = centerOfEntity(payload.source);
+      }
+      if (!targetCenter) return resolve();
+
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const radiusFt = (payload && payload.spell && payload.spell.radius) || 20;
+      const spread = tileSize * (radiusFt / 5) * 0.95;
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const start = performance.now();
+      const duration = 820;
+      const puffs = Array.from({ length: 28 }).map(() => ({
+        a: Math.random() * Math.PI * 2,
+        r: spread * (0.15 + Math.random() * 0.85),
+        s: 8 + Math.random() * 22,
+        p: Math.random(),
+      }));
+
+      const draw = (now) => {
+        const t = Math.min(1, (now - start) / duration);
+        const fade = 1 - t * 0.25;
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const g = ctx.createRadialGradient(
+          targetCenter.x, targetCenter.y, 0,
+          targetCenter.x, targetCenter.y, spread * (0.55 + 0.45 * t),
+        );
+        g.addColorStop(0, `rgba(232,255,120,${(0.42 * fade).toFixed(2)})`);
+        g.addColorStop(0.45, `rgba(168,204,48,${(0.3 * fade).toFixed(2)})`);
+        g.addColorStop(1, 'rgba(72,96,18,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(targetCenter.x, targetCenter.y, spread * (0.55 + 0.45 * t), 0, Math.PI * 2);
+        ctx.fill();
+
+        puffs.forEach((puff) => {
+          const prog = Math.min(1, t * 1.1 + puff.p * 0.08);
+          const x = targetCenter.x + Math.cos(puff.a) * puff.r * prog;
+          const y = targetCenter.y + Math.sin(puff.a) * puff.r * prog;
+          const rr = puff.s * (0.55 + 0.45 * prog);
+          const blob = ctx.createRadialGradient(x, y, 0, x, y, rr);
+          blob.addColorStop(0, `rgba(244,255,168,${(0.35 * fade).toFixed(2)})`);
+          blob.addColorStop(1, 'rgba(88,112,24,0)');
+          ctx.fillStyle = blob;
+          ctx.beginPath();
+          ctx.arc(x, y, rr, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
       requestAnimationFrame(draw);
     });
   });

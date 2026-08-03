@@ -109,7 +109,8 @@
 
   const PROFILE_FIELDS = [
     'alignment', 'gender', 'faith', 'size', 'age', 'height', 'weight',
-    'eyes', 'hair', 'skin', 'personality_traits', 'ideals', 'bonds', 'flaws', 'backstory'
+    'eyes', 'hair', 'skin', 'personality_traits', 'ideals', 'bonds', 'flaws',
+    'backstory', 'harrowing_event', 'background_trinket'
   ];
 
   function applyProfileFields(profile){
@@ -726,6 +727,15 @@
   $('#race-options').hide();
   $('#background-options').hide();
 
+  function getBackgroundLanguagePools(bgData, granted){
+    const standard = filterLanguagePool(bgData.languages_pool || [], granted);
+    const exotic = filterLanguagePool(bgData.exotic_languages_pool || [], granted);
+    return { standard, exotic, combined: filterLanguagePool(
+      (bgData.languages_pool || []).concat(bgData.exotic_languages_pool || []),
+      granted
+    )};
+  }
+
   // ---------- Background Options ----------
   function renderBackgroundOptions(){
     const bg = $('#background').val();
@@ -742,13 +752,46 @@
 
     // Description
     if(bdata.description){
-      $body.append(`<p class="helper" style="margin-bottom:10px;">${bdata.description.substring(0, 200)}${bdata.description.length > 200 ? '...' : ''}</p>`);
+      $body.append(`<p class="helper" style="margin-bottom:10px;">${bdata.description.substring(0, 320)}${bdata.description.length > 320 ? '...' : ''}</p>`);
     }
 
-    // Skill proficiencies (always granted)
+    // Fixed skill proficiencies
     if(bdata.skill_proficiencies && bdata.skill_proficiencies.length){
       const skillsLabel = bdata.skill_proficiencies.map(s => s.replace(/_/g,' ')).join(', ');
       $body.append(`<div class="form-group"><label>Skill Proficiencies</label><div class="helper">${skillsLabel}</div></div>`);
+    }
+
+    // Skill choices
+    const skillChoiceCount = parseInt(bdata.skill_choice_count || 0, 10);
+    const skillPool = bdata.skills_pool || [];
+    if(skillChoiceCount > 0 && skillPool.length){
+      const skillWrap = $('<div class="form-group"/>');
+      skillWrap.append(`<label>Skill Proficiencies: choose ${skillChoiceCount}</label>`);
+      const row = $('<div class="row"/>');
+      skillPool.forEach((skill, idx)=>{
+        const col = $('<div class="col-xs-6 col-sm-4 col-md-3"/>');
+        const id = `bg-skill-${idx}`;
+        col.append(`
+          <div class="checkbox">
+            <label>
+              <input type="checkbox" class="cb-bg-skill" data-name="${skill}" id="${id}"> ${skill.replace(/_/g,' ')}
+            </label>
+          </div>`);
+        row.append(col);
+      });
+      skillWrap.append(row);
+      skillWrap.append(`<div class="helper" id="bg-skill-helper">${skillChoiceCount} remaining</div>`);
+      $body.append(skillWrap);
+      $body.on('change', '.cb-bg-skill', function(){
+        const selected = $body.find('.cb-bg-skill:checked').length;
+        const remaining = Math.max(0, skillChoiceCount - selected);
+        $('#bg-skill-helper').text(`${remaining} remaining`);
+        if(selected >= skillChoiceCount){
+          $body.find('.cb-bg-skill:not(:checked)').prop('disabled', true);
+        } else {
+          $body.find('.cb-bg-skill').prop('disabled', false);
+        }
+      });
     }
 
     // Tool proficiencies (always granted)
@@ -759,29 +802,78 @@
 
     // Feature
     if(bdata.feature && bdata.feature.name){
-      $body.append(`<div class="form-group"><label>Feature: ${bdata.feature.name}</label><div class="helper">${bdata.feature.description.substring(0, 150)}${bdata.feature.description.length > 150 ? '...' : ''}</div></div>`);
+      $body.append(`<div class="form-group"><label>Feature: ${bdata.feature.name}</label><div class="helper">${(bdata.feature.description || '').substring(0, 220)}${(bdata.feature.description || '').length > 220 ? '...' : ''}</div></div>`);
     }
 
-    // Language choices (exclude languages already granted by race/background)
+    // Starting equipment summary
+    if(bdata.default_equipment_pack || (bdata.equipment && bdata.equipment.length)){
+      const parts = [];
+      if(bdata.default_equipment_pack){
+        parts.push(bdata.default_equipment_pack.replace(/_/g,' '));
+      }
+      (bdata.equipment || []).forEach(item => parts.push(String(item).replace(/_/g,' ')));
+      $body.append(`<div class="form-group"><label>Starting Equipment</label><div class="helper">${parts.join(', ')}</div></div>`);
+      if(bdata.default_equipment_pack && $('#equipment_pack').length){
+        $('#equipment_pack').val(bdata.default_equipment_pack);
+        $('#equipment_pack').trigger('change');
+      }
+    }
+
+    // Campaign roll-table buttons
+    const rollTables = bdata.roll_tables || [];
+    if(rollTables.length){
+      const rollWrap = $('<div class="form-group"/>');
+      rollWrap.append('<label>Campaign Tables</label><div class="btn-group" role="group"></div>');
+      const $group = rollWrap.find('.btn-group');
+      if(rollTables.includes('harrowing_event')){
+        $group.append('<button type="button" class="btn btn-default btn-sm" id="roll-harrowing-event">Roll Harrowing Event</button>');
+      }
+      if(rollTables.includes('gothic_trinket')){
+        $group.append('<button type="button" class="btn btn-default btn-sm" id="roll-gothic-trinket">Roll Gothic Trinket</button>');
+      }
+      $body.append(rollWrap);
+      $body.on('click', '#roll-harrowing-event', function(){
+        rollBackgroundTable('harrowing_event', '#harrowing_event');
+      });
+      $body.on('click', '#roll-gothic-trinket', function(){
+        rollBackgroundTable('gothic_trinket', '#background_trinket');
+      });
+    }
+
+    // Language choices
     const choiceCount = parseInt(bdata.language_choice_count || 0, 10);
     const granted = getGrantedLanguages(bg);
-    const pool = filterLanguagePool(bdata.languages_pool || [], granted);
-    if(choiceCount > 0 && pool.length){
+    const langPools = getBackgroundLanguagePools(bdata, granted);
+    const exoticMin = parseInt(bdata.exotic_language_min || 0, 10);
+    if(choiceCount > 0 && langPools.combined.length){
       const langWrap = $('<div class="form-group"/>');
-      langWrap.append(`<label>Background Languages: choose ${choiceCount}</label>`);
-      const row = $('<div class="row"/>');
-      pool.forEach((lang, idx)=>{
-        const col = $('<div class="col-xs-6 col-sm-4 col-md-3"/>');
-        const id = `bg-language-${idx}`;
-        col.append(`
-          <div class="checkbox">
-            <label>
-              <input type="checkbox" class="cb-bg-language" data-name="${lang}" id="${id}"> ${lang.replace(/_/g,' ')}
-            </label>
-          </div>`);
-        row.append(col);
-      });
-      langWrap.append(row);
+      const exoticNote = exoticMin > 0 ? ` (at least ${exoticMin} exotic)` : '';
+      langWrap.append(`<label>Background Languages: choose ${choiceCount}${exoticNote}</label>`);
+      const appendLangRow = (pool, heading)=>{
+        if(!pool.length) return;
+        if(heading){
+          langWrap.append(`<div class="helper" style="margin-top:6px;">${heading}</div>`);
+        }
+        const row = $('<div class="row"/>');
+        pool.forEach((lang, idx)=>{
+          const col = $('<div class="col-xs-6 col-sm-4 col-md-3"/>');
+          const id = `bg-language-${heading || 'all'}-${idx}`;
+          col.append(`
+            <div class="checkbox">
+              <label>
+                <input type="checkbox" class="cb-bg-language" data-name="${lang}" id="${id}"> ${lang.replace(/_/g,' ')}
+              </label>
+            </div>`);
+          row.append(col);
+        });
+        langWrap.append(row);
+      };
+      if(langPools.exotic.length){
+        appendLangRow(langPools.standard, 'Standard languages');
+        appendLangRow(langPools.exotic, 'Exotic languages');
+      } else {
+        appendLangRow(langPools.combined, null);
+      }
       langWrap.append(`<div class="helper" id="bg-language-helper">${choiceCount} remaining</div>`);
       $body.append(langWrap);
 
@@ -796,6 +888,37 @@
         }
       });
     }
+  }
+
+  function rollBackgroundTable(kind, targetSelector){
+    const bg = ($('#background').val() || '').trim();
+    const payload = {
+      background: bg,
+      include_personality: false,
+      include_physical: false,
+      include_alignment: false,
+      include_harrowing_event: kind === 'harrowing_event',
+      include_background_trinket: kind === 'gothic_trinket',
+    };
+    $.ajax({
+      type: 'POST',
+      url: '/character_builder/randomize_profile',
+      contentType: 'application/json',
+      data: JSON.stringify(payload),
+      dataType: 'json',
+    }).done(function(resp){
+      if(resp.error){
+        $('#builder-msg').html(`<div class="alert alert-danger">${resp.error}</div>`);
+        return;
+      }
+      applyProfileFields(resp.profile || {});
+      if(targetSelector && resp.profile){
+        const key = kind === 'harrowing_event' ? 'harrowing_event' : 'background_trinket';
+        if(resp.profile[key] && $(targetSelector).length){
+          $(targetSelector).val(resp.profile[key]);
+        }
+      }
+    });
   }
 
   $('#cancel-btn').on('click', function(){
@@ -927,10 +1050,13 @@
   $('#class-options-body .cb-feat:checked').each(function(){ feats.push($(this).data('name')); });
   if(feats.length) fd.append('feats', JSON.stringify(feats));
 
-  // Background language choices
+  // Background language and skill choices
   const bgLanguages = [];
   $('#background-options-body .cb-bg-language:checked').each(function(){ bgLanguages.push($(this).data('name')); });
   if(bgLanguages.length) fd.append('background_languages', JSON.stringify(bgLanguages));
+  const bgSkills = [];
+  $('#background-options-body .cb-bg-skill:checked').each(function(){ bgSkills.push($(this).data('name')); });
+  if(bgSkills.length) fd.append('background_skills', JSON.stringify(bgSkills));
 
   // Append inventory
   if(typeof window.getInventoryForSubmit === 'function'){
@@ -944,10 +1070,26 @@
   const bgVal = $('#background').val();
   const bgDef = bgVal ? BACKGROUNDS[bgVal] : null;
   if(bgDef){
+    const expectedBgSkills = parseInt(bgDef.skill_choice_count || 0, 10);
+    const bgSkillPool = bgDef.skills_pool || [];
+    if(expectedBgSkills > 0){
+      if(bgSkills.length !== expectedBgSkills){
+        $('#builder-msg').html(`<div class="alert alert-danger">Choose ${expectedBgSkills} background skill${expectedBgSkills > 1 ? 's' : ''}.</div>`);
+        return;
+      }
+      const invalidBgSkill = bgSkills.some(skill => !bgSkillPool.includes(skill));
+      if(invalidBgSkill){
+        $('#builder-msg').html('<div class="alert alert-danger">One or more background skill choices are invalid.</div>');
+        return;
+      }
+    }
+
     const expectedBgLang = parseInt(bgDef.language_choice_count || 0, 10);
-    const bgPool = filterLanguagePool(bgDef.languages_pool || [], getGrantedLanguages(bgVal));
+    const langPools = getBackgroundLanguagePools(bgDef, getGrantedLanguages(bgVal));
+    const exoticMin = parseInt(bgDef.exotic_language_min || 0, 10);
+    const exoticPool = new Set((bgDef.exotic_languages_pool || []).map(l => String(l).toLowerCase()));
     if(expectedBgLang > 0){
-      if(bgPool.length < expectedBgLang){
+      if(langPools.combined.length < expectedBgLang){
         $('#builder-msg').html('<div class="alert alert-danger">Not enough background language options for this race/background combination.</div>');
         return;
       }
@@ -955,10 +1097,18 @@
         $('#builder-msg').html(`<div class="alert alert-danger">Choose ${expectedBgLang} background language${expectedBgLang > 1 ? 's' : ''}.</div>`);
         return;
       }
-      const invalidBgLang = bgLanguages.some(lang => !bgPool.includes(lang));
+      const combinedSet = new Set(langPools.combined);
+      const invalidBgLang = bgLanguages.some(lang => !combinedSet.has(lang));
       if(invalidBgLang){
         $('#builder-msg').html('<div class="alert alert-danger">One or more background language choices are already known or invalid.</div>');
         return;
+      }
+      if(exoticMin > 0){
+        const exoticSelected = bgLanguages.filter(lang => exoticPool.has(String(lang).toLowerCase())).length;
+        if(exoticSelected < exoticMin){
+          $('#builder-msg').html(`<div class="alert alert-danger">Choose at least ${exoticMin} exotic language${exoticMin > 1 ? 's' : ''}.</div>`);
+          return;
+        }
       }
     }
   }

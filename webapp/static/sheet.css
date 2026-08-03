@@ -77,6 +77,34 @@ th, td {
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.5); /* D&D style shadow */
 }
 
+.sheet-image-gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.sheet-image-thumb {
+    border: 2px solid #4a2f19;
+    background: rgba(255, 248, 220, 0.9);
+    padding: 2px;
+    cursor: pointer;
+    line-height: 0;
+}
+
+.sheet-image-thumb.active {
+    border-color: #855e42;
+    box-shadow: 0 0 6px rgba(133, 94, 66, 0.8);
+}
+
+.sheet-image-thumb img {
+    width: 56px;
+    height: 56px;
+    object-fit: cover;
+    border: none;
+    box-shadow: none;
+}
+
 .description {
     flex: 1; /* Allows description to take the remaining space */
     font-family: 'IM Fell English', serif; /* D&D style font */
@@ -405,6 +433,52 @@ th, td {
     font-weight: 700;
     line-height: 14px;
     text-align: center;
+}
+
+.item-charges,
+.inventory-slot-face .item-charges {
+    position: absolute;
+    left: 2px;
+    bottom: 1px;
+    min-width: 14px;
+    padding: 0 3px;
+    background: rgba(108, 52, 131, 0.92);
+    color: #fff;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 14px;
+    text-align: center;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.tile-item {
+    position: relative;
+}
+
+.tile-item .item-charges {
+    position: absolute;
+    left: 2px;
+    bottom: 2px;
+}
+
+.action-button.item-image .item-charges,
+.action-button.action-image .item-charges-action {
+    position: absolute;
+    left: 2px;
+    bottom: 2px;
+    min-width: 18px;
+    padding: 1px 4px;
+    background: rgba(108, 52, 131, 0.92);
+    color: #fff;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 14px;
+    text-align: center;
+    pointer-events: none;
+    z-index: 3;
 }
 
 .inventory-slot-menu {

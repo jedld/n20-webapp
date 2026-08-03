@@ -1,0 +1,80 @@
+{% if spell_tab_groups %}
+<div class="action-bar-spell-groups" data-coords-id="{{ entity.entity_uid }}">
+  {% for group in spell_tab_groups %}
+  <section class="action-bar-spell-group" data-spell-level="{{ group.level }}">
+    <header class="action-bar-spell-group-header">
+      <span class="action-bar-spell-group-title">{{ group.label }}</span>
+      {% if group.slots %}
+      <div class="action-bar-spell-slot-summary">
+        {% for slot in group.slots %}
+        <div class="spell-slot-chip" title="{{ slot.class_label }} slots remaining">
+          <span class="spell-slot-chip-class">{{ slot.class_label }}</span>
+          <span class="spell-slot-chip-count">{{ slot.current }}/{{ slot.max }}</span>
+          <div class="spell-slot-chip-bar" aria-hidden="true">
+            <div class="spell-slot-chip-fill" style="width: {{ (slot.current / slot.max * 100) if slot.max else 0 }}%;"></div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </header>
+    <div class="action-bar-spell-group-body">
+      {% for spell in group.spells %}
+      {% set primary = spell.cast_options[0] %}
+      {% set spell_opts = { "spell": spell.name, "at_level": primary.at_level } %}
+      <div class="action-bar-spell-card{% if spell.cast_options|length > 1 %} has-upcast{% endif %}"
+           data-spell-name="{{ spell.name }}">
+        <div class="action-bar-spell-card-main">
+          <div class="action-bar-action-wrap action-bar-action-cell" data-action-descriptor="{{ spell_descriptor(spell.name, primary.at_level) }}">
+            <button class="action-button action-image spell-picker-button"
+                    data-action-type="SpellAction"
+                    data-id="{{ entity.entity_uid }}"
+                    data-coords-x="{{ entity_x }}"
+                    data-coords-y="{{ entity_y }}"
+                    data-action-opts='{{ spell_opts | tojson }}'
+                    data-action-descriptor="{{ spell_descriptor(spell.name, primary.at_level) }}"
+                    title="{{ spell.label }}{% if spell.base_level > 0 %} ({{ primary.label }}){% endif %}">
+              <img src="{{ url_for('static', filename='spells/spell_' + spell.name + '.png') }}"
+                   alt="{{ spell.label }}" class="spell-icon">
+              <span class="action-image-fallback">{{ spell.label }}</span>
+            </button>
+            {% if spell.cast_options|length > 1 %}
+            <button type="button"
+                    class="action-bar-upcast-toggle"
+                    title="Upcast {{ spell.label }}"
+                    aria-label="Choose upcast level for {{ spell.label }}"
+                    aria-expanded="false"
+                    aria-haspopup="menu">
+              <span class="action-bar-upcast-toggle-icon" aria-hidden="true">↑</span>
+            </button>
+            {% endif %}
+            <button type="button" class="action-bar-pin-btn" title="Pin to Common tab" aria-label="Pin to Common tab" hidden>★</button>
+          </div>
+          <div class="action-bar-spell-card-label">{{ spell.label }}</div>
+        </div>
+        {% if spell.cast_options|length > 1 %}
+        <div class="action-bar-upcast-menu" role="menu" hidden>
+          {% for opt in spell.cast_options %}
+          {% set spell_opts = { "spell": spell.name, "at_level": opt.at_level } %}
+          <button type="button"
+                  class="action-button action-bar-upcast-level{% if opt.is_upcast %} is-upcast{% endif %}{% if loop.first %} is-primary{% endif %}"
+                  role="menuitem"
+                  data-action-type="SpellAction"
+                  data-id="{{ entity.entity_uid }}"
+                  data-coords-x="{{ entity_x }}"
+                  data-coords-y="{{ entity_y }}"
+                  data-action-opts='{{ spell_opts | tojson }}'
+                  data-action-descriptor="{{ spell_descriptor(spell.name, opt.at_level) }}"
+                  title="{{ opt.label }}">{%- if opt.at_level <= 0 -%}C{%- else -%}{{ opt.at_level }}{%- endif -%}</button>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% else %}
+<p class="action-bar-empty-note">No spells available to cast.</p>
+{% endif %}

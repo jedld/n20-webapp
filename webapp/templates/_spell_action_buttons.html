@@ -1,0 +1,48 @@
+{% if castable_spells_by_level %}
+  {% for klass, _ in entity_class_level %}
+    {% for level in castable_spells_by_level.keys()|sort %}
+      {% if level == 0 or entity.max_spell_slots(level, klass) > 0 %}
+      {% set spells = castable_spells_by_level[level] %}
+      <tr class="spell-level-row">
+        {% if level == 0 %}
+          <td class="level-slot-container">Cantrips</td>
+        {% else %}
+          <td class="level-slot-container">
+            Level {{ level }}
+            <div class="spell-slot-progress">
+              <div class="progress">
+                <div class="progress-bar" role="progressbar"
+                     style="width: {{ entity.spell_slots_count(level, klass) / entity.max_spell_slots(level, klass) * 100 }}%;"
+                     aria-valuenow="{{ entity.spell_slots_count(level, klass) }}"
+                     aria-valuemin="0"
+                     aria-valuemax="{{ entity.max_spell_slots(level, klass) }}">
+                  {{ entity.spell_slots_count(level, klass) }}/{{ entity.max_spell_slots(level, klass) }}
+                </div>
+              </div>
+            </div>
+          </td>
+        {% endif %}
+        {% for spell in spells %}
+          {% set spell_opts = { "spell": spell, "at_level": level } %}
+          <td data-spell-name="{{ spell }}" class="spell-action-button action-bar-action-cell" data-action-descriptor="{{ spell_descriptor(spell, level) }}">
+            <div class="action-bar-action-wrap">
+            <button class="action-button action-image spell-picker-button"
+                    data-action-type="SpellAction"
+                    data-id="{{ entity.entity_uid }}"
+                    data-coords-x="{{ entity_x }}"
+                    data-coords-y="{{ entity_y }}"
+                    data-action-opts='{{ spell_opts | tojson }}'
+                    data-action-descriptor="{{ spell_descriptor(spell, level) }}"
+                    title="{{ spell }}">
+              <img src="{{ url_for('static', filename='spells/spell_' + spell + '.png') }}"
+                   alt="{{ spell }}" class="spell-icon" style="width: 50px; height: 50px;">
+            </button>
+            <button type="button" class="action-bar-pin-btn" title="Pin to Common tab" aria-label="Pin to Common tab" hidden>★</button>
+            </div>
+          </td>
+        {% endfor %}
+      </tr>
+      {% endif %}
+    {% endfor %}
+  {% endfor %}
+{% endif %}

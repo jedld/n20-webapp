@@ -154,6 +154,57 @@
           backdrop-filter: blur(4px);
         }
 
+        .local-conversation-panel.minimized .local-conversation-header {
+          cursor: pointer;
+        }
+
+        .local-conversation-panel.message-spell-active {
+          border-color: #6b8fd4;
+          box-shadow: 0 8px 28px rgba(64, 104, 180, 0.28);
+        }
+
+        .local-conversation-message-spell-banner {
+          flex-shrink: 0;
+          padding: 8px 12px;
+          font-size: 12px;
+          line-height: 1.35;
+          color: #1e3a5f;
+          background: linear-gradient(90deg, rgba(198, 220, 255, 0.95), rgba(230, 240, 255, 0.92));
+          border-bottom: 1px solid #9eb8e8;
+        }
+
+        .local-conversation-message-spell-icon {
+          margin-right: 6px;
+          color: #4a7fd4;
+        }
+
+        .local-conversation-channel-badge.message-spell {
+          display: inline-block;
+          margin-left: 6px;
+          padding: 1px 6px;
+          border-radius: 4px;
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+          text-transform: uppercase;
+          color: #1e3a5f;
+          background: rgba(120, 168, 240, 0.35);
+          border: 1px solid rgba(90, 130, 200, 0.55);
+          vertical-align: middle;
+        }
+
+        .local-conversation-message.message-spell {
+          border-left: 3px solid #6b8fd4;
+          background: rgba(232, 242, 255, 0.55);
+        }
+
+        .local-conversation-message-spell-note {
+          font-size: 11px;
+          font-style: italic;
+          color: #4a6288;
+          margin: 2px 0 4px;
+        }
+
         .local-conversation-panel.minimized {
           top: auto !important;
           left: auto !important;
@@ -1179,12 +1230,16 @@
         <div id="target-validation-hint" class="target-validation-hint" role="status" aria-live="polite"></div>
         <div id="centerActionBar" class="center-action-bar" style="display: none;">
           <div class="center-action-bar-panel actions-container" role="region" aria-labelledby="centerActionBarTitle">
+            <button id="centerActionBarExpand" type="button" class="center-action-bar-expand-btn" title="Expand action bar" aria-label="Expand action bar" aria-expanded="false">
+              <span class="center-action-bar-expand-icon" aria-hidden="true">▲</span>
+            </button>
             <div class="center-action-bar-header">
               <div>
                 <div id="centerActionBarTitle" class="center-action-bar-title">Actions</div>
                 <div id="centerActionBarSubtitle" class="center-action-bar-subtitle">Choose an action for the selected entity.</div>
               </div>
               <div class="center-action-bar-toolbar">
+                <button id="actionBarCustomizeToggle" type="button" class="btn btn-default btn-sm">Customize</button>
                 <button id="actionBarHotkeyToggle" type="button" class="btn btn-default btn-sm">Bind Hotkeys</button>
                 <button id="centerActionBarClose" type="button" class="btn btn-default btn-sm">Close</button>
               </div>

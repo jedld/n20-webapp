@@ -76,7 +76,7 @@ class GoalArrivalConversationManager:
             f'Your active goal: {goal_text}' if goal_text else '',
             'Speak to the guest in character. Confirm whether your errand is complete.',
             'If the guest has the key and is at the suite door, use [GOAL_COMPLETE] and stop trying to unlock the door.',
-            'After [GOAL_COMPLETE], include [MOVE: target=taproom, distance=5] so you return behind the bar.',
+            'After [GOAL_COMPLETE] the game will send you back to your post automatically — do not add [MOVE] tags.',
             'You may use [GOAL_GIVE_UP] if the errand cannot be finished.',
             situational,
         ]
@@ -103,6 +103,15 @@ class GoalArrivalConversationManager:
             goal_state['arrival_debrief_done'] = True
         elif isinstance(task, dict):
             task['arrival_debrief_done'] = True
+
+        npc_uid = str(getattr(npc, 'entity_uid', '') or '')
+        requester_uid = str(getattr(requester_pc, 'entity_uid', '') or '')
+        if npc_uid and requester_uid:
+            session_state = getattr(self.session, 'session_state', None) or {}
+            debrief_pairs = dict(session_state.get('goal_arrival_debrief_done_pairs') or {})
+            debrief_pairs[f'{npc_uid}|{requester_uid}'] = True
+            session_state['goal_arrival_debrief_done_pairs'] = debrief_pairs
+            self.session.session_state = session_state
 
         self._emit_to_participants([requester_pc], {
             'type': 'goal_arrival_start',

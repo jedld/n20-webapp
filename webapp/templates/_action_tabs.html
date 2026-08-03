@@ -1,0 +1,175 @@
+<div class="action-bar-tabs"
+     data-entity-uid="{{ entity.entity_uid }}"
+     data-default-tab="{{ action_bar_config.default_tab }}"
+     data-tab-order='{{ action_bar_config.tab_order | tojson }}'
+     data-favorites='{{ action_bar_config.favorites | tojson }}'>
+  <nav class="action-bar-tab-nav" role="tablist" aria-label="Action categories">
+    <button type="button" class="action-bar-tab-btn is-active" data-tab="common" role="tab" aria-selected="true">Common</button>
+    {% if combat_actions %}
+    <button type="button" class="action-bar-tab-btn" data-tab="actions" role="tab" aria-selected="false">Actions</button>
+    {% endif %}
+    {% if castable_spells_by_level %}
+    <button type="button" class="action-bar-tab-btn" data-tab="spells" role="tab" aria-selected="false">Spells</button>
+    {% endif %}
+    {% if usable_items %}
+    <button type="button" class="action-bar-tab-btn" data-tab="items" role="tab" aria-selected="false">Items</button>
+    {% endif %}
+    {% if interact_actions %}
+    <button type="button" class="action-bar-tab-btn" data-tab="interact" role="tab" aria-selected="false">Interact</button>
+    {% endif %}
+    <button type="button" class="action-bar-tab-btn" data-tab="utility" role="tab" aria-selected="false">More</button>
+  </nav>
+
+  <div class="action-bar-tab-panels">
+    <section class="action-bar-tab-panel is-active" data-tab="common" role="tabpanel">
+      <div class="action-bar-tab-panel-inner">
+        {% if common_actions %}
+        <table>
+          {% for actions in common_actions | batch(10) %}
+          <tr>
+            {% for action in actions %}
+              {% include '_action_button.html' %}
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </table>
+        {% endif %}
+        {% if favorite_spell_tab_groups %}
+          {% with spell_tab_groups=favorite_spell_tab_groups %}
+            {% include '_spell_tab.html' %}
+          {% endwith %}
+        {% endif %}
+        {% if favorite_items %}
+        <table>
+          {% include '_usable_item_buttons.html' %}
+        </table>
+        {% endif %}
+        <table>
+        {% if battle and battle.current_turn() == entity %}
+        <tr>
+          <td>
+            <button class="action-end-turn" title="End Turn">
+              <img src="{{ url_for('static', filename='end_turn.webp') }}" style="width: 50px; height: 50px;">
+            </button>
+          </td>
+        </tr>
+        {% endif %}
+        {% if entity.current_concentration() %}
+          {% set spell = entity.current_concentration().__str__() %}
+          <tr>
+            <td>
+              <button class="action-button concentration-effect" data-action-type="DropConcentrationAction" title="Concentration" style="position: relative; display: inline-block; width: 50px; height: 50px; border: 3px solid #8b0000; border-radius: 10px; background: rgba(139, 0, 0, 0.15); box-shadow: 0 0 5px rgba(139, 0, 0, 0.3); transition: all 0.2s ease;">
+                <img src="{{ url_for('static', filename='spells/spell_' + spell + '.png') }}" alt="{{ spell }}" style="width: 50px; height: 50px; position: absolute; top: 0; left: 0;">
+                <img src="{{ url_for('static', filename='red_x.png') }}" alt="X" class="overlay" style="position: absolute; top: 40; left: 40; width: 30px; height: 30px;">
+                <div style="position: absolute; top: -5px; right: -5px; width: 12px; height: 12px; background: #8b0000; border-radius: 50%; border: 2px solid white;"></div>
+              </button>
+            </td>
+          </tr>
+        {% endif %}
+        <tr class="action-bar-pinned-row" hidden></tr>
+        </table>
+      </div>
+    </section>
+
+    {% if combat_actions %}
+    <section class="action-bar-tab-panel" data-tab="actions" role="tabpanel" hidden>
+      <table>
+        {% for actions in combat_actions | batch(10) %}
+        <tr>
+          {% for action in actions %}
+            {% include '_action_button.html' %}
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </table>
+    </section>
+    {% endif %}
+
+    {% if castable_spells_by_level %}
+    <section class="action-bar-tab-panel" data-tab="spells" role="tabpanel" hidden>
+      {% include '_spell_tab.html' %}
+    </section>
+    {% endif %}
+
+    {% if usable_items %}
+    <section class="action-bar-tab-panel" data-tab="items" role="tabpanel" hidden>
+      <table>
+        {% include '_usable_item_buttons.html' %}
+      </table>
+    </section>
+    {% endif %}
+
+    {% if interact_actions %}
+    <section class="action-bar-tab-panel" data-tab="interact" role="tabpanel" hidden>
+      <table>
+        <tr>
+          {% for actions in interact_actions | batch(10) %}
+            {% for action in actions if action.__class__.can(entity, battle) %}
+              {% if action.object_action_prompt() %}
+                {% set prompt_message = action.object_action_prompt() %}
+                <td>
+                  <p>{{ prompt_message }}</p>
+                  <button class="action-button" data-action-type="{{ action.__class__.__name__ }}" data-action-opts='{{ action.to_h() | tojson }}' title="{{ action.label() }}" style="position: relative;" {{ 'disabled' if action.disabled else '' }}>
+                    {% if action.button_label() %}{{ action.button_label() }}{% else %}{{ action.label() }}{% endif %}
+                  </button>
+                </td>
+              {% else %}
+                {% include '_action_button.html' %}
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+        </tr>
+      </table>
+    </section>
+    {% endif %}
+
+    <section class="action-bar-tab-panel" data-tab="utility" role="tabpanel" hidden>
+      <table>
+        <tr>
+          <td>
+            <button class="action-info" title="Character sheet{% if entity.__class__.__name__ == 'PlayerCharacter' %} &amp; journal{% endif %}" data-entity-uid="{{ entity.entity_uid }}" onclick="window.open('info?id={{ entity.entity_uid }}', '_blank')">
+              <img src="{{ url_for('static', filename='info.png') }}" style="width: 50px; height: 50px;">
+              {% if entity.__class__.__name__ == 'PlayerCharacter' %}
+              <span class="journal-unread-dot" data-entity-uid="{{ entity.entity_uid }}" hidden aria-label="Unread journal entries"></span>
+              {% endif %}
+            </button>
+          </td>
+          {% if is_dm %}
+          <td>
+            <button class="delete-entity-btn btn btn-danger btn-sm" title="Delete from battlefield" data-entity-uid="{{ entity.entity_uid }}" style="width: 50px; height: 50px;">
+              <i class="glyphicon glyphicon-trash"></i>
+            </button>
+          </td>
+          {% endif %}
+          {% if is_merchant and entity.allow_talk() and entity.conscious() %}
+          <td>
+            <button class="merchant-shop-action button text-center" title="Browse wares">
+              <i class="glyphicon glyphicon-shopping-cart"> Shop</i>
+            </button>
+          </td>
+          {% endif %}
+          {% if entity.allow_talk() and entity.conscious() %}
+          <td>
+            <button class="talk-action button text-center">
+              <i class="glyphicon glyphicon-comment">Talk</i>
+            </button>
+          </td>
+          {% elif is_dm and entity.is_npc() and entity.conscious() %}
+          <td>
+            <button class="jrpg-dialog-action button text-center" data-entity-name="{{ entity.label()|e }}" title="Open JRPG dialog">
+              <i class="glyphicon glyphicon-comment"> Talk</i>
+            </button>
+          </td>
+          {% endif %}
+          {% if is_dm and entity.conscious() %}
+          <td>
+            <button class="set-pov-action button text-center" title="Focus camera on this token">
+              <i class="glyphicon glyphicon-screenshot"> Focus</i>
+            </button>
+          </td>
+          {% endif %}
+        </tr>
+      </table>
+    </section>
+  </div>
+</div>
