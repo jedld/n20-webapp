@@ -205,6 +205,14 @@ function targetDistanceFeet(sourceX, sourceY, coordsx, coordsy) {
 let move_path_cache = {};
 let move_path_cache_keys = []; // insertion order for bounded LRU eviction
 const MOVE_PATH_CACHE_LIMIT = 256;
+const HIDE_PREVIEW_CACHE_TTL_MS = 2500;
+const hidePreviewCache = new Map(); // entity_uid -> { ts, spots }
+let hidePreviewHoverTimer = null;
+
+function clearHidePreviewCache() {
+  hidePreviewCache.clear();
+}
+
 function setMovePathCache(key, value) {
   if (!Object.prototype.hasOwnProperty.call(move_path_cache, key)) {
     move_path_cache_keys.push(key);
@@ -224,13 +232,25 @@ function clearMovePathCache() {
   }
 }
 
+function invalidateMovementPlanningCaches() {
+  move_path_cache = {};
+  move_path_cache_keys = [];
+  clearHidePreviewCache();
+  invalidateLocalPathCostMap();
+  if (typeof Utils !== 'undefined' && typeof Utils.invalidateMovementGridCache === 'function') {
+    Utils.invalidateMovementGridCache();
+  }
+}
+
 /** Precomputed passability grid for client-side A* (path_compute.js). */
 let localPathCostMap = null;
 let localPathMovementBudget = null;
+let localPathCostMapFromSnapshot = false;
 
 function invalidateLocalPathCostMap() {
   localPathCostMap = null;
   localPathMovementBudget = null;
+  localPathCostMapFromSnapshot = false;
 }
 
 function loadLocalPathCostMap(fromCoords, done) {
@@ -245,6 +265,7 @@ function loadLocalPathCostMap(fromCoords, done) {
       if (data && data.snapshot) {
         localPathCostMap = PathComputeModule.PathfindingCostMap.fromSnapshot(data.snapshot);
         localPathMovementBudget = data.available_movement;
+        localPathCostMapFromSnapshot = true;
         if (done) done(true);
         return;
       }
@@ -276,10 +297,16 @@ function tryBuildLocalPathCostMapFromTiles() {
     entity: { prone, flying },
     feet_per_grid: 5,
   });
+  localPathCostMapFromSnapshot = false;
   return !!localPathCostMap;
 }
 
 function computeLocalPathResponse(from, to, accumulatedPath) {
+  // In battle, only trust backend-generated snapshots because they encode
+  // opposing-entity occupancy; tile-derived fallback can miss blockers.
+  if (isBattleInProgress() && (!localPathCostMap || !localPathCostMapFromSnapshot)) {
+    return null;
+  }
   if (!localPathCostMap && !tryBuildLocalPathCostMapFromTiles()) {
     return null;
   }
@@ -358,8 +385,39 @@ let globalActionInfo = null,
   globalOpts = null,
   globalSourceEntity = null;
 let pathDebounceTimer = null;
+
+function resetMouseMoveMode(options = {}) {
+  const clearCanvas = options.clearCanvas !== false;
+  moveMode = false;
+  source = null;
+  accumulatedPath = [];
+  pivotPoints = [];
+  currentPosition = null;
+  lastHoverCoords = null;
+  movePath = [];
+  moveModeCallback = null;
+  lastPathForJump = null;
+  lastStackDescent = null;
+  jumpMode = false;
+  jumpStartIndex = null;
+  if (pathDebounceTimer) {
+    try { clearTimeout(pathDebounceTimer); } catch (_) { }
+    pathDebounceTimer = null;
+  }
+  clearMovePathCache();
+  if (currentPathXhr && typeof currentPathXhr.abort === 'function') {
+    try { currentPathXhr.abort(); } catch (_) { }
+  }
+  currentPathXhr = null;
+  if (clearCanvas && globalCtx && globalCanvas) {
+    globalCtx.clearRect(0, 0, globalCanvas.width, globalCanvas.height);
+  }
+  try { $(".tile").css("border", "none"); } catch (_) { }
+}
+
 const ACTION_BAR_STORAGE_PREFIX = 'natural20.actionBarHotkeys';
 const ACTION_BAR_PREFS_PREFIX = 'natural20.actionBarPrefs';
+const ACTION_BAR_BUTTON_ORDER_PREFIX = 'natural20.actionBarButtonOrder';
 let actionBarState = {
   visible: false,
   bindingMode: false,
@@ -543,6 +601,10 @@ function shouldEnableMoveQuickAction() {
     return false;
   }
   if (forcedConversationMode) {
+    return false;
+  }
+  // Disable move quick actions during battle (initiative phase, turn-based movement)
+  if ($("body").data("battle_in_progress")) {
     return false;
   }
   if (moveMode || targetMode || multiTargetMode || coneMode || aoePointTargetMode || keyboardMovementMode) {
@@ -1338,6 +1400,174 @@ function saveActionBarPrefs(entityUid, prefs) {
   }
 }
 
+// --- Action bar button drag-and-drop reorder ---
+
+function actionBarButtonOrderKey() {
+  return `${ACTION_BAR_BUTTON_ORDER_PREFIX}:${currentActionBarUsername()}`;
+}
+
+function loadActionBarButtonOrder() {
+  try {
+    const raw = window.localStorage.getItem(actionBarButtonOrderKey());
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function saveActionBarButtonOrder(order) {
+  try {
+    window.localStorage.setItem(actionBarButtonOrderKey(), JSON.stringify(order || {}));
+  } catch (_error) {
+    // ignore storage errors
+  }
+}
+
+function applyActionBarButtonOrder($tabs) {
+  const order = loadActionBarButtonOrder();
+  if (!Object.keys(order).length) {
+    return;
+  }
+  // Reorder cells within each panel according to saved order
+  Object.entries(order).forEach(([tabId, cellOrder]) => {
+    const $panel = $tabs.find(`.action-bar-tab-panel[data-tab="${tabId}"]`);
+    if (!$panel.length || !Array.isArray(cellOrder) || !cellOrder.length) return;
+    const $rows = $panel.find('tr');
+    cellOrder.forEach((descriptor) => {
+      const $cell = $panel.find(`[data-action-descriptor="${CSS.escape(descriptor)}"]`).first();
+      if ($cell.length) {
+        // Find the parent row and append the cell there
+        const $parentRow = $cell.closest('tr');
+        if ($parentRow.length) {
+          $parentRow.append($cell);
+        } else {
+          // If no parent row, find the last table or append to panel-inner
+          const $lastTable = $panel.find('table').last();
+          if ($lastTable.length) {
+            let $lastRow = $lastTable.find('tr').last();
+            if (!$lastRow.length) {
+              $lastRow = $('<tr>').appendTo($lastTable);
+            }
+            $lastRow.append($cell);
+          } else {
+            $panel.find('.action-bar-tab-panel-inner, .action-bar-tab-panel').first().append($cell.closest('tr, td'));
+          }
+        }
+      }
+    });
+  });
+}
+
+function initActionBarButtonDragDrop($tabs) {
+  if (!$tabs || !$tabs.length) return;
+  const $panelInner = $tabs.find('.action-bar-tab-panel-inner, .action-bar-tab-panel').first();
+  
+  $panelInner.find('.action-bar-action-cell').each(function () {
+    const $cell = $(this);
+    if ($cell.data('draggable-initialized')) return;
+    $cell.data('draggable-initialized', true);
+    
+    $cell.attr('draggable', 'true');
+    
+    $cell.on('dragstart', function (e) {
+      if (!actionBarState.customizeMode) {
+        e.preventDefault();
+        return;
+      }
+      const descriptor = $cell.attr('data-action-descriptor');
+      e.originalEvent.dataTransfer.setData('text/plain', descriptor);
+      e.originalEvent.dataTransfer.effectAllowed = 'move';
+      $cell.addClass('action-bar-dragging');
+      setTimeout(() => $cell.css('opacity', '0.4'), 0);
+    });
+    
+    $cell.on('dragend', function () {
+      $cell.removeClass('action-bar-dragging').css('opacity', '');
+      $tabs.find('.action-bar-action-cell').removeClass('action-bar-drop-target');
+    });
+  });
+  
+  // Allow dropping on rows within the panel
+  $panelInner.on('dragover', 'tr', function (e) {
+    if (!actionBarState.customizeMode) return;
+    e.preventDefault();
+    e.originalEvent.dataTransfer.dropEffect = 'move';
+    $(this).addClass('action-bar-drop-row');
+  });
+  
+  $panelInner.on('dragleave', 'tr', function () {
+    $(this).removeClass('action-bar-drop-row');
+  });
+  
+  $panelInner.on('drop', 'tr', function (e) {
+    if (!actionBarState.customizeMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    $(this).removeClass('action-bar-drop-row');
+    
+    const descriptor = e.originalEvent.dataTransfer.getData('text/plain');
+    if (!descriptor) return;
+    
+    const $targetRow = $(this);
+    const $dragCell = $tabs.find(`[data-action-descriptor="${CSS.escape(descriptor)}"]`).first();
+    if (!$dragCell.length) return;
+    
+    // Determine insert position
+    const $cellsInRow = $targetRow.find('.action-bar-action-cell').toArray();
+    let inserted = false;
+    for (const cell of $cellsInRow) {
+      const $cell = $(cell);
+      const cellDescriptor = $cell.attr('data-action-descriptor');
+      if ($cell.before($dragCell)) {
+        inserted = true;
+        break;
+      }
+    }
+    if (!inserted) {
+      $targetRow.append($dragCell);
+    }
+    
+    // Save new order
+    saveCurrentActionBarButtonOrder($tabs);
+  });
+  
+  // Also allow dropping directly on action cells
+  $panelInner.on('drop', '.action-bar-action-cell', function (e) {
+    if (!actionBarState.customizeMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const descriptor = e.originalEvent.dataTransfer.getData('text/plain');
+    if (!descriptor) return;
+    
+    const $targetCell = $(this);
+    const $dragCell = $tabs.find(`[data-action-descriptor="${CSS.escape(descriptor)}"]`).first();
+    if (!$dragCell.length || $dragCell.is($targetCell)) return;
+    
+    $targetCell.before($dragCell);
+    saveCurrentActionBarButtonOrder($tabs);
+  });
+}
+
+function saveCurrentActionBarButtonOrder($tabs) {
+  if (!$tabs || !$tabs.length) return;
+  const order = {};
+  $tabs.find('.action-bar-tab-panel').each(function () {
+    const tabId = $(this).attr('data-tab');
+    if (!tabId) return;
+    const descriptors = [];
+    $(this).find('.action-bar-action-cell').each(function () {
+      const d = $(this).attr('data-action-descriptor');
+      if (d) descriptors.push(d);
+    });
+    if (descriptors.length) {
+      order[tabId] = descriptors;
+    }
+  });
+  saveActionBarButtonOrder(order);
+}
+
 function selectActionBarTab($tabs, tabId) {
   if (!$tabs || !$tabs.length || !tabId) {
     return;
@@ -1360,10 +1590,11 @@ function hideEmptyActionBarTabs($tabs) {
     const tabId = $(this).data('tab');
     const $panel = $tabs.find(`.action-bar-tab-panel[data-tab="${tabId}"]`);
     const hasActions = $panel.find('.action-button, .action-end-turn, .talk-action, .merchant-shop-action, .jrpg-dialog-action, .set-pov-action, .delete-entity-btn, .action-bar-spell-card').length > 0;
+    // Always show these tabs; hide "all" when it has no content
     const alwaysShow = tabId === 'common' || tabId === 'utility';
-    const visible = alwaysShow || hasActions;
+    const visible = alwaysShow || hasActions || tabId === 'all';
     $(this).toggle(visible);
-    if (!visible) {
+    if (!visible && tabId !== 'all') {
       $panel.removeClass('is-active').attr('hidden', true);
     }
   });
@@ -1443,6 +1674,8 @@ function initializeActionBarTabs($root) {
     applyActionBarTabOrder($tabRoot, tabOrder);
     applyActionBarPins($tabRoot);
     syncActionBarPinButtons($tabRoot);
+    applyActionBarButtonOrder($tabRoot);
+    initActionBarButtonDragDrop($tabRoot);
     selectActionBarTab($tabRoot, defaultTab);
   });
 }
@@ -2009,7 +2242,7 @@ function scheduleRefreshMap(delayMs = 180, options = {}) {
       const resolvers = refreshMapResolvers;
       refreshMapResolvers = [];
       try {
-        invalidateLocalPathCostMap();
+        invalidateMovementPlanningCaches();
       } catch (_) { /* ignore */ }
       try {
         Utils.refreshTileSet(false, false, 0, 0, null, () => {
@@ -2296,6 +2529,7 @@ class EventQueue {
       switch (evtType) {
         case "refresh_tiles": {
           try {
+            invalidateMovementPlanningCaches();
             const msg = (data && data.message) || {};
             const is_setup = !!msg.is_setup;
             const pov = !!msg.pov;
@@ -2773,6 +3007,9 @@ class EventQueue {
           break;
         }
         case "turn":
+          // Turn updates can follow enemy movement, so invalidate any cached
+          // client-side occupancy grid before computing local paths.
+          invalidateMovementPlanningCaches();
           refreshTurn();
           // Update game time if provided in the message
           if (data.message && data.message.game_time !== undefined) {
@@ -2871,6 +3108,7 @@ class EventQueue {
         case "switch_map":
           var map_id = data.message.map;
           var triggered_entity_uid = data.message.entity_uid || null;
+          invalidateMovementPlanningCaches();
           Utils.switchMap(map_id, globalCanvas, () => {
             createGlobalCanvas();
             const targetUid = triggered_entity_uid || (function () {
@@ -2958,6 +3196,9 @@ class EventQueue {
   }
 
   processMoveEvent(data, resolve) {
+    // Entity occupancy changes after any move; clear local path caches now so
+    // the next local path query sees updated blockers.
+    invalidateMovementPlanningCaches();
     if (!data.message || !data.message.animation_log) {
       // Legacy move event without animation_log — just refresh the map
       try {
@@ -4072,6 +4313,77 @@ const switchPOV = (entity_uid, canvas) => {
 };
 
 const ajaxPost = (url, data, onSuccess, isJSON = false) => {
+  const isMoveActionRequest = (
+    url === '/action'
+    && data
+    && typeof data === 'object'
+    && data.action === 'MoveAction'
+  );
+
+  const buildMoveRequestFingerprint = (payload) => {
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    const entityId = String(payload.id || '');
+    const path = Array.isArray(payload.path) ? payload.path : [];
+    const jumps = Array.isArray(payload.manual_jump) ? payload.manual_jump : [];
+    const stackDescent = payload.stack_descent || null;
+    try {
+      return JSON.stringify([entityId, path, jumps, stackDescent]);
+    } catch (_) {
+      return `${entityId}:${path.length}`;
+    }
+  };
+
+  // Global move-request guard to prevent accidental duplicate submits from
+  // overlapping input flows (click, keyboard, hover quick-action).
+  if (!window.__n20MovePostGuard) {
+    window.__n20MovePostGuard = {
+      byEntity: new Map(),
+      DUP_WINDOW_MS: 900,
+    };
+  }
+
+  let guardEntityId = null;
+  let guardFingerprint = null;
+  if (isMoveActionRequest) {
+    guardEntityId = String(data.id || '');
+    guardFingerprint = buildMoveRequestFingerprint(data);
+
+    if (guardEntityId && guardFingerprint) {
+      const guard = window.__n20MovePostGuard;
+      const now = Date.now();
+      const state = guard.byEntity.get(guardEntityId) || {
+        inFlight: false,
+        fingerprint: null,
+        lastSentAt: 0,
+      };
+
+      const duplicateInFlight = state.inFlight && state.fingerprint === guardFingerprint;
+      const duplicateRapid = (
+        !state.inFlight
+        && state.fingerprint === guardFingerprint
+        && (now - state.lastSentAt) < guard.DUP_WINDOW_MS
+      );
+
+      if (duplicateInFlight || duplicateRapid) {
+        console.warn('Suppressed duplicate MoveAction POST', {
+          entity: guardEntityId,
+          duplicateInFlight,
+          duplicateRapid,
+          pathLen: Array.isArray(data.path) ? data.path.length : 0,
+        });
+        return;
+      }
+
+      guard.byEntity.set(guardEntityId, {
+        inFlight: true,
+        fingerprint: guardFingerprint,
+        lastSentAt: now,
+      });
+    }
+  }
+
   $.ajax({
     url,
     type: "POST",
@@ -4079,8 +4391,30 @@ const ajaxPost = (url, data, onSuccess, isJSON = false) => {
     contentType: isJSON
       ? "application/json"
       : "application/x-www-form-urlencoded",
-    success: onSuccess,
+    success: (resp) => {
+      if (isMoveActionRequest && guardEntityId) {
+        const guard = window.__n20MovePostGuard;
+        const state = guard.byEntity.get(guardEntityId);
+        if (state && state.fingerprint === guardFingerprint) {
+          state.inFlight = false;
+          state.lastSentAt = Date.now();
+          guard.byEntity.set(guardEntityId, state);
+        }
+      }
+      if (typeof onSuccess === 'function') {
+        onSuccess(resp);
+      }
+    },
     error: (jqXHR, textStatus, errorThrown) => {
+      if (isMoveActionRequest && guardEntityId) {
+        const guard = window.__n20MovePostGuard;
+        const state = guard.byEntity.get(guardEntityId);
+        if (state && state.fingerprint === guardFingerprint) {
+          state.inFlight = false;
+          state.lastSentAt = Date.now();
+          guard.byEntity.set(guardEntityId, state);
+        }
+      }
       console.error(`Error with POST ${url}:`, textStatus, errorThrown);
     },
   });
@@ -7052,6 +7386,10 @@ $(document).ready(() => {
           // Set a new timer to delay the path request
           const pendingDest = { x: pathDestX, y: pathDestY, localX: coordsx, localY: coordsy };
           pathDebounceTimer = setTimeout(() => {
+            pathDebounceTimer = null;
+            if (!moveMode || !source) {
+              return;
+            }
             // If the cursor has moved off this tile by the time the timer
             // fires, skip the fetch entirely.
             if (!lastHoverCoords ||
@@ -8227,11 +8565,7 @@ $(document).ready(() => {
             },
             true,
           );
-          // reset jump UI state after commit
-          jumpMode = false;
-          jumpStartIndex = null;
-          lastStackDescent = null;
-          lastPathForJump = null;
+          resetMouseMoveMode();
         };
         $(".popover-menu").hide();
         moveMode = true;
@@ -8331,6 +8665,7 @@ $(document).ready(() => {
         break;
       }
       case "select_cone":
+        resetMouseMoveMode();
         $(".popover-menu").hide();
         closeCenterActionBar();
         $("#modal-1").modal("hide");
@@ -8355,6 +8690,7 @@ $(document).ready(() => {
         };
         break;
       case "select_cube":
+        resetMouseMoveMode();
         $(".popover-menu").hide();
         closeCenterActionBar();
         $("#modal-1").modal("hide");
@@ -8379,6 +8715,7 @@ $(document).ready(() => {
         };
         break;
       case "select_radius":
+        resetMouseMoveMode();
         $(".popover-menu").hide();
         closeCenterActionBar();
         $("#modal-1").modal("hide");
@@ -8403,6 +8740,7 @@ $(document).ready(() => {
         };
         break;
       case "select_square":
+        resetMouseMoveMode();
         $(".popover-menu").hide();
         closeCenterActionBar();
         $("#modal-1").modal("hide");
@@ -8427,6 +8765,7 @@ $(document).ready(() => {
         };
         break;
       case "select_line":
+        resetMouseMoveMode();
         $(".popover-menu").hide();
         closeCenterActionBar();
         $("#modal-1").modal("hide");
@@ -8451,6 +8790,7 @@ $(document).ready(() => {
         };
         break;
       case "select_target":
+        resetMouseMoveMode();
         $(".popover-menu").hide();
         closeCenterActionBar();
         $("#modal-1").modal("hide");
@@ -8511,6 +8851,7 @@ $(document).ready(() => {
         };
         break;
       case "select_empty_space":
+        resetMouseMoveMode();
         $(".popover-menu").hide();
         closeCenterActionBar();
         $("#modal-1").modal("hide");
@@ -9083,16 +9424,44 @@ $(document).ready(() => {
 
   $(document).on("mouseenter", ".hide-action", function () {
     const entity_uid = $(this).closest('.center-action-entry').data('entityUid') || $(this).closest(".tile").data("coords-id");
-    Utils.ajaxGet("/hide", { id: entity_uid }, (data) => {
-      data.hiding_spots.forEach((value) => {
+    if (!entity_uid) return;
+
+    if (hidePreviewHoverTimer) {
+      clearTimeout(hidePreviewHoverTimer);
+      hidePreviewHoverTimer = null;
+    }
+
+    const paintHideSpots = (spots) => {
+      (spots || []).forEach((value) => {
         $(
           `.tile[data-coords-x="${value[0]}"][data-coords-y="${value[1]}"]`,
         ).css("background-color", "rgba(0, 255, 0, 0.5)");
       });
-    });
+    };
+
+    const cached = hidePreviewCache.get(String(entity_uid));
+    const now = Date.now();
+    if (cached && (now - cached.ts) <= HIDE_PREVIEW_CACHE_TTL_MS) {
+      paintHideSpots(cached.spots);
+      return;
+    }
+
+    // Debounce hover-triggered hide lookups so quick cursor passes do not
+    // trigger expensive server-side hide spot scans.
+    hidePreviewHoverTimer = setTimeout(() => {
+      Utils.ajaxGet("/hide", { id: entity_uid }, (data) => {
+        const spots = (data && Array.isArray(data.hiding_spots)) ? data.hiding_spots : [];
+        hidePreviewCache.set(String(entity_uid), { ts: Date.now(), spots });
+        paintHideSpots(spots);
+      });
+    }, 120);
   });
 
   $(document).on("mouseleave", ".hide-action", () => {
+    if (hidePreviewHoverTimer) {
+      clearTimeout(hidePreviewHoverTimer);
+      hidePreviewHoverTimer = null;
+    }
     $(".tile").css("background-color", "");
   });
 

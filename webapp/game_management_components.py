@@ -176,20 +176,24 @@ class GameEntityRegistry:
                 now = time.time()
                 state = materialize_state.setdefault(
                     state_key,
-                    {'last_attempt_ts': 0.0, 'warned': False},
+                    {'last_attempt_ts': 0.0, 'warned': False, '_t_start': 0.0},
                 )
                 if state['last_attempt_ts'] and now - state['last_attempt_ts'] < retry_cooldown_s:
                     continue
                 state['last_attempt_ts'] = now
+                state['_t_start'] = time.perf_counter()
                 entity = ensure_character_entity_loaded(entity_uid)
             if entity is None:
+                _t_materialize = time.perf_counter()
                 state = materialize_state.setdefault(
                     state_key,
-                    {'last_attempt_ts': 0.0, 'warned': False},
+                    {'last_attempt_ts': 0.0, 'warned': False, '_t_start': 0.0},
                 )
                 if not state.get('warned'):
+                    elapsed_ms = (_t_materialize - state.get('_t_start', _t_materialize)) * 1000
                     self.manager.logger.warning(
-                        f"Could not materialize assigned character {entity_uid} for user {username}"
+                        f"[timing] materialize_failed entity={entity_uid} user={username} "
+                        f"lookup_ms={elapsed_ms:.1f}"
                     )
                     state['warned'] = True
                 continue

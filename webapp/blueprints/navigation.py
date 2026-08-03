@@ -6,9 +6,25 @@ Routes: /, /command, /reload_map, /response, /focus, /switch_map,
         /update, /mark_note_read
 """
 import json
+import os
 import random
+import threading
 import time
 from collections import OrderedDict
+
+# Timing instrumentation toggle — set N20_DEBUG_TIMING=1 to log per-step timings.
+_DEBUG_TIMING = bool(int(os.environ.get('N20_DEBUG_TIMING', '0')))
+
+
+def _timing_log(msg):
+    """Emit a timing log line when N20_DEBUG_TIMING=1."""
+    if _DEBUG_TIMING:
+        try:
+            from .helpers.runtime_state import get_logger
+            logger = get_logger()
+            logger.warning(f"[timing] {msg}")
+        except Exception:
+            pass
 
 from flask import (
     Blueprint,
@@ -24,6 +40,7 @@ from flask import (
 from natural20.ai.path_compute import PathCompute
 from natural20.ai.pathfinding_cost_map import build_pathfinding_snapshot
 from natural20.player_character import PlayerCharacter
+from natural20.utils.movement import Movement
 from webapp.pov_utils import build_portrait_render_context, dm_pov_portrait_entities
 from natural20.web.json_renderer import JsonRenderer
 from natural20.web.stack_renderer import build_stack_render_layers, stack_for_map, stack_floors_for_ui, annotate_base_tiles_with_stack_overlay_entities
@@ -63,6 +80,18 @@ navigation_bp = Blueprint('navigation', __name__)
 _PATH_RESPONSE_CACHE = {}
 _PATH_RESPONSE_CACHE_LIMIT = 256
 
+# Per-user /update HTML cache keyed by render epoch and POV context.
+_UPDATE_RESPONSE_CACHE = {}
+_UPDATE_RESPONSE_CACHE_LIMIT = 16
+_UPDATE_CACHE_LOCK = threading.Lock()
+_UPDATE_INFLIGHT = {}
+
+# Global LRU cache for expensive /path/cost_map snapshots.
+_COST_MAP_SNAPSHOT_CACHE = OrderedDict()
+_COST_MAP_SNAPSHOT_CACHE_LIMIT = 64
+_COST_MAP_CACHE_LOCK = threading.Lock()
+_COST_MAP_INFLIGHT = {}
+
 # Memoize a per-(map, entity, battle) difficult-terrain lookup.
 _DIFFICULT_TERRAIN_CACHE = {}
 
@@ -93,34 +122,53 @@ def _stack_floors_for_user(session, battle_map):
     return stack_floors_for_ui(stack)
 
 
-def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_entities, logger=None):
+def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_entities, logger=None, metrics=None):
     """Return (stack_layers dict|None, tiles list for template)."""
+    _t0 = time.perf_counter()
     session = current_game.game_session
+    if metrics is None:
+        metrics = {}
     stack = stack_for_map(session, battle_map)
+    metrics['stack_lookup_ms'] = (time.perf_counter() - _t0) * 1000.0
     if stack is not None:
         floor = stack.floor_for_map(battle_map.name)
         if floor is not None and floor.is_base:
+            _t_render = time.perf_counter()
             renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
             tiles = renderer.render(entity_pov=pov_entities)
+            metrics['json_render_ms'] = (time.perf_counter() - _t_render) * 1000.0
+            _t_annotate = time.perf_counter()
             annotate_base_tiles_with_stack_overlay_entities(
                 stack, tiles, battle, pov_entities, battle_map,
             )
+            metrics['annotate_overlay_ms'] = (time.perf_counter() - _t_annotate) * 1000.0
             stack_layers = {
                 'id': stack.id,
                 'floors': stack_floors_for_ui(stack),
                 'active_map': battle_map.name,
                 'composite_mode': False,
             }
+            metrics['render_mode'] = 'stack_base'
+            metrics['tiles_rendered'] = len(tiles) if isinstance(tiles, list) else None
             return stack_layers, [tiles]
+        _t_layers = time.perf_counter()
         stack_layers = build_stack_render_layers(
             session, battle_map, battle, padding=map_padding, entity_pov=pov_entities,
         )
+        metrics['stack_layers_ms'] = (time.perf_counter() - _t_layers) * 1000.0
         if stack_layers and stack_layers.get('composite_mode'):
             stack_layers['floors'] = stack_floors_for_ui(stack)
             base_layer = stack_layers['layers'][0]
+            metrics['render_mode'] = 'stack_composite'
+            metrics['tiles_rendered'] = len(base_layer.get('tiles') or [])
             return stack_layers, [base_layer['tiles']]
+    _t_plain = time.perf_counter()
     renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
-    return None, [renderer.render(entity_pov=pov_entities)]
+    tiles = renderer.render(entity_pov=pov_entities)
+    metrics['json_render_ms'] = (time.perf_counter() - _t_plain) * 1000.0
+    metrics['render_mode'] = 'plain'
+    metrics['tiles_rendered'] = len(tiles) if isinstance(tiles, list) else None
+    return None, [tiles]
 
 
 def _stack_display_map(current_game, battle_map):
@@ -528,6 +576,7 @@ def _resolve_path_source(battle_map, battle, username, source_x, source_y):
 
 @navigation_bp.route('/path', methods=['GET'], endpoint='compute_path')
 def compute_path():
+    _t0 = time.perf_counter()
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session['username'])
     battle = current_game.get_current_battle()
@@ -539,6 +588,8 @@ def compute_path():
     destination = {
         'x': request.args.get('to[x]'),
         'y': request.args.get('to[y]'),
+        'local_x': request.args.get('to[localX]'),
+        'local_y': request.args.get('to[localY]'),
     }
     dest = (int(destination['x']), int(destination['y']))
     entity_x = int(source['x'])
@@ -546,6 +597,36 @@ def compute_path():
 
     allow_stack_descent = request.args.get('allow_stack_descent') in ('1', 'true', 'True')
     dest_map_name = request.args.get('to_map') or request.args.get('dest_map')
+
+    # Fast path: if destination is clearly out-of-bounds on this map and this
+    # isn't a cross-map/stack-descent request, return immediately. This avoids
+    # expensive source resolution/pathfinding for hover events outside the map.
+    if not (0 <= dest[0] < battle_map.size[0] and 0 <= dest[1] < battle_map.size[1]):
+        local_x = destination.get('local_x')
+        local_y = destination.get('local_y')
+        if local_x is not None and local_y is not None:
+            try:
+                maybe_local = (int(local_x), int(local_y))
+                if 0 <= maybe_local[0] < battle_map.size[0] and 0 <= maybe_local[1] < battle_map.size[1]:
+                    dest = maybe_local
+            except (TypeError, ValueError):
+                pass
+
+    if (
+        not allow_stack_descent
+        and not dest_map_name
+        and not (0 <= dest[0] < battle_map.size[0] and 0 <= dest[1] < battle_map.size[1])
+    ):
+        _timing_log(
+            f"path:early_exit=out_of_bounds source=({entity_x},{entity_y}) "
+            f"dest=({dest[0]},{dest[1]}) total={(time.perf_counter()-_t0)*1000:.1f}ms"
+        )
+        return jsonify({
+            'path': None,
+            'cost': Movement.empty().to_dict(),
+            'placeable': False,
+            'terrain_info': [],
+        })
 
     accumulated_path = request.args.get('accumulatedPath')
     if accumulated_path:
@@ -559,6 +640,8 @@ def compute_path():
     else:
         accumulated_path = []
 
+    # Step 1: Entity resolution
+    _t_entity = time.perf_counter()
     entity = battle_map.entity_at(entity_x, entity_y)
     if entity is None:
         entity, entity_x, entity_y = _resolve_path_source(
@@ -570,7 +653,10 @@ def compute_path():
         )
     if entity is None:
         return jsonify(error='No entity at source'), 400
+    _timing_log(f"path:entity_resolve={(time.perf_counter()-_t_entity)*1000:.1f}ms entity={getattr(entity,'name','?')} pos=({entity_x},{entity_y})")
 
+    # Step 2: Cache lookup
+    _t_cache = time.perf_counter()
     cache_key = (
         id(battle_map),
         getattr(entity, 'entity_uid', lambda: None)()
@@ -587,15 +673,25 @@ def compute_path():
     cached = proc_cache.get(cache_key)
     if cached is not None:
         proc_cache.move_to_end(cache_key)
+        _timing_log(f"path:cache_hit={(time.perf_counter()-_t0)*1000:.1f}ms")
         return jsonify(cached)
+    _timing_log(f"path:cache_miss={(time.perf_counter()-_t_cache)*1000:.1f}ms")
 
+    # Step 3: Movement budget
+    _t_movement = time.perf_counter()
     if battle and entity in getattr(battle, 'entities', {}):
         available_movement = entity.available_movement(battle)
     else:
         available_movement = None
+    _timing_log(f"path:movement={(time.perf_counter()-_t_movement)*1000:.1f}ms")
 
+    # Step 4: PathCompute construction
+    _t_pc = time.perf_counter()
     path_compute = PathCompute(battle, battle_map, entity)
+    _timing_log(f"path:pathcompute={(time.perf_counter()-_t_pc)*1000:.1f}ms")
 
+    # Step 5: Target map resolution (stack descent / cross-map)
+    _t_target = time.perf_counter()
     target_map = battle_map
     if dest_map_name and dest_map_name != battle_map.name:
         target_map = current_game.session.maps.get(dest_map_name)
@@ -607,8 +703,11 @@ def compute_path():
                 blx, bly = stack.world_to_local(dest[0], dest[1], base_floor.map_name)
                 if blx is not None and base_floor.map.passable(entity, blx, bly, battle, True):
                     target_map = base_floor.map
+    _timing_log(f"path:target_map={(time.perf_counter()-_t_target)*1000:.1f}ms target={target_map.name if target_map else 'None'}")
 
+    # Step 6: Stack descent plan
     if allow_stack_descent and target_map is not battle_map:
+        _t_stack = time.perf_counter()
         from natural20.map_stack_descent import plan_voluntary_stack_route
         stack_plan = plan_voluntary_stack_route(
             path_compute,
@@ -628,8 +727,11 @@ def compute_path():
             proc_cache[cache_key] = stack_plan
             if len(proc_cache) > _PATH_RESPONSE_CACHE_LIMIT:
                 proc_cache.popitem(last=False)
+            _timing_log(f"path:stack_plan={(time.perf_counter()-_t_stack)*1000:.1f}ms total={(time.perf_counter()-_t0)*1000:.1f}ms")
             return jsonify(stack_plan)
 
+    # Step 7: A* pathfinding (first attempt)
+    _t_path1 = time.perf_counter()
     path = path_compute.compute_path(
         entity_x,
         entity_y,
@@ -637,15 +739,34 @@ def compute_path():
         accumulated_path=accumulated_path,
         available_movement_cost=available_movement,
     )
-    if not path or dest not in path:
-        path = path_compute.compute_path(
-            entity_x,
-            entity_y,
-            dest[0], dest[1],
-            accumulated_path=accumulated_path,
-            available_movement_cost=available_movement,
-            door_navigation=True,
-        )
+    _timing_log(f"path:a_star_pass1={(time.perf_counter()-_t_path1)*1000:.1f}ms found={'yes' if path else 'no'}")
+
+    # Step 8: A* pathfinding (second attempt with door navigation)
+    # Skip if first pass was interrupted by cap/timeout — the second pass would
+    # explore the same nodes and hit the same cap. Also skip if dest was
+    # out-of-bounds (already handled by early-exit in compute_path).
+    # Optimization: if first pass already found a path reaching the destination,
+    # and it's not a cross-map / stack-descent scenario, skip the door pass
+    # because the entity already reached the target.
+    skip_pass2 = (
+        path_compute._last_interrupted
+        or not (0 <= dest[0] < battle_map.size[0] and 0 <= dest[1] < battle_map.size[1])
+        or (path is not None and dest in path)
+    )
+    if not path or (dest not in path if path else False):
+        if skip_pass2:
+            _timing_log("path:a_star_pass2=skipped reason=pass1_interrupted_or_oob_or_reached")
+        else:
+            _t_path2 = time.perf_counter()
+            path = path_compute.compute_path(
+                entity_x,
+                entity_y,
+                dest[0], dest[1],
+                accumulated_path=accumulated_path,
+                available_movement_cost=available_movement,
+                door_navigation=True,
+            )
+            _timing_log(f"path:a_star_pass2={(time.perf_counter()-_t_path2)*1000:.1f}ms found={'yes' if path else 'no'}")
 
     if accumulated_path:
         full_path = list(accumulated_path)
@@ -653,6 +774,8 @@ def compute_path():
     else:
         full_path = path
 
+    # Step 9: Cost, placeable, terrain
+    _t_post = time.perf_counter()
     cost = battle_map.movement_cost(entity, full_path)
     placeable = battle_map.placeable(entity, dest[0], dest[1], battle, False)
 
@@ -665,6 +788,7 @@ def compute_path():
                 'y': y,
                 'difficult': bool(diff_lookup(x, y)),
             })
+    _timing_log(f"path:post_process={(time.perf_counter()-_t_post)*1000:.1f}ms path_len={len(path) if path else 0} total={(time.perf_counter()-_t0)*1000:.1f}ms")
 
     path_data = {
         "path": path,
@@ -682,7 +806,9 @@ def compute_path():
 @navigation_bp.route('/path/cost_map', methods=['GET'], endpoint='path_cost_map')
 def path_cost_map():
     """Return a pathfinding snapshot for client-side A*."""
+    _t0 = time.perf_counter()
     current_game = get_current_game()
+    username = session.get('username') or 'anonymous'
     battle_map = current_game.get_map_for_user(session['username'])
     battle = current_game.get_current_battle()
 
@@ -692,6 +818,7 @@ def path_cost_map():
     except (TypeError, ValueError):
         return jsonify(error='from[x] and from[y] are required'), 400
 
+    _t_resolve = time.perf_counter()
     entity = battle_map.entity_at(source_x, source_y)
     if entity is None:
         entity, source_x, source_y = _resolve_path_source(
@@ -701,6 +828,7 @@ def path_cost_map():
             source_x,
             source_y,
         )
+    resolve_ms = (time.perf_counter() - _t_resolve) * 1000.0
     if entity is None:
         return jsonify(error='No entity at source'), 400
 
@@ -709,17 +837,164 @@ def path_cost_map():
     else:
         available_movement = None
 
-    snapshot = build_pathfinding_snapshot(
-        battle_map,
-        entity,
-        battle,
-        ignore_opposing=False,
+    try:
+        render_epoch = int(current_game.render_epoch_for_user(username))
+    except Exception:
+        render_epoch = 0
+
+    cache_key = (
+        username,
+        render_epoch,
+        battle_map.name,
+        bool(battle),
+        str(getattr(entity, 'entity_uid', None) or ''),
+        int(source_x),
+        int(source_y),
     )
-    return jsonify({
-        'snapshot': snapshot,
-        'available_movement': available_movement,
-        'feet_per_grid': battle_map.feet_per_grid,
-    })
+
+    _t_cache = time.perf_counter()
+    with _COST_MAP_CACHE_LOCK:
+        cached_payload = _COST_MAP_SNAPSHOT_CACHE.get(cache_key)
+        if cached_payload is not None:
+            _COST_MAP_SNAPSHOT_CACHE.move_to_end(cache_key)
+    if cached_payload is not None:
+        cache_ms = (time.perf_counter() - _t_cache) * 1000.0
+        total_ms = (time.perf_counter() - _t0) * 1000.0
+        _timing_log(
+            "path:cost_map "
+            f"cache=hit cache_lookup={cache_ms:.1f}ms total={total_ms:.1f}ms "
+            f"map={battle_map.name} battle={'yes' if battle else 'no'}"
+        )
+        try:
+            request._perf_meta = {
+                **(getattr(request, '_perf_meta', {}) or {}),
+                'map': battle_map.name,
+                'battle': 'yes' if battle else 'no',
+                'entity_uid': getattr(entity, 'entity_uid', None),
+                'map_w': battle_map.size[0],
+                'map_h': battle_map.size[1],
+                'resolve_ms': round(resolve_ms, 1),
+                'snapshot_ms': 0.0,
+                'cost_map_cache': 'hit',
+                'cost_map_cache_lookup_ms': round(cache_ms, 1),
+                'render_epoch': render_epoch,
+            }
+        except Exception:
+            pass
+        resp = jsonify(cached_payload)
+        resp.headers['Server-Timing'] = (
+            f"cost_resolve;dur={resolve_ms:.1f}, "
+            f"cost_cache;dur={cache_ms:.1f}, "
+            f"cost_total;dur={total_ms:.1f}"
+        )
+        return resp
+
+    inflight_key = ('path_cost_map', cache_key)
+    with _COST_MAP_CACHE_LOCK:
+        wait_event = _COST_MAP_INFLIGHT.get(inflight_key)
+        if wait_event is None:
+            wait_event = threading.Event()
+            _COST_MAP_INFLIGHT[inflight_key] = wait_event
+            is_leader = True
+        else:
+            is_leader = False
+    owns_inflight = is_leader
+
+    if not is_leader:
+        _t_wait = time.perf_counter()
+        wait_event.wait(timeout=15.0)
+        wait_ms = (time.perf_counter() - _t_wait) * 1000.0
+        with _COST_MAP_CACHE_LOCK:
+            cached_payload = _COST_MAP_SNAPSHOT_CACHE.get(cache_key)
+            if cached_payload is not None:
+                _COST_MAP_SNAPSHOT_CACHE.move_to_end(cache_key)
+        if cached_payload is not None:
+            total_ms = (time.perf_counter() - _t0) * 1000.0
+            _timing_log(
+                "path:cost_map "
+                f"cache=coalesced_hit wait={wait_ms:.1f}ms total={total_ms:.1f}ms "
+                f"map={battle_map.name} battle={'yes' if battle else 'no'}"
+            )
+            try:
+                request._perf_meta = {
+                    **(getattr(request, '_perf_meta', {}) or {}),
+                    'map': battle_map.name,
+                    'battle': 'yes' if battle else 'no',
+                    'entity_uid': getattr(entity, 'entity_uid', None),
+                    'map_w': battle_map.size[0],
+                    'map_h': battle_map.size[1],
+                    'resolve_ms': round(resolve_ms, 1),
+                    'snapshot_ms': 0.0,
+                    'cost_map_cache': 'coalesced_hit',
+                    'cost_map_wait_ms': round(wait_ms, 1),
+                    'render_epoch': render_epoch,
+                }
+            except Exception:
+                pass
+            resp = jsonify(cached_payload)
+            resp.headers['Server-Timing'] = (
+                f"cost_resolve;dur={resolve_ms:.1f}, "
+                f"cost_wait;dur={wait_ms:.1f}, "
+                f"cost_total;dur={total_ms:.1f}"
+            )
+            return resp
+
+    _t_snapshot = time.perf_counter()
+    try:
+        snapshot = build_pathfinding_snapshot(
+            battle_map,
+            entity,
+            battle,
+            ignore_opposing=False,
+        )
+        snapshot_ms = (time.perf_counter() - _t_snapshot) * 1000.0
+        total_ms = (time.perf_counter() - _t0) * 1000.0
+        payload = {
+            'snapshot': snapshot,
+            'available_movement': available_movement,
+            'feet_per_grid': battle_map.feet_per_grid,
+        }
+        with _COST_MAP_CACHE_LOCK:
+            _COST_MAP_SNAPSHOT_CACHE[cache_key] = payload
+            _COST_MAP_SNAPSHOT_CACHE.move_to_end(cache_key)
+            if len(_COST_MAP_SNAPSHOT_CACHE) > _COST_MAP_SNAPSHOT_CACHE_LIMIT:
+                _COST_MAP_SNAPSHOT_CACHE.popitem(last=False)
+    finally:
+        if owns_inflight:
+            with _COST_MAP_CACHE_LOCK:
+                event = _COST_MAP_INFLIGHT.pop(inflight_key, None)
+                if event is not None:
+                    event.set()
+
+    _timing_log(
+        "path:cost_map "
+        f"resolve={resolve_ms:.1f}ms snapshot={snapshot_ms:.1f}ms total={total_ms:.1f}ms "
+        f"map={battle_map.name} battle={'yes' if battle else 'no'}"
+    )
+
+    try:
+        request._perf_meta = {
+            **(getattr(request, '_perf_meta', {}) or {}),
+            'map': battle_map.name,
+            'battle': 'yes' if battle else 'no',
+            'entity_uid': getattr(entity, 'entity_uid', None),
+            'map_w': battle_map.size[0],
+            'map_h': battle_map.size[1],
+            'resolve_ms': round(resolve_ms, 1),
+            'snapshot_ms': round(snapshot_ms, 1),
+            'cost_map_cache': 'miss',
+            'render_epoch': render_epoch,
+        }
+    except Exception:
+        pass
+
+    resp = jsonify(payload)
+    resp.headers['Server-Timing'] = (
+        f"cost_resolve;dur={resolve_ms:.1f}, "
+        f"cost_snapshot;dur={snapshot_ms:.1f}, "
+        f"cost_total;dur={total_ms:.1f}"
+    )
+    return resp
 
 
 @navigation_bp.route('/jump_info', methods=['GET'], endpoint='jump_info')
@@ -854,6 +1129,7 @@ def refresh_portraits():
 
 @navigation_bp.route('/update', endpoint='update')
 def update():
+    _t0 = time.perf_counter()
     logger = get_logger()
     current_game = get_current_game()
     map_padding = get_map_padding()
@@ -866,8 +1142,14 @@ def update():
     battle_map = _battle_map_for_render(current_game, session['username'])
     battle = current_game.get_current_battle()
 
+    # Step 1: Entity lookup
+    _t_entity = time.perf_counter()
     entity = battle_map.entity_by_uid(entity_uid) if entity_uid else battle_map.entity_at(x, y)
     pov_entity = current_game.get_pov_entity_for_user(session['username'])
+    _timing_log(f"update:entity_lookup={(time.perf_counter()-_t_entity)*1000:.1f}ms")
+
+    # Step 2: POV entity resolution
+    _t_pov = time.perf_counter()
     is_setup = request.args.get('is_setup') == 'true'
     if is_setup:
         # Battle setup must reveal every party PC on this map, not only the DM's
@@ -898,35 +1180,188 @@ def update():
     if 'dm' not in user_role() and pov_entity is None and (_pov_entities is None or len(_pov_entities) == 0):
         user_entities = entities_controlled_by(session['username'], battle_map)
         _pov_entities = user_entities if user_entities else []
+    _timing_log(f"update:pov_resolve={(time.perf_counter()-_t_pov)*1000:.1f}ms entity_count={len(_pov_entities) if _pov_entities else 0}")
 
     logger.debug(f"entity: {entity}, pov_entity: {pov_entity}, _pov_entities: {_pov_entities}")
-    _sync_stack_pov_to_view_map(current_game, battle_map, _pov_entities)
-    _t_render = time.perf_counter()
-    stack_layers, my_2d_array = _render_tiles_for_user(
-        current_game, battle_map, battle, map_padding, _pov_entities, logger=logger,
+
+    # Step 2.5: short-circuit unchanged renders using a versioned cache.
+    # The epoch is bumped by GameManagement on commits/map switches/POV changes.
+    _t_cache = time.perf_counter()
+    username = session.get('username') or 'anonymous'
+    try:
+        render_epoch = int(current_game.render_epoch_for_user(username))
+    except Exception:
+        render_epoch = 0
+    pov_uids = []
+    for _pov in (_pov_entities or []):
+        uid = getattr(_pov, 'entity_uid', None)
+        pov_uids.append(str(uid) if uid is not None else str(id(_pov)))
+    cache_key = (
+        render_epoch,
+        battle_map.name,
+        bool(is_setup),
+        bool(is_pov),
+        tuple(sorted(pov_uids)),
+        str(getattr(pov_entity, 'entity_uid', None)) if pov_entity is not None else '',
     )
-    stack_underlay_mode = _stack_underlay_mode(stack_layers)
-    stack_floors = _stack_floors_for_user(current_game.game_session, battle_map)
-    _t_after_render = time.perf_counter()
-    response = render_template(
-        'map.html',
-        pov_entity=pov_entity,
-        tiles=my_2d_array,
-        stack_layers=stack_layers,
-        stack_underlay_mode=stack_underlay_mode,
-        stack_floors=stack_floors,
-        tile_size_px=tile_px,
-        random=random,
-        is_setup=is_setup,
-        current_map_name=battle_map.name,
-        read_notes=current_game.read_notes,
-    )
-    _t_after_tpl = time.perf_counter()
+    with _UPDATE_CACHE_LOCK:
+        user_cache = _UPDATE_RESPONSE_CACHE.setdefault(username, OrderedDict())
+        cached_html = user_cache.get(cache_key)
+    if cached_html is not None:
+        with _UPDATE_CACHE_LOCK:
+            user_cache = _UPDATE_RESPONSE_CACHE.setdefault(username, OrderedDict())
+            user_cache.move_to_end(cache_key)
+        cache_ms = (time.perf_counter() - _t_cache) * 1000.0
+        try:
+            request._perf_meta = {
+                **(getattr(request, '_perf_meta', {}) or {}),
+                'route': 'update',
+                'render_cache': 'hit',
+                'render_cache_lookup_ms': round(cache_ms, 1),
+                'render_epoch': render_epoch,
+                'map': battle_map.name,
+                'battle': 'yes' if battle else 'no',
+            }
+        except Exception:
+            pass
+        resp = make_response(cached_html)
+        total_ms = (time.perf_counter() - _t0) * 1000.0
+        resp.headers['Server-Timing'] = (
+            f"cache;dur={cache_ms:.1f}, "
+            f"total;dur={total_ms:.1f}"
+        )
+        _timing_log(f"update:cache_hit={cache_ms:.1f}ms total={total_ms:.1f}ms epoch={render_epoch}")
+        return resp
+    cache_miss_ms = (time.perf_counter() - _t_cache) * 1000.0
+    _timing_log(f"update:cache_miss={cache_miss_ms:.1f}ms epoch={render_epoch}")
+
+    inflight_key = ('update', username, cache_key)
+    with _UPDATE_CACHE_LOCK:
+        wait_event = _UPDATE_INFLIGHT.get(inflight_key)
+        if wait_event is None:
+            wait_event = threading.Event()
+            _UPDATE_INFLIGHT[inflight_key] = wait_event
+            is_leader = True
+        else:
+            is_leader = False
+    owns_inflight = is_leader
+
+    if not is_leader:
+        _t_wait = time.perf_counter()
+        wait_event.wait(timeout=30.0)
+        wait_ms = (time.perf_counter() - _t_wait) * 1000.0
+        with _UPDATE_CACHE_LOCK:
+            user_cache = _UPDATE_RESPONSE_CACHE.setdefault(username, OrderedDict())
+            cached_html = user_cache.get(cache_key)
+            if cached_html is not None:
+                user_cache.move_to_end(cache_key)
+        if cached_html is not None:
+            try:
+                request._perf_meta = {
+                    **(getattr(request, '_perf_meta', {}) or {}),
+                    'route': 'update',
+                    'render_cache': 'coalesced_hit',
+                    'render_cache_lookup_ms': round(cache_miss_ms, 1),
+                    'render_wait_ms': round(wait_ms, 1),
+                    'render_epoch': render_epoch,
+                    'map': battle_map.name,
+                    'battle': 'yes' if battle else 'no',
+                }
+            except Exception:
+                pass
+            resp = make_response(cached_html)
+            total_ms = (time.perf_counter() - _t0) * 1000.0
+            resp.headers['Server-Timing'] = (
+                f"cache_wait;dur={wait_ms:.1f}, "
+                f"total;dur={total_ms:.1f}"
+            )
+            _timing_log(f"update:coalesced_hit wait={wait_ms:.1f}ms total={total_ms:.1f}ms epoch={render_epoch}")
+            return resp
+    
+    try:
+        # Step 3: Stack sync + render
+        _t_render = time.perf_counter()
+        _sync_stack_pov_to_view_map(current_game, battle_map, _pov_entities)
+        render_metrics = {}
+        stack_layers, my_2d_array = _render_tiles_for_user(
+            current_game,
+            battle_map,
+            battle,
+            map_padding,
+            _pov_entities,
+            logger=logger,
+            metrics=render_metrics,
+        )
+        _t_after_render = time.perf_counter()
+        _timing_log(f"update:render={(time.perf_counter()-_t_render)*1000:.1f}ms")
+
+        stack_underlay_mode = _stack_underlay_mode(stack_layers)
+        stack_floors = _stack_floors_for_user(current_game.game_session, battle_map)
+
+        # Step 4: Template rendering
+        _t_tpl = time.perf_counter()
+        response = render_template(
+            'map.html',
+            pov_entity=pov_entity,
+            tiles=my_2d_array,
+            stack_layers=stack_layers,
+            stack_underlay_mode=stack_underlay_mode,
+            stack_floors=stack_floors,
+            tile_size_px=tile_px,
+            random=random,
+            is_setup=is_setup,
+            current_map_name=battle_map.name,
+            read_notes=current_game.read_notes,
+        )
+        _t_after_tpl = time.perf_counter()
+        _timing_log(f"update:template={(time.perf_counter()-_t_tpl)*1000:.1f}ms")
+
+        with _UPDATE_CACHE_LOCK:
+            user_cache = _UPDATE_RESPONSE_CACHE.setdefault(username, OrderedDict())
+            user_cache[cache_key] = response
+            if len(user_cache) > _UPDATE_RESPONSE_CACHE_LIMIT:
+                user_cache.popitem(last=False)
+    finally:
+        if owns_inflight:
+            with _UPDATE_CACHE_LOCK:
+                event = _UPDATE_INFLIGHT.pop(inflight_key, None)
+                if event is not None:
+                    event.set()
+
+    try:
+        request._perf_meta = {
+            **(getattr(request, '_perf_meta', {}) or {}),
+            'map': battle_map.name,
+            'battle': 'yes' if battle else 'no',
+            'map_w': battle_map.size[0],
+            'map_h': battle_map.size[1],
+            'entities': len(getattr(battle_map, 'entities', {}) or {}),
+            'pov_entities': len(_pov_entities) if _pov_entities else 0,
+            'render_mode': render_metrics.get('render_mode'),
+            'tiles_rendered': render_metrics.get('tiles_rendered'),
+            'json_render_ms': round(render_metrics.get('json_render_ms', 0.0), 1),
+            'stack_layers_ms': round(render_metrics.get('stack_layers_ms', 0.0), 1),
+            'annotate_overlay_ms': round(render_metrics.get('annotate_overlay_ms', 0.0), 1),
+            'render_cache': 'miss',
+            'render_cache_lookup_ms': round(cache_miss_ms, 1),
+            'render_epoch': render_epoch,
+        }
+    except Exception:
+        pass
+    
     resp = make_response(response)
+    render_dur = (time.perf_counter() - _t0) * 1000
+    render_ms = (_t_after_render - _t_render) * 1000.0
+    template_ms = (_t_after_tpl - _t_after_render) * 1000.0
     resp.headers['Server-Timing'] = (
-        f"render;dur={(_t_after_render - _t_render) * 1000:.1f}, "
-        f"template;dur={(_t_after_tpl - _t_after_render) * 1000:.1f}"
+        f"render;dur={render_ms:.1f}, "
+        f"template;dur={template_ms:.1f}, "
+        f"json_render;dur={render_metrics.get('json_render_ms', 0.0):.1f}, "
+        f"stack_layers;dur={render_metrics.get('stack_layers_ms', 0.0):.1f}, "
+        f"annotate_overlay;dur={render_metrics.get('annotate_overlay_ms', 0.0):.1f}, "
+        f"total;dur={render_dur:.1f}"
     )
+    _timing_log(f"update:total={render_dur:.1f}ms battle={'yes' if battle else 'no'}")
     return resp
 
 

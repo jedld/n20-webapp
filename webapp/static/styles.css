@@ -414,6 +414,53 @@
   opacity: 0.98;
 }
 
+/* Drag-and-drop reorder styles (customize mode) */
+.action-bar-customize-mode .action-bar-action-cell {
+  cursor: grab;
+  transition: opacity 0.15s ease, box-shadow 0.15s ease;
+}
+
+.action-bar-customize-mode .action-bar-action-cell:active {
+  cursor: grabbing;
+}
+
+.action-bar-action-cell.action-bar-dragging {
+  opacity: 0.4 !important;
+}
+
+.action-bar-drop-row {
+  background: rgba(214, 165, 72, 0.15) !important;
+  box-shadow: inset 0 0 0 2px rgba(214, 165, 72, 0.4);
+  border-radius: 4px;
+}
+
+.action-bar-tab-panel-inner {
+  position: relative;
+}
+
+/* "All" tab group labels */
+.action-bar-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #f3dfbb;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(228, 201, 149, 0.16);
+  margin-bottom: 4px;
+}
+
+.action-bar-group-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(228, 201, 149, 0.12);
+}
+
+.action-bar-all-table {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
 .action-bar-spell-groups {
   display: flex;
   flex-direction: column;

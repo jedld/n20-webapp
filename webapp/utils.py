@@ -610,6 +610,10 @@ class GameManagement:
         self.game_state_lock = threading.Lock()
         self._game_loop_task_guard = threading.Lock()
         self._game_loop_task_running = False
+        # Monotonic marker for map-render-affecting state changes.
+        # /update responses can be safely reused while this epoch is unchanged.
+        self._render_epoch = 0
+        self._render_epoch_by_user = {}
         # Per-map locks for non-battle actions to reduce contention across maps
         self.map_state_locks = {}
         self._map_state_locks_guard = threading.Lock()
@@ -815,11 +819,25 @@ class GameManagement:
                 return candidate
         return None
 
+    def bump_render_epoch(self, username=None):
+        """Advance the render epoch after game state mutations."""
+        self._render_epoch += 1
+        if username is not None:
+            self._render_epoch_by_user[str(username)] = self._render_epoch
+        return self._render_epoch
+
+    def render_epoch_for_user(self, username=None):
+        if username is None:
+            return self._render_epoch
+        return max(self._render_epoch, self._render_epoch_by_user.get(str(username), 0))
+
     def set_pov_entity_for_user(self, username, entity):
         self.entity_registry.set_pov_entity_for_user(username, entity)
+        self.bump_render_epoch(username=username)
 
     def switch_map_for_user(self, username, map_name):
         self.entity_registry.switch_map_for_user(username, map_name)
+        self.bump_render_epoch(username=username)
         try:
             pov_entity = self.get_pov_entity_for_user(username)
             if pov_entity is not None:
@@ -1578,6 +1596,10 @@ class GameManagement:
                 break
             battle.action(action)
             battle.commit(action)
+            # AI turns mutate board state (movement, status, visibility) outside
+            # commit_and_update(); advance render epoch so /update never serves
+            # stale cached HTML after NPC animations.
+            self.bump_render_epoch()
             if not action or entity.unconscious() or entity.dead():
                 break
 
@@ -2425,6 +2447,10 @@ class GameManagement:
                         self.logger.debug("Forced conversation proximity check skipped: %s", exc)
         if not suppress_ui:
             self.socketio.emit('message', {'type': 'turn', 'message': { 'game_time': self.game_session.game_time }})
+
+        # Any committed action can alter rendered state (tokens, visibility,
+        # doors, effects, HP markers), so bump epoch once per successful commit.
+        self.bump_render_epoch(username=username)
 
         if self.autosave:
             self.save_game_async()

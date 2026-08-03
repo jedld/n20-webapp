@@ -3,9 +3,24 @@
 Extracted from webapp/app.py.
 """
 import json
+import os
+import threading
+import time
 import uuid
+from collections import OrderedDict
 
 from flask import Blueprint, request, jsonify, session, redirect, url_for, render_template
+
+# Timing instrumentation toggle — set N20_DEBUG_TIMING=1 to log per-step timings.
+_DEBUG_TIMING = bool(int(os.environ.get('N20_DEBUG_TIMING', '0')))
+
+
+def _timing_log(msg):
+    if _DEBUG_TIMING:
+        try:
+            get_logger().warning(f"[timing] {msg}")
+        except Exception:
+            pass
 
 from natural20.utils.serialization import object_type_to_klass
 from natural20.actions.attack_action import AttackAction, TwoWeaponAttackAction, LinkedAttackAction
@@ -63,6 +78,47 @@ from .helpers.runtime_state import (
 )
 
 battle_bp = Blueprint('battle', __name__)
+
+# LRU cache and singleflight coalescing for expensive hide-spot scans.
+_HIDE_SPOTS_CACHE = OrderedDict()
+_HIDE_SPOTS_CACHE_LIMIT = 128
+_HIDE_SPOTS_CACHE_LOCK = threading.Lock()
+_HIDE_SPOTS_INFLIGHT = {}
+
+
+def _hide_cache_key(current_game, entity, battle, battle_map):
+    """Build a cache key that changes only when hide-relevant state changes."""
+    try:
+        entity_pos = battle_map.entity_or_object_pos(entity)
+    except Exception:
+        entity_pos = None
+
+    enemy_signature = []
+    if battle is not None:
+        try:
+            for opp in (battle.opponents_of(entity) or []):
+                try:
+                    if not opp.conscious():
+                        continue
+                except Exception:
+                    continue
+                try:
+                    pos = battle.entity_or_object_pos(opp)
+                except Exception:
+                    pos = None
+                if pos is None:
+                    continue
+                enemy_signature.append((str(getattr(opp, 'entity_uid', '')), int(pos[0]), int(pos[1])))
+        except Exception:
+            pass
+    enemy_signature.sort()
+
+    return (
+        str(getattr(battle_map, 'name', '')),
+        str(getattr(entity, 'entity_uid', '')),
+        tuple(entity_pos) if entity_pos is not None else None,
+        tuple(enemy_signature),
+    )
 
 
 @battle_bp.route('/api/combat-log', methods=['GET'])
@@ -254,15 +310,151 @@ def get_actions_batch():
 
 @battle_bp.route("/hide", methods=['GET'])
 def get_hiding_spots():
-   
-    battle = get_current_game().get_current_battle()
+    _t0 = time.perf_counter()
+    current_game = get_current_game()
+    battle = current_game.get_current_battle()
     entity_id = request.args.get('id')
-    entity = get_current_game().get_entity_by_uid(entity_id)
+    _t_lookup = time.perf_counter()
+    entity = current_game.get_entity_by_uid(entity_id)
+    lookup_ms = (time.perf_counter() - _t_lookup) * 1000.0
     if entity is None:
         return jsonify(error="Entity not found"), 404
-    battle_map = get_current_game().get_map_for_entity(entity)
-    hiding_spots = battle_map.hiding_spots_for(entity, battle)
-    return jsonify(hiding_spots=hiding_spots)
+    battle_map = current_game.get_map_for_entity(entity)
+
+    cache_key = _hide_cache_key(current_game, entity, battle, battle_map)
+    _t_cache = time.perf_counter()
+    with _HIDE_SPOTS_CACHE_LOCK:
+        cached = _HIDE_SPOTS_CACHE.get(cache_key)
+        if cached is not None:
+            _HIDE_SPOTS_CACHE.move_to_end(cache_key)
+    if cached is not None:
+        cache_ms = (time.perf_counter() - _t_cache) * 1000.0
+        total_ms = (time.perf_counter() - _t0) * 1000.0
+        hiding_spots = cached
+        try:
+            request._perf_meta = {
+                **(getattr(request, '_perf_meta', {}) or {}),
+                'entity_uid': getattr(entity, 'entity_uid', None),
+                'map': battle_map.name,
+                'battle': 'yes' if battle else 'no',
+                'map_w': battle_map.size[0],
+                'map_h': battle_map.size[1],
+                'spot_count': len(hiding_spots or []),
+                'lookup_ms': round(lookup_ms, 1),
+                'compute_ms': 0.0,
+                'hide_cache': 'hit',
+                'hide_cache_lookup_ms': round(cache_ms, 1),
+            }
+        except Exception:
+            pass
+        _timing_log(
+            f"hide:lookup={lookup_ms:.1f}ms cache_lookup={cache_ms:.1f}ms total={total_ms:.1f}ms "
+            f"cache=hit entity={getattr(entity, 'entity_uid', None)} map={battle_map.name}"
+        )
+        response = jsonify(hiding_spots=hiding_spots)
+        response.headers['Server-Timing'] = (
+            f"hide_lookup;dur={lookup_ms:.1f}, "
+            f"hide_cache;dur={cache_ms:.1f}, "
+            f"hide_total;dur={total_ms:.1f}"
+        )
+        return response
+
+    inflight_key = ('hide', cache_key)
+    with _HIDE_SPOTS_CACHE_LOCK:
+        wait_event = _HIDE_SPOTS_INFLIGHT.get(inflight_key)
+        if wait_event is None:
+            wait_event = threading.Event()
+            _HIDE_SPOTS_INFLIGHT[inflight_key] = wait_event
+            is_leader = True
+        else:
+            is_leader = False
+    owns_inflight = is_leader
+
+    if not is_leader:
+        _t_wait = time.perf_counter()
+        wait_event.wait(timeout=20.0)
+        wait_ms = (time.perf_counter() - _t_wait) * 1000.0
+        with _HIDE_SPOTS_CACHE_LOCK:
+            cached = _HIDE_SPOTS_CACHE.get(cache_key)
+            if cached is not None:
+                _HIDE_SPOTS_CACHE.move_to_end(cache_key)
+        if cached is not None:
+            total_ms = (time.perf_counter() - _t0) * 1000.0
+            hiding_spots = cached
+            try:
+                request._perf_meta = {
+                    **(getattr(request, '_perf_meta', {}) or {}),
+                    'entity_uid': getattr(entity, 'entity_uid', None),
+                    'map': battle_map.name,
+                    'battle': 'yes' if battle else 'no',
+                    'map_w': battle_map.size[0],
+                    'map_h': battle_map.size[1],
+                    'spot_count': len(hiding_spots or []),
+                    'lookup_ms': round(lookup_ms, 1),
+                    'compute_ms': 0.0,
+                    'hide_cache': 'coalesced_hit',
+                    'hide_wait_ms': round(wait_ms, 1),
+                }
+            except Exception:
+                pass
+            _timing_log(
+                f"hide:lookup={lookup_ms:.1f}ms wait={wait_ms:.1f}ms total={total_ms:.1f}ms "
+                f"cache=coalesced_hit entity={getattr(entity, 'entity_uid', None)} map={battle_map.name}"
+            )
+            response = jsonify(hiding_spots=hiding_spots)
+            response.headers['Server-Timing'] = (
+                f"hide_lookup;dur={lookup_ms:.1f}, "
+                f"hide_wait;dur={wait_ms:.1f}, "
+                f"hide_total;dur={total_ms:.1f}"
+            )
+            return response
+
+    _t_compute = time.perf_counter()
+    try:
+        hiding_spots = battle_map.hiding_spots_for(entity, battle)
+        compute_ms = (time.perf_counter() - _t_compute) * 1000.0
+        with _HIDE_SPOTS_CACHE_LOCK:
+            _HIDE_SPOTS_CACHE[cache_key] = hiding_spots
+            _HIDE_SPOTS_CACHE.move_to_end(cache_key)
+            if len(_HIDE_SPOTS_CACHE) > _HIDE_SPOTS_CACHE_LIMIT:
+                _HIDE_SPOTS_CACHE.popitem(last=False)
+    finally:
+        if owns_inflight:
+            with _HIDE_SPOTS_CACHE_LOCK:
+                event = _HIDE_SPOTS_INFLIGHT.pop(inflight_key, None)
+                if event is not None:
+                    event.set()
+
+    total_ms = (time.perf_counter() - _t0) * 1000.0
+
+    try:
+        request._perf_meta = {
+            **(getattr(request, '_perf_meta', {}) or {}),
+            'entity_uid': getattr(entity, 'entity_uid', None),
+            'map': battle_map.name,
+            'battle': 'yes' if battle else 'no',
+            'map_w': battle_map.size[0],
+            'map_h': battle_map.size[1],
+            'spot_count': len(hiding_spots or []),
+            'lookup_ms': round(lookup_ms, 1),
+            'compute_ms': round(compute_ms, 1),
+            'hide_cache': 'miss',
+        }
+    except Exception:
+        pass
+
+    _timing_log(
+        f"hide:lookup={lookup_ms:.1f}ms compute={compute_ms:.1f}ms total={total_ms:.1f}ms "
+        f"entity={getattr(entity, 'entity_uid', None)} map={battle_map.name}"
+    )
+
+    response = jsonify(hiding_spots=hiding_spots)
+    response.headers['Server-Timing'] = (
+        f"hide_lookup;dur={lookup_ms:.1f}, "
+        f"hide_compute;dur={compute_ms:.1f}, "
+        f"hide_total;dur={total_ms:.1f}"
+    )
+    return response
 
 def _entity_target_preview(entity, target_entity, action_info, opts, battle_map, battle):
     """Validate hover/click targets for entity-target actions (e.g. Bardic Inspiration)."""
@@ -284,25 +476,61 @@ def _entity_target_preview(entity, target_entity, action_info, opts, battle_map,
     except TypeError:
         action_inst = action_class(get_game_session(), entity, resolved_action_type)
     build_map = action_inst.build_map()
+    preview_action = action_inst
+    if isinstance(build_map, dict) and build_map.get('action') is not None:
+        preview_action = build_map['action']
+    if not isinstance(build_map, dict):
+        return None
+
+    # Some actions (e.g. TwoWeaponAttackAction) prompt for a weapon/choice
+    # before target selection. Resolve those deterministic steps from opts so
+    # hover validation can still run on the eventual select_target stage.
+    while isinstance(build_map, dict):
+        params = build_map.get('param') or []
+        if not params:
+            break
+        step_type = params[0].get('type')
+        if step_type == 'select_weapon':
+            weapon_choice = opts.get('using') or opts.get('weapon') or opts.get('npc_action')
+            if weapon_choice is None:
+                return None
+            build_map = build_map['next'](weapon_choice)
+            if isinstance(build_map, dict) and build_map.get('action') is not None:
+                preview_action = build_map['action']
+            elif isinstance(build_map, Action):
+                preview_action = build_map
+            continue
+        if step_type == 'select_choice':
+            choice = opts.get('choice')
+            if choice is None:
+                return None
+            build_map = build_map['next'](choice)
+            if isinstance(build_map, dict) and build_map.get('action') is not None:
+                preview_action = build_map['action']
+            elif isinstance(build_map, Action):
+                preview_action = build_map
+            continue
+        break
+
     if not isinstance(build_map, dict):
         return None
     params = build_map.get('param') or []
     if not params or params[0].get('type') != 'select_target':
         return None
 
-    if hasattr(action_inst, 'validate'):
+    if hasattr(preview_action, 'validate'):
         try:
-            action_inst.validate(battle_map, target_entity, battle=battle)
+            preview_action.validate(battle_map, target_entity, battle=battle)
         except TypeError:
             try:
-                action_inst.validate(battle_map, target=target_entity, battle=battle)
+                preview_action.validate(battle_map, target=target_entity, battle=battle)
             except TypeError:
-                action_inst.validate(battle_map, target_entity)
-        if action_inst.validation_failed():
-            return {'valid_target': False, **validation_response_payload(action_inst)}
+                preview_action.validate(battle_map, target_entity)
+        if preview_action.validation_failed():
+            return {'valid_target': False, **validation_response_payload(preview_action)}
 
     if battle is not None:
-        valid_targets = battle.valid_targets_for(entity, action_inst)
+        valid_targets = battle.valid_targets_for(entity, preview_action)
         if target_entity not in valid_targets:
             try:
                 holder = action_class(get_game_session(), entity, resolved_action_type, opts)
@@ -325,6 +553,7 @@ def get_target():
     action_info = payload.get('action_info')
     opts = payload.get('opts', {})
     choice = opts.get('choice')
+    success_rate = None
     entity = get_current_game().get_entity_by_uid(entity_id)
     battle_map = get_current_game().get_map_for_entity(entity)
     stack = getattr(battle_map, 'map_stack', None)
@@ -450,8 +679,14 @@ def get_target():
         preview = _entity_target_preview(entity, target_entity, action_info, opts, battle_map, battle)
         if preview is not None:
             return jsonify(**preview)
-    else:
-        success_rate = None
+        invalid = targeting_issue('validation.targeting.unavailable').to_dict()
+        return jsonify(
+            valid_target=False,
+            errors=[invalid['key']],
+            error_details=[invalid],
+            error_messages=[invalid['message']],
+            primary_error=invalid['message'],
+        )
 
     return jsonify(success_rate=success_rate)
 
@@ -621,94 +856,160 @@ def read_letter():
 
 @battle_bp.route('/action', methods=['POST'])
 def action():
+    _t0 = time.perf_counter()
+    _ctx = {
+        'last': _t0,
+        'phase_parse_ms': 0.0,
+        'phase_entity_ms': 0.0,
+        'phase_target_ms': 0.0,
+        'phase_build_ms': 0.0,
+        'phase_validate_ms': 0.0,
+        'phase_post_commit_ms': 0.0,
+        'commit_ms_total': 0.0,
+        'commit_calls': 0,
+    }
+    _action_type = None
+    _entity_id = None
 
-    battle = get_current_game().get_current_battle()
-    action_request = request.json or {}
-    entity_id = action_request.get('id')
-    if not entity_id:
-        return jsonify({'status': 'error', 'message': 'Missing entity id'}), 400
-    action_type = action_request.get('action')
-    if not action_type:
-        return jsonify({'status': 'error', 'message': 'Missing action'}), 400
-    opts = action_request.get('opts', {})
+    def _mark(name):
+        now = time.perf_counter()
+        _ctx[name] = (now - _ctx['last']) * 1000.0
+        _ctx['last'] = now
 
-    selected_spell = opts.get('spell')
-    at_level = opts.get('at_level')
-    choice = action_request.get('choice', opts.get('choice'))
-    entity = get_current_game().get_entity_by_uid(entity_id)
-    if entity is not None:
-        entity = get_current_game().canonical_map_entity(entity)
-    if entity is None:
-        return jsonify({'status': 'error', 'message': 'Entity not found'}), 404
+    def _commit_and_update(action_obj, pov_entities):
+        _t_commit = time.perf_counter()
+        result = get_current_game().commit_and_update(session['username'], action_obj, pov_entities)
+        _ctx['commit_ms_total'] += (time.perf_counter() - _t_commit) * 1000.0
+        _ctx['commit_calls'] += 1
+        return result
 
-    battle_map = get_current_game().get_map_for_entity(entity)
-    if battle_map is None:
-        return jsonify({'status': 'error', 'message': 'Entity is not currently on a map'}), 409
-
-    pov_entities = entities_controlled_by(session['username'])
-    action_info = {}
-    action_hash = None
-    target_coords = action_request.get('target', None)
-    target = None
-
-    # ReadyAction is collected through a chat dialog with the DM rather than
-    # the standard target/param flow. Tell the client to open the dialog.
-    if action_type == 'ReadyAction':
-        return jsonify({
-            'action': 'ReadyAction',
-            'type': 'requires_dialog',
-            'dialog': 'ready_action',
-            'endpoint': '/ready_action',
-            'entity_uid': entity_id,
-            'prompt': 'Describe the trigger and the action you are readying.',
-        })
-
-    if target_coords:
-        mode = action_request.get('mode', None)
-        if mode == 'cone' or mode == 'point_target' or mode == 'cube' or mode == 'square' or mode == 'radius' or mode == 'line':
-            target = [target_coords['x'], target_coords['y']]
-        else:
-            if isinstance(target_coords, list):
-                target = []
-                for entity_uids in target_coords:
-                    target.append(battle_map.entity_by_uid(entity_uids))
-            elif isinstance(target_coords, str):
-                # Target is an entity UID
-                target = get_current_game().get_entity_by_uid(target_coords)
-                if target is None:
-                    target = battle_map.entity_by_uid(target_coords)
-            else:
-                # Target is coordinates
-                tx, ty = int(target_coords['x']), int(target_coords['y'])
-                stack = getattr(battle_map, 'map_stack', None)
-                from natural20.map_stack_targeting import entity_at_stack_position
-                resolved_entity, _target_map, _tx, _ty = entity_at_stack_position(stack, battle_map, tx, ty)
-                if resolved_entity is not None:
-                    target = resolved_entity
-                else:
-                    targets = battle_map.entities_at(tx, ty)
-                    if len(targets) == 1:
-                        target = targets[0]
-                    elif len(targets) == 0:
-                        if stack is not None:
-                            from natural20.map_stack_targeting import things_at_stack_position
-                            for _map, _lx, _ly, thing in things_at_stack_position(stack, tx, ty):
-                                if _map.entity_at(_lx, _ly) is thing:
-                                    target = thing
-                                    break
-                        if target is None:
-                            fallback = battle_map.entity_at(tx, ty)
-                            target = fallback if fallback is not None else [tx, ty]
-                    else:
-                        target_list = [[target.label(), target.entity_uid] for target in targets]
-                        return jsonify(status='multiple_targets', message=f"Multiple entities at {target_coords['x']}, {target_coords['y']}",
-                                       entities=target_list)
+    def _emit_action_perf_meta():
+        total_ms = (time.perf_counter() - _t0) * 1000.0
+        try:
+            request._perf_meta = {
+                **(getattr(request, '_perf_meta', {}) or {}),
+                'route': 'action',
+                'entity_id': _entity_id,
+                'action': _action_type,
+                'action_phase_parse_ms': round(_ctx['phase_parse_ms'], 1),
+                'action_phase_entity_ms': round(_ctx['phase_entity_ms'], 1),
+                'action_phase_target_ms': round(_ctx['phase_target_ms'], 1),
+                'action_phase_build_ms': round(_ctx['phase_build_ms'], 1),
+                'action_phase_validate_ms': round(_ctx['phase_validate_ms'], 1),
+                'action_phase_post_commit_ms': round(_ctx['phase_post_commit_ms'], 1),
+                'action_commit_calls': int(_ctx['commit_calls']),
+                'action_commit_ms': round(_ctx['commit_ms_total'], 1),
+                'action_total_ms': round(total_ms, 1),
+            }
+        except Exception:
+            pass
+        _timing_log(
+            "action:timing "
+            f"parse={_ctx['phase_parse_ms']:.1f}ms "
+            f"entity={_ctx['phase_entity_ms']:.1f}ms "
+            f"target={_ctx['phase_target_ms']:.1f}ms "
+            f"build={_ctx['phase_build_ms']:.1f}ms "
+            f"validate={_ctx['phase_validate_ms']:.1f}ms "
+            f"commit_calls={_ctx['commit_calls']} "
+            f"commit_ms={_ctx['commit_ms_total']:.1f}ms "
+            f"post_commit={_ctx['phase_post_commit_ms']:.1f}ms "
+            f"total={total_ms:.1f}ms action={_action_type} entity={_entity_id}"
+        )
 
     try:
+        battle = get_current_game().get_current_battle()
+        action_request = request.json or {}
+        entity_id = action_request.get('id')
+        _entity_id = entity_id
+        if not entity_id:
+            return jsonify({'status': 'error', 'message': 'Missing entity id'}), 400
+        action_type = action_request.get('action')
+        _action_type = action_type
+        if not action_type:
+            return jsonify({'status': 'error', 'message': 'Missing action'}), 400
+        opts = action_request.get('opts', {})
+        _mark('phase_parse_ms')
+
+        selected_spell = opts.get('spell')
+        at_level = opts.get('at_level')
+        choice = action_request.get('choice', opts.get('choice'))
+        entity = get_current_game().get_entity_by_uid(entity_id)
+        if entity is not None:
+            entity = get_current_game().canonical_map_entity(entity)
+        if entity is None:
+            return jsonify({'status': 'error', 'message': 'Entity not found'}), 404
+
+        battle_map = get_current_game().get_map_for_entity(entity)
+        if battle_map is None:
+            return jsonify({'status': 'error', 'message': 'Entity is not currently on a map'}), 409
+
+        pov_entities = entities_controlled_by(session['username'])
+        action_info = {}
+        action_hash = None
+        target_coords = action_request.get('target', None)
+        target = None
+        _mark('phase_entity_ms')
+
+        # ReadyAction is collected through a chat dialog with the DM rather than
+        # the standard target/param flow. Tell the client to open the dialog.
+        if action_type == 'ReadyAction':
+            return jsonify({
+                'action': 'ReadyAction',
+                'type': 'requires_dialog',
+                'dialog': 'ready_action',
+                'endpoint': '/ready_action',
+                'entity_uid': entity_id,
+                'prompt': 'Describe the trigger and the action you are readying.',
+            })
+
+        if target_coords:
+            mode = action_request.get('mode', None)
+            if mode == 'cone' or mode == 'point_target' or mode == 'cube' or mode == 'square' or mode == 'radius' or mode == 'line':
+                target = [target_coords['x'], target_coords['y']]
+            else:
+                if isinstance(target_coords, list):
+                    target = []
+                    for entity_uids in target_coords:
+                        target.append(battle_map.entity_by_uid(entity_uids))
+                elif isinstance(target_coords, str):
+                    # Target is an entity UID
+                    target = get_current_game().get_entity_by_uid(target_coords)
+                    if target is None:
+                        target = battle_map.entity_by_uid(target_coords)
+                else:
+                    # Target is coordinates
+                    tx, ty = int(target_coords['x']), int(target_coords['y'])
+                    stack = getattr(battle_map, 'map_stack', None)
+                    from natural20.map_stack_targeting import entity_at_stack_position
+                    resolved_entity, _target_map, _tx, _ty = entity_at_stack_position(stack, battle_map, tx, ty)
+                    if resolved_entity is not None:
+                        target = resolved_entity
+                    else:
+                        targets = battle_map.entities_at(tx, ty)
+                        if len(targets) == 1:
+                            target = targets[0]
+                        elif len(targets) == 0:
+                            if stack is not None:
+                                from natural20.map_stack_targeting import things_at_stack_position
+                                for _map, _lx, _ly, thing in things_at_stack_position(stack, tx, ty):
+                                    if _map.entity_at(_lx, _ly) is thing:
+                                        target = thing
+                                        break
+                            if target is None:
+                                fallback = battle_map.entity_at(tx, ty)
+                                target = fallback if fallback is not None else [tx, ty]
+                        else:
+                            target_list = [[target.label(), target.entity_uid] for target in targets]
+                            return jsonify(status='multiple_targets', message=f"Multiple entities at {target_coords['x']}, {target_coords['y']}",
+                                           entities=target_list)
+        _mark('phase_target_ms')
+
         if action_type == 'MoveAction':
+            _t_build = time.perf_counter()
             path = action_request.get('path', None)
             manual_jump = action_request.get('manual_jump') or []
             action = MoveAction(get_game_session(), entity, 'move')
+            _ctx['phase_build_ms'] += (time.perf_counter() - _t_build) * 1000.0
             if path:
                 move_path = sorted([(int(index), [int(coord[0]), int(coord[1])]) for index, coord in enumerate(path)])
                 move_path = [coords for _, coords in move_path]
@@ -746,7 +1047,8 @@ def action():
                     # ignore malformed manual_jump to remain backwards compatible
                     pass
                 if battle:
-                    result = get_current_game().commit_and_update(session['username'], action, pov_entities)
+                    result = _commit_and_update(action, pov_entities)
+                    _t_post = time.perf_counter()
                     # Check area narrations after battle movement
                     area_narration = battle_map.check_area_narration(entity, move_path[-1])
                     if area_narration:
@@ -765,12 +1067,14 @@ def action():
                         )
                     except Exception:
                         pass
+                    _ctx['phase_post_commit_ms'] += (time.perf_counter() - _t_post) * 1000.0
                     return jsonify(result)
                 else:
                     last_coords = move_path[-1]
                     if battle_map.placeable(entity, last_coords[0], last_coords[1]):
 
-                        get_current_game().commit_and_update(session['username'], action, pov_entities)
+                        _commit_and_update(action, pov_entities)
+                        _t_post = time.perf_counter()
                         if battle:
                             # POV-aware logs are emitted via commit_and_update; avoid duplicate raw emission
                             logs = battle.get_animation_logs()
@@ -825,6 +1129,7 @@ def action():
                         except Exception:
                             pass
                         get_current_game().loop_environment()
+                        _ctx['phase_post_commit_ms'] += (time.perf_counter() - _t_post) * 1000.0
                         return jsonify({'status': 'ok'})
                     else:
                         return jsonify({'status': 'error', 'message': 'Entity not placeable at target location'})
@@ -835,6 +1140,7 @@ def action():
                 action_info['param'] = build_map['param']
                 return jsonify(action_info)
         elif action_type in ['LinkedAttackAction', 'AttackAction', 'TwoWeaponAttackAction']:
+            _t_build = time.perf_counter()
             if action_type == 'AttackAction':
                 action = AttackAction(get_game_session(), entity, 'attack')
             else:
@@ -842,6 +1148,7 @@ def action():
             action.using = opts.get('using')
             action.npc_action = opts.get('npc_action', None)
             action.thrown = opts.get('thrown', False)
+            _ctx['phase_build_ms'] += (time.perf_counter() - _t_build) * 1000.0
 
             stack = getattr(battle_map, 'map_stack', None)
             if battle:
@@ -871,7 +1178,7 @@ def action():
                     target_ok = bool(valid_targets.get(target.entity_uid))
                 if target_ok:
                     action.target = target
-                    return jsonify(get_current_game().commit_and_update(session['username'], action, pov_entities))
+                    return jsonify(_commit_and_update(action, pov_entities))
                 else:
                     return jsonify(status='error', message=f"Invalid Target {target_coords}")
             else:
@@ -894,6 +1201,7 @@ def action():
                     }
                     ]
         else:
+            _t_build = time.perf_counter()
             action_class = action_type_to_class(action_type)
             opts = action_request.get('opts', {})
             resolved_action_type = resolve_requested_action_type(
@@ -906,6 +1214,7 @@ def action():
             )
             action = action_class(get_game_session(), entity, resolved_action_type)
             action = action.build_map()
+            _ctx['phase_build_ms'] += (time.perf_counter() - _t_build) * 1000.0
 
             while not isinstance(action, Action):
                 if len(action['param'])==1:
@@ -1082,7 +1391,7 @@ def action():
                             interact = InteractAction(get_game_session(), gm, 'interact')
                             interact.object_action = object_action_a
                             interact.target = entity
-                            return jsonify(get_current_game().commit_and_update(session['username'], interact, pov_entities))
+                            return jsonify(_commit_and_update(interact, pov_entities))
                         else:
                             interact = InteractAction(get_game_session(), entity, 'interact')
                             object =  battle_map.entity_by_uid(opts.get('target'))
@@ -1110,9 +1419,7 @@ def action():
                                     failed_action.validate(battle_map)
                                     if len(failed_action.errors) > 0:
                                         return jsonify(status='error', **validation_response_payload(failed_action))
-                                    get_current_game().commit_and_update(
-                                        session['username'], failed_action, pov_entities,
-                                    )
+                                    _commit_and_update(failed_action, pov_entities)
                                 return jsonify(
                                     status='ok',
                                     pickpocket_attempt=PickpocketAction.serialize_attempt(attempt),
@@ -1170,12 +1477,14 @@ def action():
                 else:
                     raise ValueError(f"Invalid action map {action}")
 
+            _t_validate = time.perf_counter()
             action.validate(battle_map, target=target)
+            _ctx['phase_validate_ms'] += (time.perf_counter() - _t_validate) * 1000.0
            
             if action.validation_failed():
                 return jsonify(status='error', **validation_response_payload(action))
 
-            result = get_current_game().commit_and_update(session['username'], action, pov_entities)
+            result = _commit_and_update(action, pov_entities)
             if isinstance(result, dict) and result.get('status') == 'bardic_inspiration_prompt':
                 return jsonify(result)
             response = {'status': 'ok'}
@@ -1201,6 +1510,8 @@ def action():
             get_current_game().set_waiting_for_reaction_input([entity, e, e.resolve(), valid_actions_str])
         get_socketio().emit('message', {'type': 'reaction', 'message': {'id': entity.entity_uid, 'reaction': e.reaction_type}})
         return jsonify(status='ok')
+    finally:
+        _emit_action_perf_meta()
 
 
 @battle_bp.route('/bardic_inspiration', methods=['POST'])

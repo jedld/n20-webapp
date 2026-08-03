@@ -38,6 +38,21 @@ from natural20.utils.steal_notification import steal_detection_note
 from natural20.spell.message_spell_link import get_message_spell_link
 from natural20.utils.language_comprehension import comprehends_speech
 
+# Timing instrumentation — shared across webapp modules.
+_DEBUG_TIMING = bool(int(os.environ.get('N20_DEBUG_TIMING', '0')))
+
+
+def _timing_log(msg):
+    """Emit a timing log line when N20_DEBUG_TIMING=1."""
+    if _DEBUG_TIMING:
+        try:
+            from .blueprints.helpers.runtime_state import get_logger
+            logger = get_logger()
+            if logger:
+                logger.warning(f"[timing] {msg}")
+        except Exception:
+            pass
+
 
 # Recognises a player's request to attempt an Insight (Wisdom) check.
 # Examples that match (case-insensitive):
@@ -5797,13 +5812,27 @@ class ConversationService:
         if cached is not None:
             age = now - cached['_ts']
             if age < self._CONVERSANCE_PRESENCE_CACHE_TTL:
+                _timing_log(
+                    f"conv_presence:cache_hit entity={entity_id} age={age:.1f}s"
+                )
                 cached_result = cached.copy()
                 del cached_result['_ts']
                 return cached_result, 200
 
+        _t_norm = time.perf_counter()
         normalized_volume = normalize_speech_mode(mode=volume, distance_ft=range_value)
         distance_ft = speech_distance_for(mode=normalized_volume, distance_ft=range_value)
+        _timing_log(
+            f"conv_presence:normalization={(time.perf_counter()-_t_norm)*1000:.1f}ms "
+            f"entity={entity_id} volume={normalized_volume} dist={distance_ft}ft"
+        )
+        
+        _t_rag = time.perf_counter()
         audible = self.entity_rag_handler.get_nearby_entities(entity, distance_ft, volume=normalized_volume, include_extended=True)
+        _timing_log(
+            f"conv_presence:rag_lookup={(time.perf_counter()-_t_rag)*1000:.1f}ms "
+            f"entity={entity_id} audible_count={len(audible) if audible else 0}"
+        )
 
         reachable_entities = [entry for entry in audible if entry.get('reachable_now')]
         louder_voice_entities = [entry for entry in audible if entry.get('status') == 'requires_louder_voice']

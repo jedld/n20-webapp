@@ -74,6 +74,6 @@ def user_may_set_pov_entity(current_game, username, roles, entity, *, battle_map
         return True
     from webapp.blueprints.helpers.template_globals import entities_controlled_by
 
-    if battle_map is None:
-        battle_map = current_game.get_map_for_user(username)
-    return entity in entities_controlled_by(username, battle_map)
+    # Portraits for non-DM users can include controlled entities across maps,
+    # so POV switching must authorize against campaign-wide control.
+    return entity in entities_controlled_by(username)

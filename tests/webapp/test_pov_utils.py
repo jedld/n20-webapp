@@ -69,3 +69,27 @@ def test_user_may_set_pov_entity_dm_vs_player():
         return_value=[],
     ):
         assert not user_may_set_pov_entity(current_game, 'player', ['player'], entity, battle_map=battle_map)
+
+
+def test_user_may_set_pov_entity_player_controlled_across_maps():
+    current_game = Mock()
+    entity = Mock(entity_uid='pc-2')
+    battle_map = Mock()
+
+    with patch(
+        'webapp.blueprints.helpers.template_globals.entities_controlled_by',
+        return_value=[entity],
+    ):
+        assert user_may_set_pov_entity(current_game, 'player', ['player'], entity, battle_map=battle_map)
+
+
+def test_user_may_set_pov_entity_player_cannot_switch_uncontrolled_entity():
+    current_game = Mock()
+    controlled_entity = Mock(entity_uid='pc-1')
+    target_entity = Mock(entity_uid='npc-7')
+
+    with patch(
+        'webapp.blueprints.helpers.template_globals.entities_controlled_by',
+        return_value=[controlled_entity],
+    ):
+        assert not user_may_set_pov_entity(current_game, 'player', ['player'], target_entity)
