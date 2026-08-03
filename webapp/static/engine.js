@@ -202,6 +202,14 @@ function targetDistanceFeet(sourceX, sourceY, coordsx, coordsy) {
   return Math.floor(Utils.euclideanDistance(sourceX, sourceY, coordsx, coordsy)) * 5;
 }
 
+// --- In-flight /path request coalescing -------------------------------------
+// When multiple callers request the same from→to path simultaneously, share a
+// single XHR instead of firing duplicate network requests.  Key format:
+//   "fromX,fromY→toX,toY"
+// Values are jqXHR objects.  Callers must check the returned XHR before
+// attaching success/error handlers — the coalesced XHR is returned directly.
+const _pathRequestCoalesce = new Map();
+
 let move_path_cache = {};
 let move_path_cache_keys = []; // insertion order for bounded LRU eviction
 const MOVE_PATH_CACHE_LIMIT = 256;
@@ -896,7 +904,26 @@ function fetchPathToTile(from, to, callback) {
     callback(localData.path);
     return;
   }
-  $.ajax({
+  // Coalesce duplicate in-flight requests: build a key from from/to coordinates
+  // so that simultaneous callers share a single XHR.
+  const coalesceKey = `${from.x},${from.y}→${to.x},${to.y}`;
+  const existing = _pathRequestCoalesce.get(coalesceKey);
+  if (existing && typeof existing.done === 'function') {
+    // Share the in-flight XHR; attach this caller's callbacks.
+    const sharedXhr = existing;
+    sharedXhr
+      .done((data) => {
+        if (data && data.path && data.placeable !== false && pathReachesTile(data.path, to.x, to.y)) {
+          callback(data.path);
+        } else {
+          callback(null);
+        }
+      })
+      .fail(() => callback(null));
+    return;
+  }
+
+  const xhr = $.ajax({
     url: '/path',
     type: 'GET',
     data: Object.assign({
@@ -905,14 +932,19 @@ function fetchPathToTile(from, to, callback) {
       accumulatedPath: null,
     }, stackPathRequestExtras(to.x, to.y)),
     success: (data) => {
+      _pathRequestCoalesce.delete(coalesceKey);
       if (data && data.path && data.placeable !== false && pathReachesTile(data.path, to.x, to.y)) {
         callback(data.path);
       } else {
         callback(null);
       }
     },
-    error: () => callback(null),
+    error: () => {
+      _pathRequestCoalesce.delete(coalesceKey);
+      callback(null);
+    },
   });
+  _pathRequestCoalesce.set(coalesceKey, xhr);
 }
 
 function findApproachPathToCoords(povUid, candidates, callback) {
@@ -930,19 +962,41 @@ function findApproachPathToCoords(povUid, candidates, callback) {
   }
 
   let bestPath = null;
-  let pending = candidates.length;
-  if (!pending) {
+  let settled = false;       // true once we've called the callback
+  const pending = { value: candidates.length };
+  const xhrs = [];           // track in-flight XHRs so we can abort them
+
+  // Abort all pending in-flight requests.
+  const abortAll = () => {
+    for (const x of xhrs) {
+      try { x.abort(); } catch (_) { /* ignore */ }
+    }
+    xhrs.length = 0;
+  };
+
+  if (!pending.value) {
     callback(null);
     return;
   }
 
   candidates.forEach((dest) => {
+    if (settled) return;        // skip enqueuing more requests once we have a path
+
     fetchPathToTile(from, dest, (path) => {
+      if (settled) return;      // another candidate already won
+
       if (path && (!bestPath || path.length < bestPath.length)) {
         bestPath = path;
+        // First valid path found — abort all remaining requests to save CPU.
+        abortAll();
+        settled = true;
+        callback(bestPath);
+        return;
       }
-      pending -= 1;
-      if (pending === 0) {
+
+      pending.value -= 1;
+      if (pending.value === 0 && !settled) {
+        settled = true;
         callback(bestPath);
       }
     });
@@ -7282,12 +7336,16 @@ $(document).ready(() => {
           applyTargetPreview(targetX, targetY, showX, showY, $tile, data, tooltip);
         });
       }
-    } else {
+    } else if (moveMode && !targetMode && !keyboardMovementMode) {
+      // Skip path computation entirely when in targetMode — the client is
+      // hovering over the map for attack targeting, not movement.  Firing
+      // /path requests during targeting wastes server CPU and produces
+      // spurious "unreachable" log entries for out-of-bounds coordinates.
       hideTargetValidationHint();
       $("#coords-box").html(
         `<p>X: ${showX}</p><p>Y: ${showY}</p>${tooltip}`,
       );
-      if (moveMode && !keyboardMovementMode && (pathDestX !== source.x || pathDestY !== source.y)) {
+      if ((pathDestX !== source.x || pathDestY !== source.y)) {
         // Skip duplicate work when the mouseover bubbles from child elements
         // (entity sprites, tooltips, etc.) without changing the tile.
         if (lastHoverCoords && lastHoverCoords.x === pathDestX && lastHoverCoords.y === pathDestY) {

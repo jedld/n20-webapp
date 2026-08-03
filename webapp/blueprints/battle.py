@@ -1151,13 +1151,6 @@ def action():
             _ctx['phase_build_ms'] += (time.perf_counter() - _t_build) * 1000.0
 
             stack = getattr(battle_map, 'map_stack', None)
-            if battle:
-                from natural20.map_stack_targeting import valid_target_positions
-                target_list = battle.valid_targets_for(entity, action, include_objects=True)
-                valid_targets = valid_target_positions(stack, battle_map, target_list, battle=battle)
-            else:
-                target_list = battle_map.valid_targets_for(entity, action, include_objects=True)
-                valid_targets = {target.entity_uid: battle_map.entity_or_object_pos(target) for target in target_list}
 
             if action.npc_action:
                 weapon_details = action.npc_action
@@ -1171,10 +1164,18 @@ def action():
                 if target is None or isinstance(target, list):
                     return jsonify(status='error', message=f"Invalid Target {target_coords}")
 
+                # When a concrete target is already provided, skip the expensive
+                # valid_targets_for + valid_target_positions scan that the UI
+                # needs for the hover-selection flow.  Validate the target
+                # directly instead.
                 if battle:
                     allowed = battle.valid_targets_for(entity, action, include_objects=True)
                     target_ok = target in allowed
                 else:
+                    # Non-battle path: compute valid targets only if we
+                    # haven't already done so (defensive fallback).
+                    target_list = battle_map.valid_targets_for(entity, action, include_objects=True)
+                    valid_targets = {t.entity_uid: battle_map.entity_or_object_pos(t) for t in target_list}
                     target_ok = bool(valid_targets.get(target.entity_uid))
                 if target_ok:
                     action.target = target
@@ -1182,6 +1183,16 @@ def action():
                 else:
                     return jsonify(status='error', message=f"Invalid Target {target_coords}")
             else:
+                # No concrete target yet — compute the full valid-targets list
+                # so the UI can render hover highlighting.  This is the
+                # expensive path that the client needs for target selection.
+                if battle:
+                    from natural20.map_stack_targeting import valid_target_positions
+                    target_list = battle.valid_targets_for(entity, action, include_objects=True)
+                    valid_targets = valid_target_positions(stack, battle_map, target_list, battle=battle)
+                else:
+                    target_list = battle_map.valid_targets_for(entity, action, include_objects=True)
+                    valid_targets = {target.entity_uid: battle_map.entity_or_object_pos(target) for target in target_list}
                 action_info['action'] = 'attack'
                 action_info['type'] = 'select_target'
                 action_info['valid_targets'] = valid_targets
