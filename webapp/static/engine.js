@@ -387,6 +387,7 @@ let max_targets = 1;
 let targetModeCallback = null,
   moveModeCallback = null;
 let targetModeMaxRange = 0,
+  actionPostTimestamp = 0; // Monotonic timestamp of the last /action POST for cooldown tracking.
   source = null,
   battle_setup = false;
 let globalActionInfo = null,
@@ -1079,6 +1080,7 @@ function postObjectInteract(povUid, objectUid, objectAction, tileX, tileY, done)
     contentType: 'application/json',
     success: (data) => {
       if (data && data.status === 'ok') {
+        actionPostTimestamp = Date.now();
         try { refreshTurn(); } catch (_) { }
         try { scheduleRefreshMap(80); } catch (_) { }
         if (typeof done === 'function') {
@@ -2286,6 +2288,15 @@ let refreshMapResolvers = [];
 
 function scheduleRefreshMap(delayMs = 180, options = {}) {
   const forceFullRefresh = !!options.forceFullRefresh;
+  // Suppress /update requests for 500ms after the player commits an action.
+  // After clicking attack/target/any multi-step action, the server emits
+  // multiple refresh_map/refresh_tiles events while the action resolves,
+  // causing the client to hammer /update (6+ requests per turn).  The
+  // cooldown filter ensures only the first (or post-cooldown) request fires,
+  // and those are already coalesced by the existing debounce timer.
+  if (typeof actionPostTimestamp === 'number' && (Date.now() - actionPostTimestamp) < 500) {
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
     refreshMapResolvers.push(resolve);
     if (refreshMapDebounceTimer) {
@@ -6610,6 +6621,12 @@ $(document).ready(() => {
 
   // --- Socket Message Handler ---
   socket.on("message", (data) => {
+    // Enqueue the event for FIFO processing.
+    // Reset the action post cooldown when the server signals turn state changes
+    // (end_of_turn, start_of_turn) so subsequent /update requests are allowed.
+    if (data && typeof data === 'object' && (data.type === 'end_of_turn' || data.type === 'start_of_turn')) {
+      actionPostTimestamp = 0;
+    }
     // Enqueue the event for FIFO processing
     eventQueue.enqueue(data);
   });
@@ -7441,7 +7458,11 @@ $(document).ready(() => {
             currentPathXhr = null;
           }
 
-          // Set a new timer to delay the path request
+          // Set a new timer to delay the path request.
+          // Increased from 50ms to 100ms to reduce excessive /path requests during
+          // attack targeting hover. The original 50ms caused 15+ requests per turn
+          // because mouseover events fire rapidly as the cursor moves over tile
+          // children (sprites, tooltips, etc.).
           const pendingDest = { x: pathDestX, y: pathDestY, localX: coordsx, localY: coordsy };
           pathDebounceTimer = setTimeout(() => {
             pathDebounceTimer = null;
@@ -7495,7 +7516,7 @@ $(document).ready(() => {
                 currentPathXhr = null;
               }
             });
-          }, 50);
+          }, 100);
         }
       }
     }
@@ -8566,6 +8587,9 @@ $(document).ready(() => {
       $(".popover-menu").hide();
       closeCenterActionBar();
       $("#modal-1").modal("hide");
+      // Record the action submission timestamp so we can suppress rapid
+      // /update polling for a short window after the player commits an action.
+      actionPostTimestamp = Date.now();
       refreshTurn();
       return;
     }

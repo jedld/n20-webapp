@@ -2277,36 +2277,49 @@ class GameManagement:
                 map_lock.acquire()
             try:
                 action.resolve(self.game_session, action_battle_map)
+                # Use cached subclass list to avoid repeated runtime introspection.
+                from natural20.action import get_action_subclasses
+                _action_subclasses = get_action_subclasses()
                 for item in list(action.result):
-                    for klass in Action.__subclasses__():
+                    for klass in _action_subclasses:
                         other_results = klass.apply(None, item, session=self.game_session)
                         if isinstance(other_results, list):
                             action.result.extend(other_results)
                 # handle game time for out of battle actions
                 if isinstance(action.source, PlayerCharacter):
                     self.increment_game_time(action.source)
-                try:
-                    from webapp.npc_damage_reaction import process_out_of_combat_damage_reactions
+                # Fast-path: skip imports and reaction processing for irrelevant action types.
+                # Each reaction module checks the action type internally, but the import
+                # overhead and function entry cost adds up.  Guard with a quick name check.
+                _action_name = type(action).__name__
+                # NPC damage reactions only matter for attack/spell actions
+                if _action_name not in ('MoveAction', 'InteractAction', 'PickpocketAction'):
+                    try:
+                        from webapp.npc_damage_reaction import process_out_of_combat_damage_reactions
 
-                    process_out_of_combat_damage_reactions(self, action, in_combat=False)
-                except Exception as exc:
-                    self.logger.debug("NPC out-of-combat hit reaction skipped: %s", exc)
-                try:
-                    from webapp.steal_reaction import process_steal_reactions
+                        process_out_of_combat_damage_reactions(self, action, in_combat=False)
+                    except Exception as exc:
+                        self.logger.debug("NPC out-of-combat hit reaction skipped: %s", exc)
+                # Steal reactions only matter for InteractAction
+                if _action_name == 'InteractAction':
+                    try:
+                        from webapp.steal_reaction import process_steal_reactions
 
-                    process_steal_reactions(
-                        self, action, in_combat=False, username=username,
-                    )
-                except Exception as exc:
-                    self.logger.debug("Steal reaction processing skipped: %s", exc)
-                try:
-                    from webapp.pickpocket_reaction import process_pickpocket_reactions
+                        process_steal_reactions(
+                            self, action, in_combat=False, username=username,
+                        )
+                    except Exception as exc:
+                        self.logger.debug("Steal reaction processing skipped: %s", exc)
+                # Pickpocket reactions only matter for PickpocketAction
+                if _action_name == 'PickpocketAction':
+                    try:
+                        from webapp.pickpocket_reaction import process_pickpocket_reactions
 
-                    process_pickpocket_reactions(
-                        self, action, in_combat=False, username=username,
-                    )
-                except Exception as exc:
-                    self.logger.debug("Pickpocket reaction processing skipped: %s", exc)
+                        process_pickpocket_reactions(
+                            self, action, in_combat=False, username=username,
+                        )
+                    except Exception as exc:
+                        self.logger.debug("Pickpocket reaction processing skipped: %s", exc)
             finally:
                 try:
                     map_lock.release()
