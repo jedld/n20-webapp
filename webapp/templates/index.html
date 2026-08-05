@@ -1293,13 +1293,32 @@
         </div>
     </div>
     <div id="battle-turn-order" class="floating-window" style="{{ 'display: none;' if battle is none }}">
-        <div class="header" style="cursor: move;">Battle Turn Order</div>
+        <div class="header">
+          <span class="header-title">Battle Turn Order</span>
+          {% if not battle %}
+            <div class="btn-group">
+              <button id="start-initiative" class="btn btn-sm btn-light">Roll Initiative</button>
+            </div>
+          {% endif %}
+        </div>
+
+        {% if battle and 'dm' in role %}
+        <div class="dm-controls-bar">
+          <div class="btn-group pull-right">
+            <button id="add-more" class="btn btn-default btn-sm">
+              <span class="glyphicon glyphicon-plus"></span> Add
+            </button>
+            <button id="next-turn" class="btn btn-primary btn-sm">
+              Next Turn
+            </button>
+          </div>
+          <div class="drag-hint">
+            <i class="glyphicon glyphicon-info-sign"></i> Drag to reorder
+          </div>
+        </div>
+        {% endif %}
 
         <div id="turn-order">
-            {% if not battle %}
-                <button id="start-initiative" class="btn btn-primary" style="margin-top: 20px;">Roll Initiative!</button>
-                <!-- <button id="add-all-entities" class="btn btn-primary" style="margin-top: 20px;">Add Everyone in Map</button> -->
-            {% endif %}
             {% if battle%}
                 {% include 'battle.html' %}
             {% endif %}

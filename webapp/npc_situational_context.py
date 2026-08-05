@@ -10,6 +10,7 @@ from natural20.utils.conversation import entity_label, mention_handle_for
 from natural20.map_annotations import (
     current_location_annotations_at_position,
     format_current_location_for_llm,
+    format_location_hierarchy_for_llm,
 )
 from natural20.utils.conversation_offers import (
     OFFER_STATE_KEY,
@@ -132,7 +133,8 @@ def build_npc_situational_context(
                 int(position[0]),
                 int(position[1]),
             )
-            location_line = format_current_location_for_llm(
+            # Use full hierarchy to show enclosing area nesting
+            location_line = format_location_hierarchy_for_llm(
                 location_anns,
                 map_name=map_name,
                 position=(int(position[0]), int(position[1])),

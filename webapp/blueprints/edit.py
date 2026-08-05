@@ -20,6 +20,7 @@ from natural20.map_editor import (
     remove_map_annotation,
     remove_map_item,
     save_map_annotation,
+    update_area_annotation_bounds,
 )
 from webapp.blueprints.helpers.auth_utils import user_role
 from webapp.blueprints.helpers.map_graph import build_campaign_map_graph
@@ -367,6 +368,46 @@ def edit_annotations_move():
     current_game.reload_map_by_name(map_name)
     get_socketio().emit("message", {"type": "refresh_map"})
     return jsonify({"success": True, "map": map_name, "annotation": moved})
+
+
+@edit_bp.route("/edit/annotations/bounds", methods=["POST"])
+def edit_annotations_bounds():
+    denied = _require_edit_dm()
+    if denied:
+        return denied
+
+    current_game = get_current_game()
+    battle_map = current_game.get_map_for_user(session["username"])
+
+    if not request.is_json:
+        return jsonify({"success": False, "error": "Request must be JSON"}), 400
+
+    data = request.get_json() or {}
+    annotation_id = normalize_annotation_id(str(data.get("id") or data.get("annotation_id") or ""))
+    if not validate_annotation_id(annotation_id):
+        return jsonify({"success": False, "error": "Invalid annotation id"}), 400
+
+    try:
+        x1 = int(data["x1"])
+        y1 = int(data["y1"])
+        x2 = int(data["x2"])
+        y2 = int(data["y2"])
+    except (KeyError, ValueError):
+        return jsonify({"success": False, "error": "x1, y1, x2, y2 are required integers"}), 400
+
+    map_name = battle_map.name
+    try:
+        updated = update_area_annotation_bounds(current_game.game_session, map_name, annotation_id, x1, y1, x2, y2)
+    except KeyError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
+
+    current_game.reload_map_by_name(map_name)
+    get_socketio().emit("message", {"type": "refresh_map"})
+    return jsonify({"success": True, "map": map_name, "annotation": updated})
 
 
 @edit_bp.route("/edit/move", methods=["POST"])

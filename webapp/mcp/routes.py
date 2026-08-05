@@ -22,7 +22,7 @@ from flask import Blueprint, jsonify, request
 
 from .context import MCPContext
 from .tool_registry import ToolRegistry
-from . import tools_actions, tools_dm, tools_world
+from . import tools_actions, tools_dm, tools_npc, tools_world
 
 
 def build_default_registry() -> ToolRegistry:
@@ -31,6 +31,7 @@ def build_default_registry() -> ToolRegistry:
     tools_world.register(registry)
     tools_dm.register(registry)
     tools_actions.register(registry)
+    tools_npc.register(registry)
     return registry
 
 

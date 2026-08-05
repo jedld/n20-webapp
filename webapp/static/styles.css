@@ -893,41 +893,335 @@
   top: 10px;
   left: 150px;
   width: 450px;
+  min-width: 300px;
   height: 300px;
-  background-color: white;
-  border: 1px solid black;
+  min-height: 200px;
+  background-color: #ffffff;
+  border: 1px solid #b8b8b8;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
   resize: both;
   overflow: hidden;
   z-index: 3;
   margin: 5px;
   max-height: 80vh;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
 }
 
 #battle-turn-order #turn-order {
-  padding-top: 30px;
-  height: calc(100% - 30px);
+  padding-top: 42px;
+  height: calc(100% - 42px);
   overflow-y: auto;
   overflow-x: hidden;
+  background-color: #fafbfc;
 }
 
 #battle-turn-order .header {
   position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   width: 100%;
   z-index: 5;
+  color: #ffffff;
+  background: linear-gradient(135deg, #2c5aa0 0%, #1a3c6f 100%);
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+  border-bottom: 2px solid #153361;
+}
+
+#battle-turn-order .header .header-title {
+  flex: 1;
   text-align: center;
-  color: white;
-  background-color: blue;
-  padding: 5px 0;
+  cursor: move;
+}
+
+#battle-turn-order .header .btn-group {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+#battle-turn-order .header .btn-light {
+  background-color: rgba(255, 255, 255, 0.9);
+  border-color: transparent;
+  color: #2c5aa0;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-weight: 600;
+  transition: background-color 0.15s ease;
+}
+
+#battle-turn-order .header .btn-light:hover {
+  background-color: #ffffff;
 }
 
 #battle-turn-order .turn-order-item {
-  padding: 5px;
-  border-bottom: 1px solid #ddd;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e9ecef;
+  background-color: #ffffff;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-height: 42px;
+}
+
+#battle-turn-order .turn-order-item:hover {
+  background-color: #f0f4f8;
+}
+
+#battle-turn-order .turn-order-item:last-child {
+  border-bottom: none;
 }
 
 #battle-turn-order .active {
-  background-color: #337ab7;
-  color: white;
+  background: linear-gradient(90deg, #2c5aa0 0%, #3a6fbf 100%) !important;
+  color: #ffffff !important;
+  box-shadow: inset 3px 0 0 #ffc107;
+}
+
+#battle-turn-order .active .btn {
+  color: #ffffff;
+}
+
+#battle-turn-order .active .btn-danger {
+  background-color: #dc3545;
+  border-color: #c82333;
+}
+
+#battle-turn-order .turn-order-dead {
+  color: #a94442;
+  opacity: 0.65;
+  text-decoration: line-through;
+}
+
+#battle-turn-order .turn-order-dead.active {
+  opacity: 0.85;
+  text-decoration: none;
+}
+
+/* Top of the Round Indicator — gold left border pulse + subtle background glow */
+#battle-turn-order .turn-order-item.top-of-round {
+  position: relative;
+  border-left: 5px solid #ffc107 !important;
+  background: linear-gradient(90deg, rgba(255, 193, 7, 0.12) 0%, rgba(255, 248, 220, 0.06) 40%, transparent 100%) !important;
+  animation: top-of-round-pulse 1.8s ease-in-out infinite;
+}
+
+/* Ensure entity label remains visible on top-of-round (when not active) */
+#battle-turn-order .turn-order-item.top-of-round .entity-label,
+#battle-turn-order .turn-order-item.top-of-round {
+  color: #2c3e50 !important;
+}
+
+#battle-turn-order .turn-order-item.top-of-round::before {
+  content: '\2693';
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  color: #d4a017;
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1;
+  text-shadow: 0 0 8px rgba(255, 193, 7, 0.5);
+  animation: top-of-round-pulse 1.8s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 2;
+}
+
+@keyframes top-of-round-pulse {
+  0%, 100% {
+    border-left-color: #ffc107;
+    box-shadow: inset 5px 0 0 0 #ffc107;
+  }
+  50% {
+    border-left-color: #ffda6a;
+    box-shadow: inset 5px 0 8px 0 rgba(255, 193, 7, 0.3);
+  }
+}
+
+/* When active AND top of round, make the gold indicator pop more */
+#battle-turn-order .turn-order-item.top-of-round.active {
+  border-left: 5px solid #ffd700 !important;
+  animation: top-of-round-active-pulse 1.5s ease-in-out infinite;
+}
+
+#battle-turn-order .turn-order-item.top-of-round.active .entity-label,
+#battle-turn-order .turn-order-item.top-of-round.active {
+  color: #ffffff !important;
+}
+
+#battle-turn-order .turn-order-item.top-of-round.active::before {
+  color: #ffd700;
+  text-shadow: 0 0 10px rgba(255, 215, 0, 0.7);
+}
+
+@keyframes top-of-round-active-pulse {
+  0%, 100% {
+    border-left-color: #ffd700;
+    box-shadow: inset 5px 0 0 0 #ffd700, 0 0 12px rgba(255, 215, 0, 0.25);
+  }
+  50% {
+    border-left-color: #ffea80;
+    box-shadow: inset 5px 0 12px 0 rgba(255, 215, 0, 0.4), 0 0 18px rgba(255, 215, 0, 0.35);
+  }
+}
+
+/* DM Controls Bar — visible below header, above turn-order items */
+#battle-turn-order .dm-controls-bar {
+  padding: 8px 12px;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 38px;
+}
+
+#battle-turn-order .dm-controls-bar .btn-group {
+  display: flex;
+  gap: 6px;
+}
+
+#battle-turn-order .dm-controls-bar .btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+#battle-turn-order .dm-controls-bar .btn-default {
+  background-color: #ffffff;
+  border-color: #ccc;
+  color: #333;
+}
+
+#battle-turn-order .dm-controls-bar .btn-default:hover {
+  background-color: #e9ecef;
+}
+
+#battle-turn-order .dm-controls-bar .btn-primary {
+  background-color: #007bff;
+  border-color: #0070b8;
+  color: #fff;
+}
+
+#battle-turn-order .dm-controls-bar .btn-primary:hover {
+  background-color: #0069d9;
+  border-color: #0062cc;
+}
+
+#battle-turn-order .dm-controls-bar .drag-hint {
+  font-size: 11px;
+  color: #6c757d;
+  margin-left: 10px;
+}
+
+/* Compact DM turn order layout — minimal horizontal space */
+#battle-turn-order form.compact-turn-order {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+#battle-turn-order form.compact-turn-order .turn-order-col {
+  flex-shrink: 0;
+  padding: 0 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#battle-turn-order form.compact-turn-order .drag-col {
+  width: 22px;
+  flex-shrink: 0;
+}
+
+#battle-turn-order form.compact-turn-order .token-col {
+  width: 36px;
+  flex-shrink: 0;
+}
+
+#battle-turn-order form.compact-turn-order .name-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+}
+
+#battle-turn-order form.compact-turn-order .selector-col {
+  width: auto;
+  flex-shrink: 0;
+  min-width: 38px;
+}
+
+#battle-turn-order form.compact-turn-order .initiative-col {
+  width: 52px;
+  flex-shrink: 0;
+}
+
+#battle-turn-order form.compact-turn-order .action-col {
+  display: flex;
+  gap: 2px;
+  width: auto;
+  flex-shrink: 0;
+}
+
+/* Compact selects — shorter labels, smaller width */
+#battle-turn-order .compact-select {
+  width: auto !important;
+  min-width: 36px;
+  max-width: 52px;
+  font-size: 11px;
+  padding: 2px 3px;
+  height: 26px;
+  white-space: nowrap;
+}
+
+/* Fix Bootstrap grid padding inside turn-order items (legacy non-compact) */
+#battle-turn-order .turn-order-item .row,
+#battle-turn-order .turn-order-item form.form-inline:not(.compact-turn-order) {
+  margin: 0;
+  width: 100%;
+}
+
+#battle-turn-order .turn-order-item form.form-inline:not(.compact-turn-order) [class*="col-"] {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+/* Non-DM view: simpler layout with just token, name, initiative */
+#battle-turn-order .turn-order-item:not(:has(form)) {
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+#battle-turn-order .turn-order-item:not(:has(form)) .initiative-text {
+  font-weight: 600;
+  color: #495057;
+  font-size: 14px;
+  min-width: 40px;
+  text-align: right;
+}
+
+#battle-turn-order .turn-order-item:not(:has(form)).active .initiative-text {
+  color: #ffffff;
 }
 
 #console-container {
@@ -1460,29 +1754,76 @@ body.aoe-point-targeting .tile .brightness-overlay {
   background-color: rgba(240, 173, 78, 0.1);
 }
 
+/* Fixed-size token images — prevents jarring scaling when panel is resized */
 .token-image {
-  max-width: 100%;
-  height: auto;
+  width: 36px;
+  height: 36px;
+  max-width: 36px;
+  max-height: 36px;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 2px solid #dee2e6;
+  flex-shrink: 0;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#battle-turn-order .turn-order-item.active .token-image {
+  border-color: #ffc107;
+  box-shadow: 0 0 8px rgba(255, 193, 7, 0.5);
 }
 
 .entity-label {
-  font-weight: bold;
-  font-size: 16px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #2c3e50;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+  line-height: 1.4;
+}
+
+#battle-turn-order .turn-order-item.active .entity-label {
+  color: #ffffff;
 }
 
 .initiative-input,
-.group-select {
+.group-select,
+.controller-select {
   width: 100%;
+  font-size: 12px;
+  padding: 2px 4px;
+  height: 28px;
 }
-
 
 input.initiative-input.form-control {
-  width: 60px;
+  width: 52px;
+  text-align: center;
+  font-size: 12px;
+  height: 28px;
 }
 
-
 .remove-turn-order-item {
-  width: 100%;
+  width: auto;
+  padding: 2px 6px;
+  font-size: 11px;
+  min-height: 26px;
+  line-height: 1;
+}
+
+/* DM controls in turn order */
+#battle-turn-order .dm-controls {
+  padding: 6px 10px;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#battle-turn-order .drag-hint {
+  font-size: 10px;
+  color: #6c757d;
 }
 
 /* Coords Box Styles */

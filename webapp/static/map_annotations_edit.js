@@ -123,6 +123,24 @@
     return (state.annotations || []).find((entry) => entry.id === annotationId) || null;
   }
 
+  /* Highlight (or unhighlight) the fill tiles for an area/polygon annotation. */
+  function highlightAnnotationFill(annotationId, on) {
+    const ann = annotationById(annotationId);
+    if (!ann) {
+      return;
+    }
+    const fillKind = ann.kind === 'area' ? 'area' : (ann.kind === 'polygon' ? 'polygon' : null);
+    if (!fillKind) {
+      return;
+    }
+    const $targets = $(`.map-annotation-marker-${fillKind}[data-annotation-id="${annotationId}"]`);
+    if (on) {
+      $targets.addClass(`map-annotation-marker-${fillKind}-hover`);
+    } else {
+      $targets.removeClass(`map-annotation-marker-${fillKind}-hover`);
+    }
+  }
+
   function setStatus(message) {
     if ($panel && $panel.length) {
       $panel.find('.map-annotations-panel-status').text(message || '');
@@ -318,6 +336,103 @@
           openEditorModal(ann, { isNew: false });
         }
       });
+
+    $(document)
+      .off('mouseenter.mapAnnotationHighlight', '.map-annotation-drag-handle')
+      .on('mouseenter.mapAnnotationHighlight', '.map-annotation-drag-handle', function () {
+        const annotationId = String($(this).data('annotation-id') || '');
+        if (annotationId) {
+          highlightAnnotationFill(annotationId, true);
+        }
+      })
+      .off('mouseleave.mapAnnotationHighlight', '.map-annotation-drag-handle')
+      .on('mouseleave.mapAnnotationHighlight', '.map-annotation-drag-handle', function () {
+        const annotationId = String($(this).data('annotation-id') || '');
+        if (annotationId) {
+          highlightAnnotationFill(annotationId, false);
+        }
+      });
+
+    // Also highlight when hovering over the area/polygon fill tiles themselves
+    $(document)
+      .off('mouseenter.mapAnnotationHighlight', '.map-annotation-marker-area, .map-annotation-marker-polygon')
+      .on('mouseenter.mapAnnotationHighlight', '.map-annotation-marker-area, .map-annotation-marker-polygon', function () {
+        const annotationId = String($(this).data('annotation-id') || '');
+        if (annotationId) {
+          highlightAnnotationFill(annotationId, true);
+        }
+      })
+      .off('mouseleave.mapAnnotationHighlight', '.map-annotation-marker-area, .map-annotation-marker-polygon')
+      .on('mouseleave.mapAnnotationHighlight', '.map-annotation-marker-area, .map-annotation-marker-polygon', function () {
+        const annotationId = String($(this).data('annotation-id') || '');
+        if (annotationId) {
+          highlightAnnotationFill(annotationId, false);
+        }
+      });
+
+    // Area corner resize drag
+    let areaResizeStart = null;
+    let areaResizeCorner = null;
+
+    $(document)
+      .off('mousedown.mapAreaResize', '.map-annotation-area-handle')
+      .on('mousedown.mapAreaResize', '.map-annotation-area-handle', function (e) {
+        if (!isEditMode() || e.shiftKey || state.mode) {
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        const $handle = $(this);
+        const annotationId = String($handle.data('annotation-id') || '');
+        const corner = String($handle.data('corner') || '');
+        const ann = annotationById(annotationId);
+        if (!ann || !ann.bounds || !corner) {
+          return;
+        }
+        areaResizeStart = { ...ann.bounds };
+        areaResizeCorner = corner;
+        $('body').addClass('map-annotation-resizing');
+
+        const onMove = (ev) => {
+          const hit = tileAtClient(ev.clientX, ev.clientY);
+          if (!hit || !areaResizeStart) {
+            return;
+          }
+          const s = areaResizeStart;
+          let { x1, y1, x2, y2 } = s;
+          if (corner === 'tl') { x1 = hit.x; y1 = hit.y; }
+          else if (corner === 'tr') { x2 = hit.x; y1 = hit.y; }
+          else if (corner === 'bl') { x1 = hit.x; y2 = hit.y; }
+          else if (corner === 'br') { x2 = hit.x; y2 = hit.y; }
+          // Live preview: temporarily update the annotation and re-render
+          const origBounds = ann.bounds;
+          ann.bounds = { x1: Math.min(x1, x2), y1: Math.min(y1, y2), x2: Math.max(x1, x2), y2: Math.max(y1, y2) };
+          renderPersistedAnnotations(state.annotations);
+          ann.bounds = origBounds;
+        };
+
+        const onUp = (ev) => {
+          $(document).off('mousemove.mapAreaResize', onMove).off('mouseup.mapAreaResize', onUp);
+          $('body').removeClass('map-annotation-resizing');
+          const hit = tileAtClient(ev.clientX, ev.clientY);
+          if (!hit || !areaResizeStart) {
+            areaResizeStart = null;
+            areaResizeCorner = null;
+            return;
+          }
+          const s = areaResizeStart;
+          let { x1, y1, x2, y2 } = s;
+          if (areaResizeCorner === 'tl') { x1 = hit.x; y1 = hit.y; }
+          else if (areaResizeCorner === 'tr') { x2 = hit.x; y1 = hit.y; }
+          else if (areaResizeCorner === 'bl') { x1 = hit.x; y2 = hit.y; }
+          else if (areaResizeCorner === 'br') { x2 = hit.x; y2 = hit.y; }
+          persistAreaBounds(annotationId, Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2));
+          areaResizeStart = null;
+          areaResizeCorner = null;
+        };
+
+        $(document).on('mousemove.mapAreaResize', onMove).on('mouseup.mapAreaResize', onUp);
+      });
   }
 
   function tileSize() {
@@ -393,7 +508,7 @@
   }
 
   function clearDraftGraphics() {
-    $('.map-annotation-draft, .map-annotation-marker, .map-annotation-polygon').remove();
+    $('.map-annotation-draft, .map-annotation-marker, .map-annotation-polygon, .map-annotation-area-handle').remove();
     $('.tile').removeClass('map-annotation-draft-tile map-annotation-selected-tile');
   }
 
@@ -452,6 +567,11 @@
           }
         }
         markTile(b.x1, b.y1, ann.label || ann.id, 'area-label', null, ann);
+        // Add resize corner handles at each of the 4 corners
+        markAreaCornerHandle(b.x1, b.y1, 'tl', ann);
+        markAreaCornerHandle(b.x2, b.y1, 'tr', ann);
+        markAreaCornerHandle(b.x1, b.y2, 'bl', ann);
+        markAreaCornerHandle(b.x2, b.y2, 'br', ann);
       } else if (ann.kind === 'polygon' && ann.points) {
         ann.points.forEach((pt) => markTile(pt[0], pt[1], null, 'polygon', 0.45, ann));
         if (ann.points.length) {
@@ -487,6 +607,11 @@
     if (label) {
       $marker.text(label);
     }
+    // Always store annotation-id on the marker when annotation is provided
+    // so area/polygon fill tiles can be grouped for hover highlighting
+    if (annotation && annotation.id) {
+      $marker.data('annotation-id', annotation.id);
+    }
     const isInteractiveLabel =
       annotation &&
       annotation.id &&
@@ -495,7 +620,6 @@
       $marker
         .addClass('map-annotation-drag-handle')
         .attr('title', 'Click to edit · Shift+drag to move')
-        .data('annotation-id', annotation.id)
         .data('annotation-x', x)
         .data('annotation-y', y);
       if (state.selectedId === annotation.id) {
@@ -504,6 +628,46 @@
       }
     }
     $tile.append($marker);
+  }
+
+  /* Create a small draggable corner handle for area resize. */
+  function markAreaCornerHandle(x, y, corner, annotation) {
+    const $tile = findAnnotationTile(x, y);
+    if (!$tile.length) {
+      return;
+    }
+    const $handle = $('<div class="map-annotation-area-handle"></div>');
+    $handle
+      .addClass(`map-annotation-area-handle-${corner}`)
+      .attr('title', 'Drag to resize area')
+      .data('annotation-id', annotation.id)
+      .data('corner', corner);
+    $tile.append($handle);
+  }
+
+  /* Persist the new bounds for an area annotation after resize drag. */
+  function persistAreaBounds(annotationId, x1, y1, x2, y2) {
+    $.ajax({
+      url: '/edit/annotations/bounds',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({ id: annotationId, x1, y1, x2, y2 }),
+      success(resp) {
+        if (resp && resp.success && resp.annotation) {
+          const next = (state.annotations || []).filter((a) => a.id !== resp.annotation.id);
+          next.push(resp.annotation);
+          renderPersistedAnnotations(next);
+        } else {
+          window.alert((resp && resp.error) || 'Failed to resize area');
+          renderPersistedAnnotations(state.annotations);
+        }
+      },
+      error(xhr) {
+        const msg = (xhr.responseJSON && xhr.responseJSON.error) || 'Failed to resize area';
+        window.alert(msg);
+        renderPersistedAnnotations(state.annotations);
+      },
+    });
   }
 
   function slugify(text) {
@@ -854,6 +1018,20 @@
       selectAnnotation(id);
       openEditorModal(ann, { isNew: false });
     });
+
+    // Hover highlight: hovering a list item highlights the corresponding area on the map
+    $panel.on('mouseenter.mapAnnotationHighlight', '.map-annotations-list-item', function () {
+      const id = String($(this).find('.map-annotations-list-select').data('annotation-id') || '');
+      if (id) {
+        highlightAnnotationFill(id, true);
+      }
+    }).on('mouseleave.mapAnnotationHighlight', '.map-annotations-list-item', function () {
+      const id = String($(this).find('.map-annotations-list-select').data('annotation-id') || '');
+      if (id) {
+        highlightAnnotationFill(id, false);
+      }
+    });
+
     $panel.on('click', '.map-annotations-list-delete', function (e) {
       e.stopPropagation();
       deleteAnnotation(String($(this).data('annotation-id') || ''));
@@ -927,7 +1105,19 @@
         .map-annotation-marker-area-label, .map-annotation-marker-polygon-label {
           border: none; background: rgba(0,0,0,0.55); color: #fff; font-weight: bold;
         }
+        .map-annotation-marker-area-hover, .map-annotation-marker-polygon-hover {
+          background: rgba(155, 89, 182, 0.45) !important;
+          border-color: #c39bd3 !important;
+        }
         .map-annotation-draft-tile { outline: 1px solid rgba(241, 196, 15, 0.35); }
+        .map-annotation-area-handle {
+          position: absolute; width: 8px; height: 8px; background: #f59e0b;
+          border: 1px solid #fff; border-radius: 1px; z-index: 10;
+          pointer-events: auto; cursor: nwse-resize;
+        }
+        .map-annotation-area-handle-tr, .map-annotation-area-handle-bl { cursor: nesw-resize; }
+        .map-annotation-area-handle:hover { background: #fbbf24; transform: scale(1.4); }
+        body.map-annotation-resizing .tile { pointer-events: none; }
         body.map-annotation-mode-point .tile,
         body.map-annotation-mode-rect .tile,
         body.map-annotation-mode-polygon .tile { cursor: crosshair; }

@@ -2674,13 +2674,13 @@ class EntityRAGHandler:
             return ''
         from natural20.map_annotations import (
             current_location_annotations_at_position,
-            format_current_location_for_llm,
+            format_location_hierarchy_for_llm,
         )
         annotations = current_location_annotations_at_position(battle_map.properties, x, y)
         if not annotations:
             return ''
         map_name = getattr(battle_map, 'name', None) or getattr(battle_map, 'map_id', None)
-        return format_current_location_for_llm(
+        return format_location_hierarchy_for_llm(
             annotations,
             map_name=map_name,
             position=(x, y),

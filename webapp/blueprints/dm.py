@@ -922,6 +922,10 @@ def remove_from_battle():
 
 @dm_bp.route('/tracks', methods=['GET'])
 def get_tracks():
+    try:
+        from webapp.app import SOUNDTRACKS
+    except ImportError:
+        SOUNDTRACKS = []
     current_soundtrack = get_current_game().current_soundtrack
     tracks = []
     for index, track in enumerate(SOUNDTRACKS):

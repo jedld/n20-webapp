@@ -86,6 +86,25 @@ _HIDE_SPOTS_CACHE_LOCK = threading.Lock()
 _HIDE_SPOTS_INFLIGHT = {}
 
 
+def _validate_opposing_groups(battle):
+    """Validate that at least one entity in the battle has opposing enemies.
+
+    This prevents accidental "friendly fire only" battles where every combatant
+    belongs to the same non-hostile group (e.g. all PCs with no enemies).
+    """
+    for entity in battle.combat_order:
+        try:
+            opponents = battle.opponents_of(entity)
+            if opponents:
+                return  # At least one entity has enemies — valid battle
+        except Exception:
+            continue
+    raise ValueError(
+        "Roll Initiative requires at least one opposing entity group. "
+        "Add enemies to the battle or assign different groups."
+    )
+
+
 def _hide_cache_key(current_game, entity, battle, battle_map):
     """Build a cache key that changes only when hide-relevant state changes."""
     try:
@@ -181,6 +200,13 @@ def start_battle_with_initiative():
 
             controller.register_handlers_on(entity)
             battle.add(entity, param_item['group'], controller=controller)
+
+        try:
+            # Validate that at least one opposing entity group exists
+            _validate_opposing_groups(battle)
+        except ValueError as e:
+            return jsonify(error=str(e)), 400
+
         battle.start()
         try:
             get_current_game().play_battle_music(battle)
@@ -218,7 +244,16 @@ def continue_game():
 @battle_bp.route('/turn_order', methods=['GET'])
 def get_turn_order():
     battle = get_current_game().get_current_battle()
-    return render_template('battle.html', battle=battle, username=session['username'], role=user_role())
+    current_turn_index = getattr(battle, 'current_turn_index', 0) if battle else 0
+    battle_round = getattr(battle, 'round', 0) if battle else 0
+    return render_template(
+        'battle.html',
+        battle=battle,
+        username=session['username'],
+        role=user_role(),
+        current_turn_index=current_turn_index,
+        battle_round=battle_round,
+    )
 
 @battle_bp.route('/next_turn', methods=['POST'])
 def next_turn():
