@@ -6,6 +6,7 @@ See ``docs/TTS_VLLM_OMNI_SPIKE.md`` and ``services/vllm-omni-tts/``.
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 import wave
@@ -21,6 +22,8 @@ DEFAULT_SAMPLE_RATE = 24000
 DEFAULT_MAX_NEW_TOKENS = 2048
 # Qwen3-TTS emits codec frames at 12.5 Hz (~80 ms/frame).
 QWEN3_TTS_FRAME_RATE_HZ = 12.5
+
+logger = logging.getLogger(__name__)
 
 
 def _estimate_max_new_tokens(text: str, cap: int) -> int:
@@ -61,7 +64,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
+_DEFAULT_REF_TEXT = (
+    "A steady voice for dialogue. Warm, clear, and natural, just as I always speak."
+)
+
+
 def _ref_text_for_audio(ref_audio: str) -> str:
+    # Guard against empty/path-root strings which trigger
+    # "PosixPath('.') has an empty name" when calling with_suffix().
+    if not ref_audio or not Path(ref_audio).name:
+        return _DEFAULT_REF_TEXT
     sidecar = Path(ref_audio).with_suffix(".ref.txt")
     if sidecar.is_file():
         try:
@@ -70,9 +82,7 @@ def _ref_text_for_audio(ref_audio: str) -> str:
                 return text
         except OSError:
             pass
-    return (
-        "A steady voice for dialogue. Warm, clear, and natural, just as I always speak."
-    )
+        return _DEFAULT_REF_TEXT
 
 
 @dataclass(frozen=True)
@@ -283,24 +293,166 @@ class Qwen3VLLMProvider(TTSEngine):
             return npc_uid
         return f"{prefix}{npc_uid}"
 
+    def _discover_reference_audio(
+        self,
+        npc_uid: str,
+        reference_audio: Optional[str],
+        campaign_root: Optional[str],
+        npc_type: Optional[str] = None,
+    ) -> Optional[str]:
+        """Search multiple locations for a reference audio file.
+
+        Order: explicit path -> campaign voice_samples -> templates voice_samples.
+        """
+        logger.info(
+            "[TTS] Discovering ref_audio for NPC '%s' (campaign_root=%s, npc_type=%s)",
+            npc_uid, campaign_root, npc_type,
+        )
+        # 1. Explicit path provided
+        if reference_audio and os.path.exists(reference_audio):
+            logger.info("[TTS] Found explicit ref_audio for NPC '%s': %s", npc_uid, reference_audio)
+            return reference_audio
+
+        # 2. Campaign voice_samples/<npc_uid>.wav
+        if campaign_root:
+            from webapp.tts.voice_baking import discover_baked_sample
+
+            discovered = discover_baked_sample(
+                campaign_root,
+                npc_uid,
+                npc_type=npc_type,
+            )
+            if discovered:
+                return discovered
+
+            # 2b. Campaign assets/voice_<uid>.wav (pre-voice_samples convention)
+            for pattern in [
+                Path(campaign_root) / "assets" / f"voice_{npc_uid}.wav",
+                Path(campaign_root) / "assets" / f"{npc_uid}.wav",
+            ]:
+                if pattern.is_file():
+                    return str(pattern)
+
+        # 3. Cross-campaign search: scan user_levels/*/assets/voice_<uid>.wav
+        project_root = Path(__file__).resolve().parents[4]  # natural_20.py/
+        campaigns_dir = project_root / "user_levels"
+        if campaigns_dir.is_dir():
+            for campaign_sub in sorted(campaigns_dir.iterdir()):
+                if not campaign_sub.is_dir():
+                    continue
+                for pattern in [
+                    campaign_sub / "assets" / f"voice_{npc_uid}.wav",
+                    campaign_sub / "assets" / f"{npc_uid}.wav",
+                ]:
+                    if pattern.is_file():
+                        return str(pattern)
+
+        # 4. Try templates/voice_samples/<npc_uid>.wav (bundled defaults)
+        for base in [
+            project_root / "templates",
+            project_root,
+        ]:
+            candidate = base / "voice_samples" / f"{npc_uid}.wav"
+            if candidate.is_file():
+                return str(candidate)
+
+        result = None
+        # ... (search logic above returns on success)
+        logger.warning("[TTS] No reference audio found for NPC '%s'", npc_uid)
+        return result
+
     def _ensure_registered(
         self,
         vllm_voice: str,
         reference_audio: Optional[str],
         ref_text: str,
+        npc_uid: str = "",
+        campaign_root: Optional[str] = None,
+        npc_type: Optional[str] = None,
     ) -> None:
         if vllm_voice in self._server_voices:
             return
         if not self._config.register_on_create:
             return
-        if not reference_audio or not os.path.exists(reference_audio):
-            raise RuntimeError(
-                f"Voice {vllm_voice!r} is not registered on vLLM-Omni and no "
-                f"reference_audio is available to upload"
+
+        # Try broader discovery if no valid reference_audio was provided
+        effective_ref = reference_audio
+        if not effective_ref or not os.path.exists(effective_ref):
+            effective_ref = self._discover_reference_audio(
+                npc_uid, effective_ref, campaign_root, npc_type
             )
-        self._client.register_voice(vllm_voice, reference_audio, ref_text)
-        self._server_voices.add(vllm_voice)
-        print(f"[TTS] Registered vLLM voice {vllm_voice}")
+
+        if not effective_ref or not os.path.exists(effective_ref):
+            # Graceful fallback: log warning and mark as locally known
+            # so we don't retry on every synthesis call.
+            logger.warning(
+                "[TTS] Voice %r is not registered on vLLM-Omni and no "
+                "reference_audio is available to upload for NPC %s. "
+                "TTS will fail for this NPC until a voice sample is baked "
+                "or manually registered.",
+                vllm_voice,
+                npc_uid or "(unknown)",
+            )
+            self._server_voices.add(vllm_voice)
+            return
+
+        # Resolve ref_text from the ORIGINAL audio file (before resampling)
+        # so the .ref.txt sidecar is found next to the original WAV.
+        # Re-discover the original path because the stream TTS path may pass
+        # a resampled reference_audio without the sidecar. Also re-discover
+        # when ref_text is the generic fallback (bake_sample_text) because
+        # the sidecar contains the actual audio transcript.
+        original_ref = self._discover_reference_audio(
+            npc_uid, reference_audio, campaign_root, npc_type
+        ) or effective_ref
+        if original_ref:
+            sidecar_ref = _ref_text_for_audio(original_ref)
+            if not ref_text or sidecar_ref != _DEFAULT_REF_TEXT:
+                ref_text = sidecar_ref
+                logger.info(
+                    "[TTS] _ensure_registered sidecar ref_text for NPC '%s' (audio=%s): %r",
+                    npc_uid, original_ref, ref_text,
+                )
+
+        # Resample reference audio to match the TTS engine sample rate if needed.
+        target_rate = self._config.sample_rate
+        ref_for_upload = effective_ref
+        try:
+            from webapp.tts.resample import ensure_sample_rate
+
+            resample_cache = self.cache_dir / "resampled"
+            resample_cache.mkdir(exist_ok=True)
+            ref_for_upload = ensure_sample_rate(
+                effective_ref,
+                target_rate,
+                cache_dir=str(resample_cache),
+            )
+        except ImportError:
+            logger.warning(
+                "[TTS] scipy/numpy not available — skipping reference audio "
+                "resampling (sample rate mismatch may cause audio corruption)."
+            )
+        except Exception as exc:
+            logger.warning("[TTS] Failed to resample reference audio: %s", exc)
+        if ref_for_upload != effective_ref:
+            logger.info(
+                "[TTS] Resampled reference audio %s → %s (%d Hz)",
+                effective_ref,
+                ref_for_upload,
+                target_rate,
+            )
+
+        try:
+            self._client.register_voice(vllm_voice, ref_for_upload, ref_text)
+            self._server_voices.add(vllm_voice)
+            print(f"[TTS] Registered vLLM voice {vllm_voice} (from {ref_for_upload})")
+        except Exception as exc:
+            logger.warning(
+                "[TTS] Failed to register vLLM voice %r: %s. "
+                "Will retry on next synthesis attempt.",
+                vllm_voice,
+                exc,
+            )
 
     def create_voice(
         self,
@@ -320,32 +472,57 @@ class Qwen3VLLMProvider(TTSEngine):
 
         profile = voice_metadata or {}
         campaign_root = str(profile.get("campaign_root") or "").strip() or None
-        if not reference_audio and campaign_root:
-            from webapp.tts.voice_baking import discover_baked_sample
+        npc_type = str(profile.get("npc_type") or "").strip() or None
 
-            reference_audio = discover_baked_sample(
-                campaign_root,
-                npc_uid,
-                npc_type=str(profile.get("npc_type") or "").strip() or None,
+        # Use broader discovery for reference audio
+        discovered_ref = self._discover_reference_audio(
+            npc_uid, reference_audio, campaign_root, npc_type
+        )
+        effective_ref = discovered_ref or reference_audio
+
+        # Resolve ref_text: .ref.txt sidecar > baked text > profile ref_text > default
+        # The sidecar (.ref.txt) is the actual transcript of the voice WAV and MUST
+        # take priority — using the NPC voice prompt as ref_text produces garbled TTS
+        # because the phonemes don't match the audio.
+        ref_text = ""
+        _DEFAULT_REF_TEXT = (
+            "A steady voice for dialogue. Warm, clear, and natural, just as I always speak."
+        )
+        if effective_ref and os.path.exists(effective_ref):
+            ref_text = _ref_text_for_audio(effective_ref)
+            logger.info(
+                "[TTS] Sidecar ref_text for NPC '%s' (audio=%s): %r",
+                npc_uid, effective_ref, ref_text,
             )
-
-        ref_text = str(profile.get("ref_text") or "").strip()
-        if reference_audio and os.path.exists(reference_audio) and campaign_root:
+        if campaign_root and (not ref_text or ref_text == _DEFAULT_REF_TEXT):
             from webapp.tts.voice_baking import load_baked_ref_text
 
-            ref_text = load_baked_ref_text(campaign_root, npc_uid) or ref_text
-        if not ref_text and reference_audio:
-            ref_text = _ref_text_for_audio(reference_audio)
+            baked = load_baked_ref_text(campaign_root, npc_uid)
+            if baked:
+                logger.info(
+                    "[TTS] Using baked ref_text for NPC '%s': %r",
+                    npc_uid, baked,
+                )
+                ref_text = baked
+        if not ref_text:
+            ref_text = str(profile.get("ref_text") or "").strip()
 
         vllm_voice = self._vllm_voice_name(npc_uid)
-        self._ensure_registered(vllm_voice, reference_audio, ref_text)
+        self._ensure_registered(
+            vllm_voice,
+            effective_ref,
+            ref_text,
+            npc_uid=npc_uid,
+            campaign_root=campaign_root,
+            npc_type=npc_type,
+        )
 
-        se_path = reference_audio or str(self.cache_dir / f"vllm_ref_{npc_uid}.wav")
+        se_path = effective_ref or str(self.cache_dir / f"vllm_ref_{npc_uid}.wav")
         extra = {
             "vllm_voice_name": vllm_voice,
             "language": _resolve_language(language or profile.get("language")),
             "voice_prompt": voice_prompt,
-            "reference_audio": reference_audio,
+            "reference_audio": effective_ref,
             "ref_text": ref_text,
             "campaign_root": campaign_root,
             "resolved_strategy": "clone",
@@ -356,7 +533,7 @@ class Qwen3VLLMProvider(TTSEngine):
             se_path=se_path,
             style="calm",
             prompt_description=voice_prompt,
-            reference_audio=reference_audio,
+            reference_audio=effective_ref,
             extra_metadata=extra,
         )
         self._voice_registry[npc_uid] = config
@@ -383,13 +560,27 @@ class Qwen3VLLMProvider(TTSEngine):
             raise RuntimeError("vLLM-Omni TTS sidecar is not ready")
         if npc_uid not in self._voice_registry:
             raise ValueError(f"No voice registered for NPC '{npc_uid}'")
-
+        vllm_voice, language = self._voice_request(npc_uid)
+        if vllm_voice not in self._server_voices:
+            logger.warning(
+                "[TTS] Refusing synthesis for NPC '%s' (voice '%s'): "
+                "not registered on vLLM-Omni server (no ref_audio). "
+                "Bake a voice sample or register the voice manually.",
+                npc_uid,
+                vllm_voice,
+            )
+            raise ValueError(
+                f"Voice '{vllm_voice}' is not registered on the vLLM-Omni server "
+                f"(NPC '{npc_uid}'). Synthesis will fail without a reference audio sample."
+            )
+        logger.info(
+            "[TTS] Synthesizing for NPC '%s' (voice='%s', lang='%s', chars=%d)",
+            npc_uid, vllm_voice, language, len(text),
+        )
         if output_path is None:
             output_path = str(
                 self.cache_dir / f"qwen3_vllm_{npc_uid}_{uuid.uuid4().hex[:8]}.wav"
             )
-
-        vllm_voice, language = self._voice_request(npc_uid)
 
         audio_bytes = self._client.synthesize_wav(text, vllm_voice, language)
         Path(output_path).write_bytes(audio_bytes)
@@ -452,7 +643,23 @@ class Qwen3VLLMProvider(TTSEngine):
             raise RuntimeError("vLLM-Omni TTS sidecar is not ready")
         if npc_uid not in self._voice_registry:
             raise ValueError(f"No voice registered for NPC '{npc_uid}'")
-
+        vllm_voice, language = self._voice_request(npc_uid)
+        if vllm_voice not in self._server_voices:
+            logger.warning(
+                "[TTS] Refusing stream synthesis for NPC '%s' (voice '%s'): "
+                "not registered on vLLM-Omni server (no ref_audio). "
+                "Bake a voice sample or register the voice manually.",
+                npc_uid,
+                vllm_voice,
+            )
+            raise ValueError(
+                f"Voice '{vllm_voice}' is not registered on the vLLM-Omni server "
+                f"(NPC '{npc_uid}'). Synthesis will fail without a reference audio sample."
+            )
+        logger.info(
+            "[TTS] Stream synthesizing for NPC '%s' (voice='%s', lang='%s', chars=%d, live=%s)",
+            npc_uid, vllm_voice, language, len(text), self._config.stream_live,
+        )
         if not self._config.stream_live:
             yield from self._generate_stream_buffered(
                 text,
@@ -496,7 +703,14 @@ class Qwen3VLLMProvider(TTSEngine):
             ref_text = str(meta.get("ref_text") or "")
             if ref_audio and ref_text:
                 try:
-                    self._ensure_registered(vllm_voice, ref_audio, ref_text)
+                    campaign_root_meta = str(meta.get("campaign_root") or "").strip() or None
+                    self._ensure_registered(
+                        vllm_voice,
+                        ref_audio,
+                        ref_text,
+                        npc_uid=npc_uid,
+                        campaign_root=campaign_root_meta,
+                    )
                 except Exception as exc:
                     print(f"[TTS] vLLM voice restore skipped for {npc_uid}: {exc}")
         return config
@@ -532,8 +746,16 @@ class MockQwen3VLLMProvider(Qwen3VLLMProvider):
     def is_ready(self) -> bool:
         return True
 
-    def _ensure_registered(self, vllm_voice: str, reference_audio: Optional[str], ref_text: str) -> None:
-        del reference_audio, ref_text
+    def _ensure_registered(
+        self,
+        vllm_voice: str,
+        reference_audio: Optional[str],
+        ref_text: str,
+        npc_uid: str = "",
+        campaign_root: Optional[str] = None,
+        npc_type: Optional[str] = None,
+    ) -> None:
+        del reference_audio, ref_text, npc_uid, campaign_root, npc_type
         self._server_voices.add(vllm_voice)
 
     def create_voice(

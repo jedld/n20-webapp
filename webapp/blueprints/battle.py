@@ -1055,7 +1055,10 @@ def action():
                 # When this PC isn't a combatant in an active battle, treat
                 # the move as exploration and allow paths longer than the
                 # entity's standard speed so the user can traverse the map.
+                # Still refuse movement when speed is currently 0.
                 if not battle or entity not in getattr(battle, 'entities', {}):
+                    if entity.speed() <= 0:
+                        return jsonify(error='Cannot move while speed is 0'), 400
                     action.unlimited_movement = True
                 # store jump indices for backend computation if provided.
                 # The web UI sends [takeoff_index, landing_index] where
@@ -1518,6 +1521,21 @@ def action():
                             action_info['valid_items'] = param_details['items']
                             action_info['param'] = action['param']
                             return jsonify(action_info)
+                    elif param_details['type'] == 'select_weapon':
+                        # Handle weapon selection for spells like Booming Blade / Green-Flame Blade
+                        if hasattr(entity, 'attack_options'):
+                            usable_weapons = entity.attack_options(battle)
+                        else:
+                            usable_weapons = entity.equipped_weapons(get_game_session())
+                        weapon_name = opts.get('weapon')
+                        if weapon_name:
+                            action = action['next'](weapon_name)
+                            continue
+                        action_info['action'] = action_type
+                        action_info['type'] = 'select_weapon'
+                        action_info['valid_weapons'] = usable_weapons
+                        action_info['param'] = action['param']
+                        return jsonify(action_info)
                     else:
                         raise ValueError(f"Unknown action type {action_type} {param_details['type']}")
                 else:

@@ -39,6 +39,7 @@ from flask import (
 
 from natural20.ai.path_compute import PathCompute
 from natural20.ai.pathfinding_cost_map import build_pathfinding_snapshot
+from natural20.utils.movement import Movement, compute_actual_moves
 from natural20.player_character import PlayerCharacter
 from natural20.utils.movement import Movement
 from webapp.pov_utils import build_portrait_render_context, dm_pov_portrait_entities
@@ -91,6 +92,40 @@ _COST_MAP_SNAPSHOT_CACHE = OrderedDict()
 _COST_MAP_SNAPSHOT_CACHE_LIMIT = 64
 _COST_MAP_CACHE_LOCK = threading.Lock()
 _COST_MAP_INFLIGHT = {}
+
+
+def _exploration_move_budget_squares(battle_map) -> int:
+    """Grid-square budget used for out-of-combat MoveAction / path cost."""
+    try:
+        width, height = battle_map.size
+    except Exception:
+        return 64
+    return int((int(width) + int(height)) * 4)
+
+
+def _path_response_movement_cost(battle_map, entity, path, battle, *, can_move: bool, exploration: bool):
+    """Return Movement cost accounting that matches pathfinding + commit rules.
+
+    In combat, budget is remaining battle movement. In exploration, A* and
+    MoveAction are uncapped (aside from speed==0), so cost accounting must use
+    the same large budget — otherwise long previews report budget<0 and the UI
+    drops a path the server will still execute.
+    """
+    if not path:
+        return Movement.empty()
+    if not can_move:
+        return Movement([], 0, [], [], [], [], [], 0, 0, 'cannot_move')
+    if exploration or not (battle and entity in getattr(battle, 'entities', {})):
+        budget = _exploration_move_budget_squares(battle_map)
+        return compute_actual_moves(
+            entity,
+            path,
+            battle_map,
+            battle,
+            budget,
+            test_placement=False,
+        )
+    return battle_map.movement_cost(entity, path, battle=battle)
 
 # Memoize a per-(map, entity, battle) difficult-terrain lookup.
 _DIFFICULT_TERRAIN_CACHE = {}
@@ -677,12 +712,17 @@ def compute_path():
         return jsonify(cached)
     _timing_log(f"path:cache_miss={(time.perf_counter()-_t_cache)*1000:.1f}ms")
 
-    # Step 3: Movement budget
+    # Step 3: Movement budget and can_move flag
     _t_movement = time.perf_counter()
     if battle and entity in getattr(battle, 'entities', {}):
         available_movement = entity.available_movement(battle)
+        can_move = not entity.unconscious() and available_movement > 0
     else:
-        available_movement = None
+        # Exploration: uncapped path budget when able to move, but speed 0
+        # (shell defense, restrained, etc.) must still forbid movement.
+        speed = entity.speed() if hasattr(entity, 'speed') else 0
+        can_move = not entity.unconscious() and speed > 0
+        available_movement = None if can_move else 0
     _timing_log(f"path:movement={(time.perf_counter()-_t_movement)*1000:.1f}ms")
 
     # Step 4: PathCompute construction
@@ -776,7 +816,15 @@ def compute_path():
 
     # Step 9: Cost, placeable, terrain
     _t_post = time.perf_counter()
-    cost = battle_map.movement_cost(entity, full_path)
+    exploration = not (battle and entity in getattr(battle, 'entities', {}))
+    cost = _path_response_movement_cost(
+        battle_map,
+        entity,
+        full_path,
+        battle,
+        can_move=can_move,
+        exploration=exploration,
+    )
     placeable = battle_map.placeable(entity, dest[0], dest[1], battle, False)
 
     terrain_info = []
@@ -795,6 +843,7 @@ def compute_path():
         "cost": cost.to_dict(),
         "placeable": placeable,
         "terrain_info": terrain_info,
+        "can_move": can_move,
     }
 
     proc_cache[cache_key] = path_data
@@ -834,8 +883,11 @@ def path_cost_map():
 
     if battle and entity in getattr(battle, 'entities', {}):
         available_movement = entity.available_movement(battle)
+        can_move = not entity.unconscious() and available_movement > 0
     else:
-        available_movement = None
+        speed = entity.speed() if hasattr(entity, 'speed') else 0
+        can_move = not entity.unconscious() and speed > 0
+        available_movement = None if can_move else 0
 
     try:
         render_epoch = int(current_game.render_epoch_for_user(username))
@@ -953,6 +1005,7 @@ def path_cost_map():
             'snapshot': snapshot,
             'available_movement': available_movement,
             'feet_per_grid': battle_map.feet_per_grid,
+            'can_move': can_move,
         }
         with _COST_MAP_CACHE_LOCK:
             _COST_MAP_SNAPSHOT_CACHE[cache_key] = payload

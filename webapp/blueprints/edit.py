@@ -17,6 +17,8 @@ from natural20.map_editor import (
     move_map_item,
     place_map_layer_item,
     place_map_terrain,
+    place_npc_in_map,
+    place_player_in_map,
     remove_map_annotation,
     remove_map_item,
     save_map_annotation,
@@ -82,9 +84,9 @@ def edit_overlay():
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
-    overlay = build_edit_overlay(battle_map.properties)
-    overlay = enrich_edit_overlay_with_runtime_uids(battle_map, overlay)
     game_session = current_game.game_session
+    overlay = build_edit_overlay(battle_map.properties, session=game_session)
+    overlay = enrich_edit_overlay_with_runtime_uids(battle_map, overlay)
     editable_types = editable_object_types(game_session)
     for collection in (overlay.get("items") or [], overlay.get("terrain") or []):
         for item in collection:
@@ -599,6 +601,77 @@ def edit_layer_place():
 
     if placed.get("placement_kind") != "object":
         apply_terrain_placement_to_live_map(target_map, current_game.game_session, map_name, placed)
+    current_game.reload_map_by_name(map_name)
+    get_socketio().emit("message", {"type": "refresh_map"})
+    return jsonify({"success": True, "map": map_name, "placement": placed})
+
+
+@edit_bp.route("/edit/place_entity", methods=["POST"])
+def edit_place_entity():
+    """Place an NPC or PC into the campaign map YAML (edit mode persistence).
+
+    Accepts either:
+      - { npc_type: 'goblin', x, y } for NPCs
+      - { entity_uid: 'some_uid', x, y } for player characters
+    """
+    denied = _require_edit_dm()
+    if denied:
+        return denied
+
+    if not request.is_json:
+        return jsonify({"success": False, "error": "Request must be JSON"}), 400
+
+    data = request.get_json() or {}
+    npc_type = data.get("npc_type")
+    entity_uid = data.get("entity_uid")
+
+    if not npc_type and not entity_uid:
+        return jsonify({"success": False, "error": "npc_type or entity_uid is required"}), 400
+
+    try:
+        x = int(data["x"])
+        y = int(data["y"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"success": False, "error": "x and y coordinates are required"}), 400
+
+    current_game = get_current_game()
+    battle_map = current_game.get_map_for_user(session["username"])
+    map_name = _resolve_edit_map_name(current_game, battle_map, data)
+    target_map = _edit_map_object(current_game, map_name)
+
+    if x < 0 or y < 0 or x >= target_map.size[0] or y >= target_map.size[1]:
+        return jsonify(
+            {
+                "success": False,
+                "error": f"Coordinates out of bounds for {map_name} ({target_map.size[0]}x{target_map.size[1]})",
+            }
+        ), 400
+
+    try:
+        if npc_type:
+            placed = place_npc_in_map(
+                current_game.game_session,
+                map_name,
+                npc_type=str(npc_type),
+                x=x,
+                y=y,
+                overrides=data.get("overrides"),
+            )
+        elif entity_uid:
+            placed = place_player_in_map(
+                current_game.game_session,
+                map_name,
+                entity_uid=str(entity_uid),
+                x=x,
+                y=y,
+            )
+        else:
+            return jsonify({"success": False, "error": "npc_type or entity_uid is required"}), 400
+    except (KeyError, ValueError) as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
+
     current_game.reload_map_by_name(map_name)
     get_socketio().emit("message", {"type": "refresh_map"})
     return jsonify({"success": True, "map": map_name, "placement": placed})

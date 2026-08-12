@@ -1570,7 +1570,9 @@ def import_dndbeyond_character():
   next_url = '/character_selection' if 'dm' not in user_role() else '/'
   if builder_only_mode():
     next_url = url_for('character_builder')
-  redirect_to = url_for('character_editor', character_name=safe_name, next=next_url)
+  # Match selectable/entity_uid keys (e.g. ddb-123), not YAML display basename.
+  editor_key = str(pc.get('entity_uid') or entity_uid or safe_name).strip() or safe_name
+  redirect_to = url_for('character_editor', character_name=editor_key, next=next_url)
 
   return jsonify(
       status='ok',
@@ -2481,48 +2483,7 @@ def focus():
     socketio.emit('message', {'type': 'focus', 'message': {'x': x, 'y': y}})
     return jsonify(status='ok')
 
-@app.route('/switch_map', methods=['POST'])
-def switch_map():
-    global current_game
-    map_name = request.form['map']
-    current_game.switch_map_for_user(session['username'], map_name)
-    battle_map = current_game.get_map_for_user(session['username'])
-    background = current_game.get_background_image_for_user(session['username'])
-    map_width, map_height = battle_map.size
-    tiles_dimension_height = map_height * TILE_PX
-    tiles_dimension_width = map_width * TILE_PX
-    # Check for a map-default effect defined in the map properties
-    map_default = None
-    map_defaults = []
-    try:
-        map_defaults = map_default_effect_payloads(battle_map)
-        map_default = map_defaults[0] if map_defaults else None
-    except Exception:
-        map_default = None
-
-    # Determine whether a DM-initiated effect is currently active for this game
-    dm_active = False
-    try:
-        game_key = getattr(current_game.game_session, 'root_path', None) or getattr(game_session, 'root_path', None) or LEVEL
-        dm_active = has_enabled_effect_payloads(active_effects.get(game_key, {}).values())
-        # Include per-map overrides
-        try:
-            dm_active = dm_active or has_enabled_effect_payloads(active_effects_map.get(game_key, {}).get(map_name, {}).values())
-        except Exception:
-            pass
-    except Exception:
-        dm_active = False
-
-    return jsonify(background=f"assets/{background}",
-                   name=map_name,
-                   image_offset_px=battle_map.image_offset_px,
-                   height=tiles_dimension_height,
-                   width=tiles_dimension_width,
-                   map_default_effect=map_default,
-                   map_default_effects=map_defaults,
-                   dm_active=dm_active,
-                   narration=battle_map.narration(),
-                   special_effects_enabled=special_effects_enabled())
+# /switch_map is implemented in navigation_bp (stack-aware backgrounds and dimensions).
 
 #                 // Fetch combat log messages from the server
 # $.get('/api/combat-log', function(data) {
@@ -2608,8 +2569,9 @@ def compute_path():
         available_movement = entity.available_movement(battle)
     else:
         # Out-of-combat exploration: don't cap path length so users can
-        # plan long traversal routes through the web UI.
-        available_movement = None
+        # plan long traversal routes through the web UI — unless speed is 0.
+        speed = entity.speed() if hasattr(entity, 'speed') else 0
+        available_movement = None if speed > 0 else 0
 
     path_compute = PathCompute(battle, battle_map, entity)
     path = path_compute.compute_path(int(source['x']),
@@ -2633,7 +2595,24 @@ def compute_path():
     else:
         full_path = path
 
-    cost = battle_map.movement_cost(entity, full_path)
+    # Keep exploration cost accounting aligned with MoveAction uncapped
+    # budgets (and the navigation blueprint). Using combat speed() here makes
+    # long hover previews report budget<0 even though commit will walk them.
+    from webapp.blueprints.navigation import _path_response_movement_cost
+    exploration = not (battle and entity in getattr(battle, 'entities', {}))
+    if exploration:
+        speed = entity.speed() if hasattr(entity, 'speed') else 0
+        can_move = not entity.unconscious() and speed > 0
+    else:
+        can_move = not entity.unconscious() and available_movement > 0
+    cost = _path_response_movement_cost(
+        battle_map,
+        entity,
+        full_path,
+        battle,
+        can_move=can_move,
+        exploration=exploration,
+    )
     placeable = battle_map.placeable(entity, dest[0], dest[1], battle, False)
 
     # Build terrain info via a per-(map, entity, battle) memoized helper to
@@ -2653,6 +2632,7 @@ def compute_path():
         "cost": cost.to_dict(),
         "placeable": placeable,
         "terrain_info": terrain_info,
+        "can_move": can_move,
     }
 
     proc_cache[cache_key] = path_data
@@ -2681,7 +2661,8 @@ def path_cost_map():
     if battle and entity in getattr(battle, 'entities', {}):
         available_movement = entity.available_movement(battle)
     else:
-        available_movement = None
+        speed = entity.speed() if hasattr(entity, 'speed') else 0
+        available_movement = None if speed > 0 else 0
 
     snapshot = build_pathfinding_snapshot(
         battle_map,
@@ -3466,58 +3447,7 @@ def update_npc():
     except Exception as e:
         logger.error(f"Error updating NPC: {str(e)}")
         return jsonify(error=f'Failed to update NPC: {str(e)}'), 500
-@app.route('/update')
-def update():
-    global current_game, logger
-
-    x = int(request.args.get('x'))
-    y = int(request.args.get('y'))
-    entity_uid = request.args.get('entity_uid')
-    is_pov = request.args.get('pov', 'false') == 'true'
-    battle_map = current_game.get_map_for_user(session['username'])
-    battle = current_game.get_current_battle()
-    renderer = JsonRenderer(battle_map, battle, padding=MAP_PADDING)
-
-    # Get entity from coordinates or UID
-    entity = battle_map.entity_by_uid(entity_uid) if entity_uid else battle_map.entity_at(x, y)
-
-    # Get current POV entity
-    pov_entity = current_game.get_pov_entity_for_user(session['username'])
-    _pov_entities = render_pov_entities()
-
-    # Handle POV changes
-    if entity and ('dm' in user_role() or entity in entities_controlled_by(session['username'], battle_map)):
-        current_game.set_pov_entity_for_user(session['username'], entity)
-        pov_entity = entity
-        _pov_entities = render_pov_entities()
-    elif is_pov and not entity:
-        current_game.set_pov_entity_for_user(session['username'], None)
-        pov_entity = None
-        _pov_entities = render_pov_entities()
-
-    if 'dm' not in user_role() and pov_entity is None and (_pov_entities is None or len(_pov_entities) == 0):
-        user_entities = entities_controlled_by(session['username'], battle_map)
-        _pov_entities = user_entities if user_entities else []
-
-    logger.debug(f"entity: {entity}, pov_entity: {pov_entity}, _pov_entities: {_pov_entities}")
-    _t_render = time.perf_counter()
-    my_2d_array = [renderer.render(entity_pov=_pov_entities)]
-    _t_after_render = time.perf_counter()
-    response = render_template('map.html', 
-                         pov_entity=pov_entity, 
-                         tiles=my_2d_array, 
-                         tile_size_px=TILE_PX, 
-                         random=random, 
-                         is_setup=(request.args.get('is_setup') == 'true'),
-                         current_map_name=battle_map.name,
-                         read_notes=current_game.read_notes)
-    _t_after_tpl = time.perf_counter()
-    resp = make_response(response)
-    resp.headers['Server-Timing'] = (
-        f"render;dur={(_t_after_render - _t_render) * 1000:.1f}, "
-        f"template;dur={(_t_after_tpl - _t_after_render) * 1000:.1f}"
-    )
-    return resp
+# /update is implemented in navigation_bp (stack layers, render cache, POV rules).
 
 @app.route('/mark_note_read', methods=['POST'])
 def mark_note_read():
@@ -3663,6 +3593,12 @@ def action_type_to_class(action_type):
         return RecklessAttackAction
     elif action_type == 'ReadyAction':
         return ReadyAction
+    elif action_type == 'ShellDefenseAction':
+        from natural20.actions.shell_defense_action import ShellDefenseAction
+        return ShellDefenseAction
+    elif action_type == 'EmergenceAction':
+        from natural20.actions.shell_defense_action import EmergenceAction
+        return EmergenceAction
     else:
         raise ValueError(f"Unknown action type {action_type}")
 
@@ -4016,7 +3952,10 @@ def action():
                 # When this PC isn't a combatant in an active battle, treat
                 # the move as exploration and allow paths longer than the
                 # entity's standard speed so the user can traverse the map.
+                # Still refuse movement when speed is currently 0.
                 if not battle or entity not in getattr(battle, 'entities', {}):
+                    if entity.speed() <= 0:
+                        return jsonify(error='Cannot move while speed is 0'), 400
                     action.unlimited_movement = True
                 # store jump indices for backend computation if provided.
                 # The web UI sends [takeoff_index, landing_index] where

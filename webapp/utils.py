@@ -2086,19 +2086,77 @@ class GameManagement:
         except Exception as e:
             return f"Error executing command: {str(e)}"
 
-    def increment_game_time(self, player_character: PlayerCharacter):
-        # Update the game time for the player character
+    def increment_game_time(self, player_character: PlayerCharacter, seconds: int = 6):
+        """Advance a PC's exploration watermark and, if it leads, world time.
+
+        Each player character tracks personal exploration time. Global
+        ``Session.game_time`` advances by the delta whenever the highest
+        watermark increases (so lagged PCs do not rewind the world clock).
+        """
+        try:
+            seconds = int(seconds or 0)
+        except (TypeError, ValueError):
+            seconds = 0
+        if seconds <= 0 or player_character is None:
+            return
+
         if player_character not in self.player_character_game_times:
             self.player_character_game_times[player_character] = 0
-        self.player_character_game_times[player_character] += 6
+        self.player_character_game_times[player_character] += seconds
 
         max_player_time = max(self.player_character_game_times.values(), default=0)
 
         if max_player_time > self.previous_time:
+            delta = max_player_time - self.previous_time
             self.previous_time = max_player_time
-            self.game_session.increment_game_time()
+            self.game_session.increment_game_time(delta)
             if not self.get_current_battle():
                 self._tick_exploration_environment()
+
+    @staticmethod
+    def movement_travel_time_seconds(entity, distance_ft) -> int:
+        """Return in-game seconds for traveling ``distance_ft`` at entity speed.
+
+        Uses ``(distance / speed) * 6`` (one combat round = 6 seconds for a
+        full speed budget). Returns 0 when distance or speed is non-positive.
+        """
+        try:
+            distance = float(distance_ft or 0)
+        except (TypeError, ValueError):
+            distance = 0.0
+        try:
+            speed = float(entity.speed() if entity is not None else 0)
+        except Exception:
+            speed = 0.0
+        if distance <= 0 or speed <= 0:
+            return 0
+        return max(0, int(round((distance / speed) * 6.0)))
+
+    @staticmethod
+    def move_action_distance_ft(action) -> float:
+        """Estimate feet traveled by a resolved ``MoveAction``."""
+        total_squares = 0.0
+        feet_per_grid = 5.0
+        for item in list(getattr(action, 'result', None) or []):
+            if not isinstance(item, dict) or item.get('type') != 'move':
+                continue
+            map_obj = item.get('map')
+            if map_obj is not None:
+                try:
+                    feet_per_grid = float(getattr(map_obj, 'feet_per_grid', 5) or 5)
+                except (TypeError, ValueError):
+                    feet_per_grid = 5.0
+            cost = item.get('move_cost')
+            if cost is not None:
+                try:
+                    total_squares += max(0.0, float(cost))
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            path = item.get('path') or []
+            if isinstance(path, (list, tuple)) and len(path) > 1:
+                total_squares += float(len(path) - 1)
+        return total_squares * feet_per_grid
 
     def _tick_exploration_environment(self):
         if self.get_current_battle() is not None:
@@ -2287,7 +2345,13 @@ class GameManagement:
                             action.result.extend(other_results)
                 # handle game time for out of battle actions
                 if isinstance(action.source, PlayerCharacter):
-                    self.increment_game_time(action.source)
+                    from natural20.actions.move_action import MoveAction
+                    if isinstance(action, MoveAction):
+                        distance_ft = self.move_action_distance_ft(action)
+                        seconds = self.movement_travel_time_seconds(action.source, distance_ft)
+                        self.increment_game_time(action.source, seconds=seconds)
+                    else:
+                        self.increment_game_time(action.source)
                 # Fast-path: skip imports and reaction processing for irrelevant action types.
                 # Each reaction module checks the action type internally, but the import
                 # overhead and function entry cost adds up.  Guard with a quick name check.

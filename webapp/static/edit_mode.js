@@ -1083,8 +1083,12 @@
           if (typeof callback === 'function') {
             callback();
           }
-          if (isEditMode() && !forceFullRefresh) {
-            scheduleOverlayReload(400);
+          if (isEditMode()) {
+            // Tile refresh replaces tile DOM and wipes edit overlay layers;
+            // always re-fetch overlay data after any refresh (including
+            // forceFullRefresh — that path skips scheduleOverlayReload here
+            // but still needs a follow-up load once tiles are mounted).
+            scheduleOverlayReload(forceFullRefresh ? 0 : 400);
           }
         };
         return originalRefresh.call(

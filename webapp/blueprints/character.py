@@ -4,6 +4,7 @@ Extracted from webapp/app.py.
 """
 import os
 import re
+from pathlib import Path
 
 import yaml
 from flask import Blueprint, request, jsonify, session, redirect, url_for, render_template
@@ -165,6 +166,72 @@ def list_prebuilt_character_images():
                 'url': url_for('static', filename=f'assets/prebuild_character/{name}'),
             })
     return jsonify(images=items)
+
+
+# Directories for class/race background images
+CLASS_BG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    'static',
+    'assets',
+    'class_backgrounds',
+)
+RACE_BG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    'static',
+    'assets',
+    'race_backgrounds',
+)
+COMBO_BG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    'static',
+    'assets',
+    'class_race_backgrounds',
+)
+
+
+@character_bp.route('/character_builder/class_backgrounds', methods=['GET'])
+def list_class_backgrounds():
+    """Return available class background images for the character builder."""
+    if not logged_in():
+        return jsonify(error='Not logged in'), 401
+    items = {}
+    if os.path.isdir(CLASS_BG_DIR):
+        for name in sorted(os.listdir(CLASS_BG_DIR)):
+            if not name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                continue
+            class_name = Path(name).stem
+            items[class_name] = url_for('static', filename=f'assets/class_backgrounds/{name}')
+    return jsonify(backgrounds=items)
+
+
+@character_bp.route('/character_builder/race_backgrounds', methods=['GET'])
+def list_race_backgrounds():
+    """Return available race background images for the character builder."""
+    if not logged_in():
+        return jsonify(error='Not logged in'), 401
+    items = {}
+    if os.path.isdir(RACE_BG_DIR):
+        for name in sorted(os.listdir(RACE_BG_DIR)):
+            if not name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                continue
+            race_name = Path(name).stem
+            items[race_name] = url_for('static', filename=f'assets/race_backgrounds/{name}')
+    return jsonify(backgrounds=items)
+
+
+@character_bp.route('/character_builder/combo_backgrounds', methods=['GET'])
+def list_combo_backgrounds():
+    """Return available class+race combo background images."""
+    if not logged_in():
+        return jsonify(error='Not logged in'), 401
+    items = {}
+    if os.path.isdir(COMBO_BG_DIR):
+        for name in sorted(os.listdir(COMBO_BG_DIR)):
+            if not name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                continue
+            combo_key = Path(name).stem  # e.g. "fighter_human"
+            items[combo_key] = url_for('static', filename=f'assets/class_race_backgrounds/{name}')
+    return jsonify(backgrounds=items)
 
 
 @character_bp.route('/character_builder/items', methods=['GET'])
@@ -678,7 +745,10 @@ def import_dndbeyond_character():
   next_url = '/character_selection' if 'dm' not in user_role() else '/'
   if get_builder_only_mode():
     next_url = url_for('character.character_builder')
-  redirect_to = url_for('character.character_editor', character_name=safe_name, next=next_url)
+  # Editor / selection auth keys off selectable name + entity_uid (e.g. ddb-123),
+  # not the display-name YAML basename (e.g. Oogway.yml).
+  editor_key = str(pc.get('entity_uid') or entity_uid or safe_name).strip() or safe_name
+  redirect_to = url_for('character.character_editor', character_name=editor_key, next=next_url)
 
   return jsonify(
       status='ok',

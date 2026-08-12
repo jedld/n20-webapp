@@ -111,8 +111,29 @@ def register_campaign_voices(
                 skipped += 1
                 continue
             ref_text = _ref_text(wav_path)
+            # Resample to target sample rate if needed
+            ref_for_upload = str(wav_path)
             try:
-                with wav_path.open("rb") as audio_file:
+                from webapp.tts.resample import ensure_sample_rate
+
+                resample_cache = campaign_path / "assets" / "voice_samples" / "resampled"
+                resample_cache.mkdir(parents=True, exist_ok=True)
+                ref_for_upload = ensure_sample_rate(
+                    str(wav_path),
+                    config.sample_rate,
+                    cache_dir=str(resample_cache),
+                )
+            except ImportError:
+                logger.warning(
+                    "[TTS] scipy/numpy not available — skipping resampling "
+                    "for %s (sample rate mismatch may cause issues)",
+                    voice_name,
+                )
+            except Exception as exc:
+                logger.warning("[TTS] Failed to resample %s: %s", voice_name, exc)
+            try:
+                upload_path = Path(ref_for_upload)
+                with upload_path.open("rb") as audio_file:
                     response = client.post(
                         f"{resolved_base}/v1/audio/voices",
                         data={
@@ -121,13 +142,13 @@ def register_campaign_voices(
                             "ref_text": ref_text,
                         },
                         files={
-                            "audio_sample": (wav_path.name, audio_file, "audio/wav"),
+                            "audio_sample": (upload_path.name, audio_file, "audio/wav"),
                         },
                     )
                 response.raise_for_status()
                 uploaded += 1
                 existing.add(voice_name)
-                logger.debug("[TTS] Registered vLLM voice %s", voice_name)
+                logger.debug("[TTS] Registered vLLM voice %s (from %s)", voice_name, upload_path)
             except httpx.HTTPError as exc:
                 failed += 1
                 logger.warning("[TTS] Failed to register vLLM voice %s: %s", voice_name, exc)

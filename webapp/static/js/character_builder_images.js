@@ -416,4 +416,101 @@
 
   // Bootstrap: load gallery if logged-in / endpoint accessible.
   loadPrebuiltGallery();
+
+  // ---------------- Class/Race Backgrounds ----------------
+  // Background images for class/race selection in character builder.
+  (function(){
+    const overlay   = document.getElementById('builderBgOverlay');
+    const label     = document.getElementById('builderBgLabel');
+    const klassSel  = document.getElementById('klass');
+    const raceSel   = document.getElementById('race');
+    if(!overlay || !klassSel || !raceSel) return;
+
+    let classBgMap  = {};
+    let raceBgMap   = {};
+    let comboBgMap  = {};
+    let loadedClass = false;
+    let loadedRace  = false;
+    let loadedCombo = false;
+
+    function setBg(url, text){
+      if(url){
+        overlay.style.display = '';
+        overlay.style.backgroundImage = `url('${url}')`;
+        overlay.style.opacity = '0.18';
+        if(label){ label.textContent = text || ''; label.classList.add('visible'); }
+      } else {
+        overlay.style.display = 'none';
+        if(label){ label.classList.remove('visible'); }
+      }
+    }
+
+    function resolveComboBg(){
+      const c = klassSel.value;
+      const r = raceSel.value;
+      if(c && r){
+        const key = `${c}_${r}`;
+        if(comboBgMap[key]){
+          setBg(comboBgMap[key], `${r} ${c}`);
+          return;
+        }
+      }
+      // Fallback to class or race
+      if(classBgMap[c]){
+        setBg(classBgMap[c], c.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()));
+      } else if(raceBgMap[r]){
+        setBg(raceBgMap[r], r.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()));
+      } else {
+        setBg(null, '');
+      }
+    }
+
+    function ensureLoaded(){
+      if(!loadedClass){
+        loadedClass = true;
+        fetch('/character_builder/class_backgrounds', {credentials: 'same-origin'})
+          .then(r => r.ok ? r.json() : Promise.reject(r.status))
+          .then(data => { classBgMap = (data && data.backgrounds) || {}; resolveComboBg(); })
+          .catch(() => { classBgMap = {}; loadedClass = false; });
+      }
+      if(!loadedRace){
+        loadedRace = true;
+        fetch('/character_builder/race_backgrounds', {credentials: 'same-origin'})
+          .then(r => r.ok ? r.json() : Promise.reject(r.status))
+          .then(data => { raceBgMap = (data && data.backgrounds) || {}; resolveComboBg(); })
+          .catch(() => { raceBgMap = {}; loadedRace = false; });
+      }
+      if(!loadedCombo){
+        loadedCombo = true;
+        fetch('/character_builder/combo_backgrounds', {credentials: 'same-origin'})
+          .then(r => r.ok ? r.json() : Promise.reject(r.status))
+          .then(data => { comboBgMap = (data && data.backgrounds) || {}; resolveComboBg(); })
+          .catch(() => { comboBgMap = {}; loadedCombo = false; });
+      }
+    }
+
+    // Try loading backgrounds; if endpoints fail (not logged in), defer.
+    ensureLoaded();
+
+    // Re-check on class/race change
+    klassSel.addEventListener('change', resolveComboBg);
+    raceSel.addEventListener('change', function(){
+      // Ensure race backgrounds are loaded when race is selected
+      if(!loadedRace){
+        loadedRace = true;
+        fetch('/character_builder/race_backgrounds', {credentials: 'same-origin'})
+          .then(r => r.ok ? r.json() : Promise.reject(r.status))
+          .then(data => { raceBgMap = (data && data.backgrounds) || {}; resolveComboBg(); })
+          .catch(() => { raceBgMap = {}; loadedRace = false; });
+      } else {
+        resolveComboBg();
+      }
+    });
+
+    // Retry on focus (user logged in after load)
+    document.addEventListener('focusin', function handler(){
+      ensureLoaded();
+      document.removeEventListener('focusin', handler);
+    });
+  })();
 })();

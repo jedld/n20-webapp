@@ -1,7 +1,9 @@
 import json
 import logging
+import os
 import re
 import time
+from pathlib import Path
 
 from webapp.llm_context_budget import maybe_compact_messages
 from webapp.llm_handler import (
@@ -11,6 +13,32 @@ from webapp.llm_handler import (
 )
 
 logger = logging.getLogger('werkzeug')
+
+# Debug flag: dump the full NPC conversation context to a file under llm_logs/
+_DEBUG_NPC_CONTEXT = bool(int(os.environ.get('N20_DEBUG_NPC_CONTEXT', '0')))
+
+
+def _dump_npc_context(conversation_id, messages, prefix=None):
+    """Write the full NPC context messages to a debug file when N20_DEBUG_NPC_CONTEXT=1.
+
+    ``prefix`` is appended to the filename to distinguish pre-compaction from
+    post-compaction dumps (e.g. 'pre_compact', 'post_compact').
+    """
+    if not _DEBUG_NPC_CONTEXT:
+        return
+    try:
+        log_dir = Path(os.environ.get('N20_LOG_DIR', 'llm_logs'))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        safe_id = str(conversation_id).replace('/', '_').replace('\\', '_')
+        tag = f"_{prefix}" if prefix else ""
+        filename = f"npc_context{tag}_{safe_id}_{timestamp}.json"
+        filepath = log_dir / filename
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(messages, f, indent=2, ensure_ascii=False)
+        logger.info("[NPC_DEBUG] context dumped to %s (%d messages)", filepath, len(messages))
+    except Exception as exc:
+        logger.warning("[NPC_DEBUG] failed to dump NPC context: %s", exc)
 
 
 class LLMConversationController:
@@ -306,6 +334,8 @@ class LLMConversationController:
             started = time.monotonic()
             history_count = len(conversation.get('messages', []))
             provider = getattr(self.llm_hander, 'npc_provider', None) or getattr(self.llm_hander, 'current_provider', None)
+            # Dump full pre-compaction context for debugging when N20_DEBUG_NPC_CONTEXT=1
+            _dump_npc_context(conversation_id, messages, prefix='pre_compact')
             messages, budget_report = maybe_compact_messages(
                 messages,
                 provider=provider,
@@ -318,6 +348,9 @@ class LLMConversationController:
                 messages,
                 context_limit=budget_report.get('context_limit'),
             )
+            # Dump post-compaction context sent to LLM
+            _dump_npc_context(conversation_id, messages, prefix='post_compact')
+
             logger.info(
                 "[LLMConversation] generating NPC reply conversation_id=%s history_messages=%s compacted=%s %s",
                 conversation_id,

@@ -5,6 +5,7 @@ sheets, deferred spawning, and battle turn-order autofilling.
 """
 
 import logging
+import os
 
 from natural20.player_character import PlayerCharacter
 
@@ -24,12 +25,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def selectable_character_entry(character_name):
+    """Return the selectable_characters entry for a name, uid, or sheet basename."""
     target = str(character_name or '').lower()
     if not target:
         return None
     for character in get_index_data().get("selectable_characters", []):
         if str(character.get('name', '')).lower() == target:
             return character
+        overrides = character.get('overrides') or {}
+        if str(overrides.get('entity_uid') or '').lower() == target:
+            return character
+        sheet = str(character.get('sheet') or '')
+        if sheet:
+            sheet_stem = os.path.splitext(os.path.basename(sheet))[0].lower()
+            if sheet_stem == target:
+                return character
     return None
 
 

@@ -1490,12 +1490,12 @@
                     
                     <div class="character-content">
                     <img src="/assets/{{ character.file }}" 
-                        alt="{{ character.name }}" 
+                        alt="{{ character.display_name or character.name }}" 
                         class="character-image"
                         onerror="this.onerror=null; this.src='/static/assets/goblin_ambush_login.png'">
                         
                         <div class="character-info">
-                            <h3 class="character-name">{{ character.name.replace('_', ' ').title() }}</h3>
+                            <h3 class="character-name">{{ character.display_name or character.name.replace('_', ' ').title() }}</h3>
                             <div class="character-badges">
                                 {% if character.slot_label %}
                                 <span class="slot-label">{{ character.slot_label }}</span>

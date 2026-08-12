@@ -1,96 +1,116 @@
-"""Per-NPC conversation mode: LLM (default) or manual (DM-controlled)."""
+"""Per-NPC conversation mode: LLM auto-replies vs DM manual control."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 from natural20.player_character import PlayerCharacter
-from natural20.utils.conversation import entity_label
 
-STATE_KEY = 'npc_conversation_mode'
 VALID_MODES = frozenset({'llm', 'manual'})
+_STATE_KEY = 'npc_conversation_modes'
 
 
-def _mode_map(session) -> Dict[str, str]:
-    state = getattr(session, 'session_state', None) or {}
-    raw = state.get(STATE_KEY) or {}
+def _modes_map(game_session) -> Dict[str, str]:
+    state = getattr(game_session, 'session_state', None) or {}
+    raw = state.get(_STATE_KEY) or {}
     if not isinstance(raw, dict):
-        return {}
-    return {
-        str(uid): mode
-        for uid, mode in raw.items()
-        if str(mode) in VALID_MODES
-    }
+        raw = {}
+    return raw
 
 
-def get_npc_conversation_mode(session, entity_uid: Optional[str]) -> str:
-    if not entity_uid:
-        return 'llm'
-    return _mode_map(session).get(str(entity_uid), 'llm')
+def _persist_modes_map(game_session, modes: Dict[str, str]) -> None:
+    if not hasattr(game_session, 'session_state') or game_session.session_state is None:
+        game_session.session_state = {}
+    game_session.session_state[_STATE_KEY] = dict(modes)
 
 
-def is_npc_manual_conversation(session, entity) -> bool:
-    if entity is None:
-        return False
-    uid = getattr(entity, 'entity_uid', None)
-    return get_npc_conversation_mode(session, uid) == 'manual'
-
-
-def set_npc_conversation_mode(session, entity_uid: str, mode: str) -> str:
+def normalize_conversation_mode(mode: Optional[str]) -> str:
     normalized = str(mode or 'llm').strip().lower()
     if normalized not in VALID_MODES:
         raise ValueError(f"mode must be one of: {', '.join(sorted(VALID_MODES))}")
+    return normalized
+
+
+def get_npc_conversation_mode(game_session, entity_uid: str) -> str:
+    uid = str(entity_uid or '').strip()
+    if not uid:
+        return 'llm'
+    return _modes_map(game_session).get(uid, 'llm')
+
+
+def set_npc_conversation_mode(game_session, entity_uid: str, mode: str) -> str:
     uid = str(entity_uid or '').strip()
     if not uid:
         raise ValueError('entity_uid is required')
-
-    state = getattr(session, 'session_state', None)
-    if state is None:
-        state = {}
-        session.session_state = state
-    modes = dict(state.get(STATE_KEY) or {})
+    normalized = normalize_conversation_mode(mode)
+    modes = _modes_map(game_session)
     if normalized == 'llm':
         modes.pop(uid, None)
     else:
         modes[uid] = normalized
-    if modes:
-        state[STATE_KEY] = modes
-    else:
-        state.pop(STATE_KEY, None)
-    session.session_state = state
+    _persist_modes_map(game_session, modes)
     return normalized
 
 
-def list_dialog_partner_candidates(current_game, npc) -> List[Dict[str, Any]]:
-    """Player characters on the same map as ``npc`` (for DM JRPG dialog)."""
-    if npc is None or current_game is None:
-        return []
+def is_npc_manual_conversation(game_session, entity) -> bool:
+    if entity is None:
+        return False
+    uid = getattr(entity, 'entity_uid', None)
+    if not uid:
+        return False
+    return get_npc_conversation_mode(game_session, uid) == 'manual'
+
+
+def _entity_label(entity) -> str:
+    try:
+        return entity.label()
+    except Exception:
+        return str(getattr(entity, 'entity_uid', entity))
+
+
+def partner_candidates_for_npc(current_game, npc) -> List[Dict[str, str]]:
+    """Player characters on the same map (for DM manual dialog partner selection)."""
+    candidates: Dict[str, Dict[str, str]] = {}
     try:
         battle_map = current_game.get_map_for_entity(npc)
     except Exception:
         battle_map = None
-    if battle_map is None:
-        return []
 
-    candidates = []
-    for ent in getattr(battle_map, 'entities', []) or []:
-        if not isinstance(ent, PlayerCharacter):
-            continue
-        if ent.entity_uid == getattr(npc, 'entity_uid', None):
-            continue
-        candidates.append({
-            'id': ent.entity_uid,
-            'name': entity_label(ent),
-        })
-    candidates.sort(key=lambda row: (row.get('name') or '').lower())
-    return candidates
+    if battle_map is not None:
+        try:
+            entities = list(battle_map.entities or [])
+        except Exception:
+            entities = []
+        for ent in entities:
+            if isinstance(ent, PlayerCharacter):
+                uid = getattr(ent, 'entity_uid', None)
+                if uid:
+                    candidates[uid] = {'id': uid, 'name': _entity_label(ent)}
+
+    for entry in list(getattr(npc, 'conversation_buffer', None) or []):
+        source = entry.get('source')
+        if isinstance(source, PlayerCharacter):
+            uid = getattr(source, 'entity_uid', None)
+            if uid:
+                candidates[uid] = {'id': uid, 'name': _entity_label(source)}
+        directed = entry.get('directed_to')
+        if directed is None:
+            directed = entry.get('targets')
+        directed_list = directed if isinstance(directed, list) else ([directed] if directed else [])
+        for target in directed_list:
+            if isinstance(target, PlayerCharacter):
+                uid = getattr(target, 'entity_uid', None)
+                if uid:
+                    candidates[uid] = {'id': uid, 'name': _entity_label(target)}
+
+    return sorted(candidates.values(), key=lambda row: (row.get('name') or '').lower())
 
 
-def npc_conversation_mode_payload(current_game, session, npc) -> Dict[str, Any]:
-    uid = getattr(npc, 'entity_uid', None)
+def npc_conversation_mode_payload(current_game, game_session, entity) -> Dict[str, Any]:
+    uid = getattr(entity, 'entity_uid', None)
+    dialog = bool(getattr(entity, 'dialog', False))
     return {
-        'entity_uid': uid,
-        'conversation_mode': get_npc_conversation_mode(session, uid),
-        'is_npc': bool(callable(getattr(npc, 'is_npc', None)) and npc.is_npc()),
-        'partner_candidates': list_dialog_partner_candidates(current_game, npc),
+        'conversation_mode': get_npc_conversation_mode(game_session, uid),
+        'dialog': dialog,
+        'partner_candidates': partner_candidates_for_npc(current_game, entity) if dialog else [],
     }

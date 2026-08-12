@@ -7,5 +7,6 @@ node_modules/
 .env
 flask_session/
 saves/
+llm_logs/
 *.log
 .DS_Store

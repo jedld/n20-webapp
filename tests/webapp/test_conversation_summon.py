@@ -117,7 +117,7 @@ def test_select_npc_chain_responders_includes_explicit_reply_targets():
     assert responders == [sheep]
 
 
-def test_select_npc_chain_responders_skips_whisper_replies():
+def test_select_npc_chain_responders_allows_whisper_to_named_npc():
     service = ConversationService.__new__(ConversationService)
     pip = FakeReceiver('pip_barmaid')
     henrik = Mock()
@@ -140,6 +140,67 @@ def test_select_npc_chain_responders_skips_whisper_replies():
             'message': 'Henrik! Aldric wants a word with you.',
             'targets': [aldric, henrik],
             'volume': 'whisper',
+        },
+        player_speaker=aldric,
+    )
+    assert responders == [henrik]
+
+
+def test_select_npc_chain_responders_skips_whisper_to_player_only():
+    service = ConversationService.__new__(ConversationService)
+    pip = FakeReceiver('pip_barmaid')
+    henrik = Mock()
+    henrik.entity_uid = 'henrik_patron'
+    henrik.label = Mock(return_value='Henrik (Regular)')
+    henrik.is_npc = Mock(return_value=True)
+    henrik.dialog = True
+    aldric = FakeSpeaker('aldric')
+
+    battle_map = Mock()
+    battle_map.entities = [pip, henrik, aldric]
+    current_game = Mock()
+    current_game.get_map_for_entity.return_value = battle_map
+    service._current_game_getter = lambda: current_game
+
+    responders = service.select_npc_chain_responders(
+        [(aldric, 'secret', [pip])],
+        pip,
+        {
+            'message': 'I need a moment alone with you.',
+            'targets': [aldric],
+            'volume': 'whisper',
+        },
+        player_speaker=aldric,
+    )
+    assert responders == []
+
+
+def test_select_npc_chain_responders_skips_manual_mode_npcs():
+    service = ConversationService.__new__(ConversationService)
+    service.game_session = Mock()
+    service.game_session.session_state = {'npc_conversation_modes': {'henrik_patron': 'manual'}}
+
+    pip = FakeReceiver('pip_barmaid')
+    henrik = Mock()
+    henrik.entity_uid = 'henrik_patron'
+    henrik.label = Mock(return_value='Henrik (Regular)')
+    henrik.is_npc = Mock(return_value=True)
+    henrik.dialog = True
+    aldric = FakeSpeaker('aldric')
+
+    battle_map = Mock()
+    battle_map.entities = [pip, henrik, aldric]
+    current_game = Mock()
+    current_game.get_map_for_entity.return_value = battle_map
+    service._current_game_getter = lambda: current_game
+
+    responders = service.select_npc_chain_responders(
+        [(henrik, 'Jim?', [pip])],
+        pip,
+        {
+            'message': 'Henrik! What do you think?',
+            'targets': [henrik],
+            'volume': 'normal',
         },
         player_speaker=aldric,
     )

@@ -1293,17 +1293,34 @@
     const $url = $('#ddb-url');
     const $cobalt = $('#ddb-cobalt');
     const $status = $('#ddb-import-status');
+    const $importMsg = $('#ddb-import-msg');
     if(!$btn.length || !$url.length) return;
+
+    function escapeHtml(text){
+      return $('<div>').text(text == null ? '' : String(text)).html();
+    }
+
+    function showImportAlert(kind, messageHtml){
+      const html = `<div class="alert alert-${kind}">${messageHtml}</div>`;
+      if($importMsg.length){
+        $importMsg.html(html);
+      }
+      $('#builder-msg').html(html);
+      if($importMsg.length && $importMsg[0].scrollIntoView){
+        $importMsg[0].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
 
     $btn.on('click', function(){
       const sheetUrl = ($url.val() || '').trim();
       if(!sheetUrl){
-        $('#builder-msg').html('<div class="alert alert-danger">Enter a D&amp;D Beyond character sheet URL.</div>');
+        showImportAlert('danger', 'Enter a D&amp;D Beyond character sheet URL.');
+        $status.text('');
         return;
       }
       $btn.prop('disabled', true);
       $status.text('Importing…');
-      $('#builder-msg').html('<div class="alert alert-info">Fetching character from D&amp;D Beyond…</div>');
+      showImportAlert('info', 'Fetching character from D&amp;D Beyond…');
 
       $.ajax({
         type: 'POST',
@@ -1316,15 +1333,18 @@
         dataType: 'json',
         success: function(resp){
           if(resp.error){
-            $('#builder-msg').html(`<div class="alert alert-danger">${resp.error}</div>`);
-            $status.text('');
+            showImportAlert('danger', escapeHtml(resp.error));
+            $status.text('Failed');
             $btn.prop('disabled', false);
             return;
           }
-          let html = `<div class="alert alert-success">Imported <strong>${resp.character_name || 'character'}</strong>.</div>`;
+          let html = `<div class="alert alert-success">Imported <strong>${escapeHtml(resp.character_name || 'character')}</strong>.</div>`;
           if(resp.warnings && resp.warnings.length){
-            const list = resp.warnings.map(w => `<li>${$('<div>').text(w).html()}</li>`).join('');
+            const list = resp.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('');
             html += `<div class="alert alert-warning" style="margin-top:8px;"><strong>Some data was skipped:</strong><ul style="margin:8px 0 0 18px;">${list}</ul></div>`;
+          }
+          if($importMsg.length){
+            $importMsg.html(html);
           }
           $('#builder-msg').html(html);
           $status.text('Done');
@@ -1335,10 +1355,10 @@
           let msg = 'Failed to import from D&amp;D Beyond.';
           try {
             const body = xhr.responseJSON || JSON.parse(xhr.responseText || '{}');
-            if(body.error) msg = body.error;
+            if(body && body.error) msg = body.error;
           } catch(e) { /* ignore */ }
-          $('#builder-msg').html(`<div class="alert alert-danger">${msg}</div>`);
-          $status.text('');
+          showImportAlert('danger', escapeHtml(msg));
+          $status.text('Failed');
           $btn.prop('disabled', false);
         }
       });

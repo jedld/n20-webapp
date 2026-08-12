@@ -1,10 +1,14 @@
 from flask import jsonify, request, session
 import hashlib
+import json
+import logging
 import os
 import re
 import time
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from natural20.player_character import PlayerCharacter
 from natural20.npc import Npc
@@ -180,6 +184,100 @@ PLAYER_PERCEPTION_PATTERNS = [
     re.compile(r'\broll(?:ing)?\s+perception\b', re.IGNORECASE),
 ]
 
+# Detects "describe what I see?", "what do I see?", "describe what you see?" etc.
+# These are conversation-time description requests that prompt the NPC LLM to generate
+# a visual aside about what the player character can see (facial expression, body language,
+# clothing, injury, environment relevance).
+PLAYER_DESCRIBE_SEE_PATTERNS = [
+    # "describe what I see", "describe what you see", "tell me what you see"
+    re.compile(
+        r'\b(?:describe|tell|explain)\b[^?]*\b(?:i|me|you)\b[^?]*\bsee\b',
+        re.IGNORECASE,
+    ),
+    # "what do I see?", "what do you see?"
+    re.compile(
+        r'\bwhat\s+(?:do|did)\s+(?:i|me|you)\b[^?]*\bsee\b',
+        re.IGNORECASE,
+    ),
+    # "give me a description", "give me a description of X"
+    re.compile(
+        r'\bgive\s+me\s+(?:a\s+)?description\b',
+        re.IGNORECASE,
+    ),
+    # "take a good look", "look closely", "look carefully", "look hard"
+    re.compile(
+        r'\b(?:take\s+a\s+good\s+look|look\s+(?:carefully|closely|hard|over|at))\b',
+        re.IGNORECASE,
+    ),
+    # "run me down what I see"
+    re.compile(
+        r'\brun\s+(?:me|us)\s+down\b',
+        re.IGNORECASE,
+    ),
+]
+
+# ---------------------------------------------------------------------------
+# Semantic intent detection: "describe what I see" variants.
+#
+# We use a fast regex pre-filter for common phrases, then fall back to the
+# NPC LLM for semantic classification when the regex is inconclusive.
+# This gives us both speed and robustness against natural language variation.
+# ---------------------------------------------------------------------------
+
+# Fast pre-filter patterns — matches ~90 % of real user inputs.
+PLAYER_DESCRIBE_SEE_FAST_PATTERNS = [
+    # "describe what I see", "describe what you see", "tell me what you see"
+    re.compile(
+        r'\b(?:describe|tell|explain)\b[^?]*\b(?:i|me|you)\b[^?]*\bsee\b',
+        re.IGNORECASE,
+    ),
+    # "what do I see?", "what do you see?", "what did I see?"
+    re.compile(
+        r'\bwhat\s+(?:do|did)\s+(?:i|me|you)\b[^?]*\bsee\b',
+        re.IGNORECASE,
+    ),
+    # "give me a description", "give me a description of X"
+    re.compile(
+        r'\bgive\s+me\s+(?:a\s+)?description\b',
+        re.IGNORECASE,
+    ),
+    # "take a good look", "look closely", "look carefully", "look hard"
+    re.compile(
+        r'\b(?:take\s+a\s+good\s+look|look\s+(?:carefully|closely|hard|over|at))\b',
+        re.IGNORECASE,
+    ),
+    # "run me down what I see"
+    re.compile(
+        r'\brun\s+(?:me|us)\s+down\b',
+        re.IGNORECASE,
+    ),
+]
+
+# Extracts an optional target or focus from describe-what-I-see messages.
+_DESCRIBE_SEE_TARGET_PATTERNS = [
+    # "describe what I see about @NPC focusing on his injuries"
+    re.compile(
+        r'(?:describe|tell|explain)\s+(?:what\s+)?(?:i|me|you)\s+see'
+        r'(?:\s+(?:about|regarding|of|on)\s+(?P<target>@?[\w\'\- ]+?))?'
+        r'(?:\s+(?:about|regarding|focusing?|for)\s+(?P<focus>.+))?$',
+        re.IGNORECASE,
+    ),
+    # "what do I see about the vampire?", "what do I see about @NPC?"
+    re.compile(
+        r'\bwhat\s+(?:do|did)\s+(?:i|me|you)\s+see'
+        r'(?:\s+(?:about|regarding|of|on)\s+(?P<target>[\w\@\'\- ]+?))?'
+        r'(?:\s+(?:about|regarding|focusing?|for)\s+(?P<focus>.+))?$',
+        re.IGNORECASE,
+    ),
+    # "give me a description of @Darlene regarding her clothing"
+    re.compile(
+        r'(?:describe|give\s+me)\s+(?:a\s+)?(?:description|run\??\s*down)'
+        r'(?:\s+)?(?:of\s+(?P<target>@?[\w\'\- ]+?))?'
+        r'(?:\s+(?:about|regarding|focusing?|for)\s+(?P<focus>.+))?$',
+        re.IGNORECASE,
+    ),
+]
+
 _PERCEPTION_TARGET_FOCUS_PATTERNS = [
     re.compile(
         r'perception(?:\s+check)?\s+on\s+(?P<target>@?[\w\'\- ]+?)'
@@ -243,6 +341,82 @@ def parse_player_perception_request(message):
         )
         if about_match:
             focus = about_match.group('rest').strip(' .,!?') or None
+    return target_spec, focus
+
+
+def is_player_describe_see_request(message: str, *, _llm_handler=None) -> bool:
+    """Return True when the player's message is asking the NPC to describe what they see.
+
+    Detection strategy (fast → robust):
+    1. Fast regex pre-filter — matches ~90 % of real user inputs.
+    2. LLM-based semantic classification — used when the regex is inconclusive
+       but the caller explicitly requests it (e.g. during conversation turns).
+
+    Examples:
+        - "describe what I see"
+        - "what do I see?"
+        - "tell me what you see"
+        - "describe what you see"
+        - "what do you see here?"
+        - "can you paint me a picture of the room?"  (LLM-only)
+    """
+    if not message:
+        return False
+    text = normalize_player_dm_command(message)
+    if not text:
+        return False
+    # Fast regex pre-filter — covers the majority of cases.
+    for pattern in PLAYER_DESCRIBE_SEE_FAST_PATTERNS:
+        if pattern.search(text):
+            return True
+    # LLM-based semantic fallback for natural-language variations.
+    if _llm_handler is not None:
+        try:
+            prompt = (
+                "The player has just spoken during an NPC conversation. "
+                "Determine whether they are asking the NPC to describe what they see "
+                "(visual description of the NPC/environment). "
+                "Reply with ONLY the word YES or NO — nothing else.\n\n"
+                f"Player message: \"{message}\"\n\n"
+                "Is this a request to describe what the player sees (visual scene description)?"
+            )
+            response = _llm_handler.send_simple_message(prompt, context={'log_label': 'describe_see_intent'})
+            return response is not None and response.strip().upper().startswith('YES')
+        except Exception as exc:
+            logger.debug("Describe-see LLM fallback failed: %s", exc)
+    return False
+
+
+def parse_player_describe_see_request(message: str):
+    """Extract a (target_spec, focus) tuple from the player's describe-see message.
+
+    Returns (None, None) if no target or focus can be inferred.
+    Leading '@' is stripped from target specs (e.g. '@Cecilia' → 'Cecilia').
+    """
+    text = normalize_player_dm_command(message)
+    target_spec = None
+    focus = None
+    for pattern in _DESCRIBE_SEE_TARGET_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            raw_target = (match.group('target') or '').strip(' .,!?') or None
+            if raw_target:
+                target_spec = raw_target.lstrip('@')
+            focus = (match.group('focus') or '').strip(' .,!?') or None
+            # Strip leading prepositions from focus (e.g. "on his injuries" → "his injuries")
+            if focus:
+                focus = re.sub(
+                    r'^(?:on|about|regarding|for)\s+',
+                    '',
+                    focus,
+                    flags=re.IGNORECASE,
+                ).strip(' .,!?') or None
+            break
+    # Fallback: if pattern matched but target was None, the text after the
+    # preposition is likely the target (e.g. "what do I see about the vampire?").
+    if target_spec is None and focus is not None:
+        target_spec = focus.lstrip('@')
+        focus = None
     return target_spec, focus
 
 
@@ -1987,8 +2161,7 @@ class ConversationService:
         if speaker_npc is None:
             return []
 
-        if (reply_plan or {}).get('volume') == 'whisper':
-            return []
+        reply_plan = reply_plan or {}
 
         heard_entities = {
             listener.entity_uid: listener
@@ -2027,29 +2200,31 @@ class ConversationService:
         if not heard_entities:
             return []
 
+        def _eligible_npc_responder(target):
+            if target is None or target == speaker_npc:
+                return False
+            if isinstance(player_speaker, PlayerCharacter) and target == player_speaker:
+                return False
+            if not getattr(target, 'is_npc', lambda: False)():
+                return False
+            if not getattr(target, 'dialog', False):
+                return False
+            if self.npc_conversation_mode_is_manual(target):
+                return False
+            uid = getattr(target, 'entity_uid', None)
+            return bool(uid and uid in heard_entities)
+
         chain_responders = []
         for target in named_targets:
-            if not getattr(target, 'is_npc', lambda: False)():
-                continue
-            if not getattr(target, 'dialog', False):
-                continue
-            if target.entity_uid not in heard_entities:
-                continue
-            chain_responders.append(target)
+            if _eligible_npc_responder(target):
+                chain_responders.append(target)
 
         if chain_responders:
             return chain_responders[:1]
 
-        for target in unique_entities((reply_plan or {}).get('targets') or []):
-            if target == player_speaker or target == speaker_npc:
-                continue
-            if not getattr(target, 'is_npc', lambda: False)():
-                continue
-            if not getattr(target, 'dialog', False):
-                continue
-            if target.entity_uid not in heard_entities:
-                continue
-            return [target]
+        for target in unique_entities(reply_plan.get('targets') or []):
+            if _eligible_npc_responder(target):
+                return [target]
         return []
 
     def expand_reply_targets_from_message(self, speaker_npc, reply_plan):
@@ -2197,6 +2372,7 @@ class ConversationService:
         summoned: bool = False,
         relay_instruction: bool = False,
         npc_initiated: bool = False,
+        npc_chain_banter: bool = False,
         player_message: str = '',
         message_spell_private: bool = False,
     ) -> str:
@@ -2214,6 +2390,7 @@ class ConversationService:
             summoned=summoned,
             relay_instruction=relay_instruction,
             npc_initiated=npc_initiated,
+            npc_chain_banter=npc_chain_banter,
             player_message=player_message,
             message_spell_private=message_spell_private,
         )
@@ -2282,6 +2459,7 @@ class ConversationService:
         original_player_message: str = '',
         inject_system_messages=None,
         npc_initiated: bool = False,
+        npc_chain_reply: bool = False,
         open_dialog: bool = False,
         local_chat_only: bool = False,
         message_spell_private: bool = False,
@@ -2292,6 +2470,13 @@ class ConversationService:
         if llm_conversation_handler is None:
             llm_conversation_handler = self.llm_conversation_handler
 
+        if self.npc_conversation_mode_is_manual(receiver):
+            self.logger.info(
+                "[Talk] skipping LLM reply for %s (manual conversation mode)",
+                receiver.label(),
+            )
+            return None
+
         receiver_started = time.monotonic()
         system_prompt = self.build_npc_system_prompt(
             receiver,
@@ -2301,6 +2486,7 @@ class ConversationService:
             summoned=summoned,
             relay_instruction=relay_instruction,
             npc_initiated=npc_initiated,
+            npc_chain_banter=npc_chain_reply,
             player_message=original_player_message,
             message_spell_private=message_spell_private,
         )
@@ -2352,6 +2538,7 @@ class ConversationService:
             speaker,
             llm_conversation_handler,
             player_speaker=player_speaker,
+            default_volume='normal' if npc_chain_reply else None,
         )
         if message_spell_private and speaker is not None:
             reply_plan['volume'] = 'whisper'
@@ -2390,6 +2577,7 @@ class ConversationService:
                 speaker,
                 llm_conversation_handler,
                 player_speaker=player_speaker,
+                default_volume='normal' if npc_chain_reply else None,
             )
 
         if reply_plan['skip']:
@@ -2669,6 +2857,7 @@ class ConversationService:
         summoned: bool = False,
         relay_instruction: bool = False,
         npc_initiated: bool = False,
+        npc_chain_banter: bool = False,
         player_message: str = '',
         message_spell_private: bool = False,
     ):
@@ -2754,6 +2943,8 @@ class ConversationService:
         landmarks_text = self.entity_rag_handler.map_landmarks_prompt_for_entity(receiver)
         landmarks_block = f"\n{landmarks_text}\n" if landmarks_text else ''
         setting_text = self.entity_rag_handler.campaign_setting_prompt()
+        backstory_text = self.entity_rag_handler.npc_backstory_prompt(receiver)
+        backstory_block = f"\n{backstory_text}\n" if backstory_text else ''
         setting_block = f"\n{setting_text}\n" if setting_text else ''
         container_serving_text = self.entity_rag_handler.container_serving_guidance_for_conversation(receiver)
         container_serving_block = f"{container_serving_text}\n" if container_serving_text else ''
@@ -2777,6 +2968,15 @@ class ConversationService:
                 "- The speaker asked you to deliver a message to someone else. Move to them if needed "
                 "([APPROACH: target=@handle, distance=5]), then speak to that person with "
                 "[TO: @their_handle] — not [TO: speaker]. Hail them by name in the spoken line.\n"
+            )
+        npc_chain_block = ''
+        if npc_chain_banter:
+            npc_chain_block = (
+                "- This is an overheard NPC-to-NPC exchange in an ongoing conversation. "
+                "Reply naturally while you are engaged; use [NO_RESPONSE] when you have "
+                "nothing more to add or the topic is closed.\n"
+                "- Use [VOLUME: normal] for ordinary room conversation unless you are "
+                "deliberately whispering a secret.\n"
             )
         initiative_block = ''
         if npc_initiated:
@@ -2808,6 +3008,7 @@ class ConversationService:
         return (
             "\n\nConversation response rules:\n"
             f"{message_spell_block}"
+            f"{npc_chain_block}"
             f"{initiative_block}"
             f"{gallery_block}"
             "- You may choose not to speak. If you do not want to respond, output exactly [NO_RESPONSE].\n"
@@ -2873,6 +3074,7 @@ class ConversationService:
             f"{self.entity_rag_handler.offer_item_guidance_for_conversation(receiver, speaker, player_speaker, player_message=player_message)}\n"
             f"{animal_comm_block}"
             f"{setting_block}"
+            f"{backstory_block}"
             f"{landmarks_block}"
             f"{summon_block}"
             f"{relay_block}"
@@ -4493,6 +4695,276 @@ class ConversationService:
             message_key=message_key,
         )
 
+    def handle_player_describe_see_request(self, speaker, message,
+                                           explicit_targets=None,
+                                           mentioned_targets=None):
+        """Handle "describe what I see?" style requests during conversation.
+
+        The NPC LLM generates a visual aside about what the player character can
+        see from their perspective: facial expressions, body language, clothing,
+        injuries, and environment details relevant to the moment.
+
+        This is similar to a perception check but focused on narrative description
+        of the NPC in conversation rather than environmental scanning.
+        """
+        target_spec, focus = parse_player_describe_see_request(message)
+
+        # Resolve target: prefer explicitly mentioned NPC or first entity in conversation
+        target = self._resolve_perception_target(
+            speaker,
+            target_spec,
+            explicit_targets or [],
+            mentioned_targets or [],
+        )
+
+        # If no target was resolved and we have conversation targets, use the first NPC
+        if target is None:
+            for candidate in unique_entities(list(mentioned_targets or []) + list(explicit_targets or [])):
+                if candidate is not None and candidate != speaker:
+                    target = candidate
+                    break
+
+        if target is None:
+            self._emit_player_perception_payload(
+                speaker,
+                "Who should I describe? Try '@dm describe what I see about @<name>' or "
+                "'Describe what I see here'.",
+                vague=True,
+                clarification='missing_target',
+            )
+            return {'success': True, 'describe_see': 'needs_target'}, 200
+
+        if not self._player_can_perceive_target(speaker, target):
+            return self._emit_perception_not_visible(speaker, target)
+
+        # Check for duplicate (avoid spam during same conversation beat)
+        message_key = f"describe_see:{getattr(target, 'entity_uid', None)}"
+        existing = self.get_recorded_perception_check(speaker, getattr(target, 'entity_uid', None))
+        if existing and existing.get('message_key') == message_key:
+            self._emit_player_perception_payload(
+                speaker,
+                f"You're still watching {entity_label(target)}.",
+                target=target,
+                roll_total=existing.get('roll_total'),
+                description=existing.get('description'),
+                focus=focus,
+                message_key=message_key,
+            )
+            return {
+                'success': True,
+                'describe_see': existing,
+                'already_checked': True,
+            }, 200
+
+        # Execute the description
+        return self._execute_player_describe_see(
+            speaker,
+            target,
+            focus=focus or None,
+            message_key=message_key,
+        )
+
+    def _execute_player_describe_see(
+        self,
+        speaker,
+        target,
+        focus=None,
+        *,
+        message_key=None,
+    ):
+        """Generate NPC LLM description of what the player sees."""
+        focus_text = str(focus or '').strip()
+        description = (
+            f"Describe what {entity_label(speaker)} sees regarding {entity_label(target)}"
+            + (f" ({focus_text})" if focus_text else '')
+        )
+
+        # Perform a perception check to gate detail level
+        try:
+            roll = speaker.perception_check(description=description)
+        except Exception as exc:
+            self.logger.error(f"Perception check failed for {entity_label(speaker)} during describe-see: {exc}")
+            self._emit_player_perception_payload(
+                speaker,
+                'Your attempt to observe the scene was unsuccessful.',
+                target=target,
+                focus=focus_text or None,
+                vague=True,
+                clarification='roll_failed',
+            )
+            return {'success': False, 'error': 'perception_roll_failed'}, 500
+
+        roll_total = None
+        try:
+            roll_total = roll.result()
+        except Exception:
+            roll_total = None
+
+        # Build context for the NPC LLM description
+        appearance = getattr(target, 'outward_appearance', '') or ''
+        statuses = list(getattr(target, 'statuses', []) or [])
+        visible_effects = []
+        if hasattr(target, 'current_effects') and callable(getattr(target, 'current_effects')):
+            try:
+                visible_effects = [str(e.get('effect', '')) for e in target.current_effects() if e.get('effect')]
+            except Exception:
+                visible_effects = []
+
+        recent_conv = []
+        try:
+            conv_buffer = list(getattr(target, 'conversation_buffer', None) or [])[-6:]
+            recent_conv = conv_buffer
+        except Exception:
+            pass
+
+        # Determine roll tier for detail level
+        if roll_total is not None:
+            if roll_total >= 18:
+                detail_tier = 'detailed'
+            elif roll_total >= 14:
+                detail_tier = 'moderate'
+            elif roll_total >= 10:
+                detail_tier = 'basic'
+            else:
+                detail_tier = 'vague'
+        else:
+            detail_tier = 'basic'
+
+        llm_conversation_handler = self.llm_conversation_handler
+        scene_description = self._get_npc_describe_see_description(
+            observer=speaker,
+            target=target,
+            appearance=appearance,
+            statuses=statuses,
+            visible_effects=visible_effects,
+            recent_conv=recent_conv,
+            detail_tier=detail_tier,
+            llm_conversation_handler=llm_conversation_handler,
+        )
+
+        roll_text = f"Observation check: {roll_total}" if roll_total else 'Observation check'
+        message_text = f"{roll_text} regarding {entity_label(target)}."
+
+        perception_result = {
+            'target': entity_label(target),
+            'target_uid': getattr(target, 'entity_uid', None),
+            'roll_total': roll_total,
+            'description': scene_description,
+            'focus': focus_text or None,
+            'message_key': message_key or f"describe_see:{getattr(target, 'entity_uid', None)}",
+            'detail_tier': detail_tier,
+            'is_describe_see': True,
+        }
+        self.record_perception_check(
+            speaker,
+            getattr(target, 'entity_uid', None),
+            focus_text or None,
+            perception_result,
+        )
+
+        self._emit_player_perception_payload(
+            speaker,
+            message_text,
+            target=target,
+            roll_total=roll_total,
+            description=scene_description,
+            focus=focus_text or None,
+            vague=detail_tier == 'vague',
+            message_key=message_key,
+        )
+
+        return {'success': True, 'describe_see': perception_result}, 200
+
+    def _get_npc_describe_see_description(
+        self,
+        observer,
+        target,
+        appearance,
+        statuses,
+        visible_effects,
+        recent_conv,
+        detail_tier,
+        llm_conversation_handler,
+    ):
+        """Generate the NPC visual description via the NPC LLM."""
+        default_description = f"You observe {entity_label(target)} standing before you."
+
+        if llm_conversation_handler is None:
+            return default_description
+
+        llm_handler = getattr(llm_conversation_handler, 'llm_hander', None)
+        if llm_handler is None:
+            return default_description
+
+        # Build context block
+        dm_context = {
+            'target_appearance': appearance,
+            'target_statuses': statuses,
+            'visible_effects': visible_effects,
+            'recent_conversation': recent_conv,
+            'detail_tier': detail_tier,
+            'observer_label': entity_label(observer),
+            'target_label': entity_label(target),
+        }
+
+        messages = [
+            {
+                'role': 'system',
+                'content': (
+                    'You are generating a visual description for what a player character sees when they ask '
+                    '"describe what I see" during a conversation with an NPC. '
+                    'Describe only visible, surface-level details that would be apparent to someone '
+                    'talking to this NPC right now. Focus on: '
+                    'facial expressions (conveying emotion, attitude, tension), '
+                    'body language (posture, gestures, fidgeting, stillness), '
+                    'visible clothing and appearance details (state of dress, dirt, tears, jewelry), '
+                    'visible injuries or status effects (bruises, bandages, magical glows), '
+                    'environmental details that frame the interaction (lighting, proximity, background figures). '
+                    'Keep it grounded, vivid, and in-character. Use second-person present tense ("You notice..."). '
+                    'Do NOT reveal hidden motives, thoughts, or DM-only secrets. '
+                    'The detail_tier tells you how much to focus on: '
+                    '"vague" = general impressions only; "basic" = obvious details; '
+                    '"moderate" = include subtle cues; "detailed" = capture micro-expressions and fine details. '
+                    'Return JSON only with key "description" (one or two short paragraphs).'
+                ),
+            },
+            {
+                'role': 'user',
+                'content': json.dumps(dm_context, default=str),
+            },
+        ]
+
+        try:
+            raw_response = llm_handler.send_message(
+                messages,
+                context={
+                    'response_mode': 'conversation',
+                    'skip_continuation': True,
+                    'log_label': 'describe_see',
+                },
+            )
+        except Exception as exc:
+            logger.error(f"Error generating describe-see for {entity_label(observer)}: {exc}")
+            return default_description
+
+        # Parse the LLM response
+        text = str(raw_response or '').strip()
+        fence = re.search(r'```(?:json|JSON)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            text = match.group(0)
+        try:
+            payload = json.loads(text)
+            description = str(payload.get('description') or '').strip()
+        except Exception:
+            description = text.strip()
+
+        if not description or description == '':
+            return default_description
+        return description
+
     def _persist_conversation_line(
         self,
         speaker,
@@ -5042,6 +5514,19 @@ class ConversationService:
                 mentioned_targets=mentioned_targets,
             )
 
+        # Player describe-what-I-see: during conversation, the player can ask
+        # the NPC to describe what they see (facial expressions, body language,
+        # clothing, injuries, environment). This triggers a perception-style
+        # description using the NPC LLM, optionally with a perception check.
+        if (isinstance(entity, PlayerCharacter)
+                and is_player_describe_see_request(message)):
+            return self.handle_player_describe_see_request(
+                entity,
+                message,
+                explicit_targets=entity_targets,
+                mentioned_targets=mentioned_targets,
+            )
+
         original_spoken_message = spoken_message
         polished_message = None
         if dm_impersonate and (dm_impersonate_polish or polish_only):
@@ -5249,6 +5734,7 @@ class ConversationService:
             if turn_result is None:
                 continue
 
+            max_depth = self._conversation_chain_depth()
             chain_receivers = self.select_npc_chain_responders(
                 turn_result['response_conversations'],
                 receiver,
@@ -5256,15 +5742,19 @@ class ConversationService:
                 player_speaker=entity,
             )
             self.logger.info(
-                "[Talk] npc_chain from %s eligible=%s",
+                "[Talk] npc_chain depth=%d/%s from %s eligible=%s",
+                1,
+                max_depth if max_depth is not None else 'unlimited',
                 receiver.label(),
                 [getattr(r, 'entity_uid', r) for r in chain_receivers],
             )
             for chain_receiver in chain_receivers:
-                self._run_single_npc_reply_turn(
+                self._run_npc_chain_reply(
                     chain_receiver,
                     receiver,
                     conversation_system_prompt,
+                    depth=1,
+                    max_depth=max_depth,
                     llm_conversation_handler=llm_conversation_handler,
                     http_replies=http_replies,
                     normalized_requesting_username=normalized_requesting_username,
@@ -5561,9 +6051,123 @@ class ConversationService:
             pass
         return False
 
+    def _conversation_chain_depth(self):
+        """Return the campaign-configured NPC chain reply depth.
+
+        Reads ``conversation_chain_depth`` from ``game_properties`` (``game.yml``).
+        Default is ``1`` (single NPC-to-NPC reply hop only).  Campaigns like
+        *KickStart* may set ``0`` for unlimited banter until an NPC emits
+        ``[NO_RESPONSE]``.
+        """
+        props = getattr(self.game_session, 'game_properties', None) or {}
+        value = props.get('conversation_chain_depth')
+        if value is None:
+            value = os.environ.get('N20_CONVERSATION_CHAIN_DEPTH')
+        try:
+            depth = int(value) if value is not None else 1
+        except (TypeError, ValueError):
+            depth = 1
+        if depth <= 0:
+            return None
+        return max(1, depth)
+
+    def _run_npc_chain_reply(
+        self,
+        chain_receiver,
+        previous_speaker,
+        conversation_system_prompt,
+        *,
+        depth: int,
+        max_depth: int,
+        llm_conversation_handler,
+        http_replies,
+        normalized_requesting_username,
+        player_speaker,
+    ) -> None:
+        """Run an NPC chain reply and recursively process further hops.
+
+        Parameters
+        ----------
+        chain_receiver : Entity
+            The NPC that will reply.
+        previous_speaker : Entity
+            The entity that prompted this reply (player or another NPC).
+        conversation_system_prompt : str
+            Reusable system prompt template.
+        depth : int
+            Current recursion depth (1 = first hop from player).
+        max_depth : int
+            Configured maximum chain depth.
+        llm_conversation_handler : LLMConversationHandler
+            Shared handler instance.
+        http_replies : list | None
+            Accumulator for HTTP reply payloads.
+        normalized_requesting_username : str | None
+        player_speaker : Entity
+            Original player speaker (preserved for context).
+        """
+        if max_depth is not None and depth >= max_depth:
+            self.logger.info(
+                "[Talk] npc_chain depth limit reached at depth=%d (max=%d) — "
+                "skipping further hops from %s",
+                depth,
+                max_depth,
+                getattr(chain_receiver, 'entity_uid', chain_receiver),
+            )
+            return
+
+        if self.npc_conversation_mode_is_manual(chain_receiver):
+            self.logger.info(
+                "[Talk] npc_chain skipping %s (manual conversation mode)",
+                chain_receiver.label(),
+            )
+            return
+
+        turn_result = self._run_single_npc_reply_turn(
+            chain_receiver,
+            previous_speaker,
+            conversation_system_prompt,
+            llm_conversation_handler=llm_conversation_handler,
+            http_replies=http_replies,
+            normalized_requesting_username=normalized_requesting_username,
+            player_speaker=player_speaker,
+            npc_chain_reply=True,
+        )
+        if turn_result is None:
+            return
+
+        next_speaker = chain_receiver
+        chain_receivers = self.select_npc_chain_responders(
+            turn_result['response_conversations'],
+            next_speaker,
+            turn_result['reply_plan'],
+            player_speaker=player_speaker,
+        )
+        self.logger.info(
+            "[Talk] npc_chain depth=%d from %s eligible=%s",
+            depth + 1,
+            next_speaker.label(),
+            [getattr(r, 'entity_uid', r) for r in chain_receivers],
+        )
+        for next_chain_receiver in chain_receivers:
+            self._run_npc_chain_reply(
+                next_chain_receiver,
+                next_speaker,
+                conversation_system_prompt,
+                depth=depth + 1,
+                max_depth=max_depth,
+                llm_conversation_handler=llm_conversation_handler,
+                http_replies=http_replies,
+                normalized_requesting_username=normalized_requesting_username,
+                player_speaker=player_speaker,
+            )
+
     def npc_conversation_mode_is_manual(self, entity):
         from webapp.npc_conversation_mode import is_npc_manual_conversation
-        return is_npc_manual_conversation(self.game_session, entity)
+        game_session = getattr(self, 'game_session', None)
+        if game_session is None:
+            return False
+        return is_npc_manual_conversation(game_session, entity)
 
     def _impersonatable_npcs(self, anchor_entity=None):
         battle_map = None

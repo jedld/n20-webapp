@@ -563,7 +563,7 @@
         const b = ann.bounds;
         for (let y = b.y1; y <= b.y2; y += 1) {
           for (let x = b.x1; x <= b.x2; x += 1) {
-            markTile(x, y, null, 'area', 0.35, ann);
+            markTile(x, y, null, 'area', 0.45, ann);
           }
         }
         markTile(b.x1, b.y1, ann.label || ann.id, 'area-label', null, ann);
@@ -1083,7 +1083,7 @@
         .map-annotations-list-meta { display: block; font-size: 10px; color: #a1a1aa; margin-top: 2px; }
         .map-annotations-list-delete { flex: 0 0 auto; min-width: 28px; padding: 2px 6px; }
         .map-annotation-marker {
-          position: absolute; inset: 2px; border: 2px dashed #f1c40f; pointer-events: none;
+          position: absolute; inset: 2px; border: 2px dashed #f1c40f; pointer-events: auto;
           font-size: 10px; color: #f1c40f; display: flex; align-items: flex-start; justify-content: center;
           background: rgba(241, 196, 15, 0.12); z-index: 6;
         }
@@ -1101,12 +1101,12 @@
           background: rgba(0, 0, 0, 0.65); padding: 1px 4px; border-radius: 2px;
         }
         .map-annotation-marker-point { border-style: solid; border-color: #e67e22; color: #e67e22; }
-        .map-annotation-marker-area, .map-annotation-marker-polygon { border-color: #9b59b6; background: rgba(155, 89, 182, 0.15); }
+        .map-annotation-marker-area, .map-annotation-marker-polygon { border-color: #9b59b6; background: rgba(155, 89, 182, 0.3); }
         .map-annotation-marker-area-label, .map-annotation-marker-polygon-label {
           border: none; background: rgba(0,0,0,0.55); color: #fff; font-weight: bold;
         }
         .map-annotation-marker-area-hover, .map-annotation-marker-polygon-hover {
-          background: rgba(155, 89, 182, 0.45) !important;
+          background: rgba(155, 89, 182, 0.6) !important;
           border-color: #c39bd3 !important;
         }
         .map-annotation-draft-tile { outline: 1px solid rgba(241, 196, 15, 0.35); }

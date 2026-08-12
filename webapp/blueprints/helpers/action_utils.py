@@ -37,6 +37,7 @@ from natural20.actions.wild_shape_action import WildShapeAction, RevertWildShape
 from natural20.actions.rage_action import RageAction, EndRageAction, RecklessAttackAction
 from natural20.actions.pickpocket_action import PickpocketAction, PickpocketBonusAction
 from natural20.actions.ready_action import ReadyAction
+from natural20.actions.shell_defense_action import ShellDefenseAction, EmergenceAction
 
 
 _ACTION_TYPE_MAP = {
@@ -83,6 +84,8 @@ _ACTION_TYPE_MAP = {
     'ReadyAction': ReadyAction,
     'PickpocketAction': PickpocketAction,
     'PickpocketBonusAction': PickpocketBonusAction,
+    'ShellDefenseAction': ShellDefenseAction,
+    'EmergenceAction': EmergenceAction,
 }
 
 

@@ -181,6 +181,48 @@
       box-shadow: 0 0 10px rgba(200, 220, 240, 0.35), inset 0 0 8px rgba(240, 248, 255, 0.25);
       animation: pe-web-strands 2.2s ease-in-out infinite alternate;
     }
+    @keyframes pe-shell-pulse {
+      0% { transform: scale(0.95); opacity: 0.35; }
+      100% { transform: scale(1.05); opacity: 0.15; }
+    }
+    @keyframes pe-shell-ring {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .pe-shell-defend {
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(139, 90, 43, 0.55) 0%, rgba(101, 67, 33, 0.30) 55%, rgba(60, 40, 20, 0.0) 78%);
+      border: 3px solid rgba(160, 120, 60, 0.5);
+      box-shadow: 0 0 16px rgba(139, 90, 43, 0.5), inset 0 0 10px rgba(139, 90, 43, 0.35);
+      animation: pe-shell-pulse 1.8s ease-in-out infinite alternate;
+    }
+    .pe-shell-defend-ring {
+      border-radius: 50%;
+      border: 2px dashed rgba(180, 140, 70, 0.45);
+      box-shadow: 0 0 12px rgba(160, 120, 60, 0.3), inset 0 0 8px rgba(180, 140, 70, 0.2);
+      mix-blend-mode: screen;
+      animation: pe-shell-ring 8s linear infinite;
+    }
+    @keyframes pe-prone-spread {
+      0% { transform: scaleX(1.05) scaleY(0.85); opacity: 0.30; }
+      100% { transform: scaleX(1.15) scaleY(0.75); opacity: 0.18; }
+    }
+    @keyframes pe-prone-dust {
+      0% { transform: translateY(0px) rotate(0deg); opacity: 0.35; }
+      100% { transform: translateY(-4px) rotate(15deg); opacity: 0.15; }
+    }
+    .pe-prone {
+      border-radius: 45% / 60%;
+      background: radial-gradient(ellipse, rgba(139, 90, 43, 0.35) 0%, rgba(101, 67, 33, 0.18) 60%, rgba(60, 40, 20, 0.0) 80%);
+      box-shadow: 0 0 8px rgba(139, 90, 43, 0.3), inset 0 0 6px rgba(139, 90, 43, 0.2);
+      animation: pe-prone-spread 2.4s ease-in-out infinite alternate;
+    }
+    .pe-prone-motes {
+      border-radius: 45% / 60%;
+      border: 1px dotted rgba(160, 120, 60, 0.3);
+      mix-blend-mode: screen;
+      animation: pe-prone-dust 3s ease-in-out infinite alternate;
+    }
     `;
     const style = document.createElement('style');
     style.id = 'persistent-effects-style';
@@ -221,6 +263,9 @@
     absorb_elements: 'pe-absorb-elements',
     web: 'pe-web',
     resistance: 'pe-bless',
+    shell_defense: 'pe-shell-defend',
+    in_shell: 'pe-shell-defend',
+    prone: 'pe-prone',
   };
 
   function createOverlayFor($tile, effKey){
@@ -272,6 +317,14 @@
     }
     if (effKey === 'sleep') {
       const $motes = $('<div class="pe-overlay pe-sleep-motes">').attr('data-pe', effKey).css({ width: w, height: h, top: 0, left: 0 });
+      $container.append($motes);
+    }
+    if (effKey === 'shell_defense' || effKey === 'in_shell') {
+      const $ring = $('<div class="pe-overlay pe-shell-defend-ring">').attr('data-pe', effKey).css({ width: w, height: h, top: 0, left: 0 });
+      $container.append($ring);
+    }
+    if (effKey === 'prone') {
+      const $motes = $('<div class="pe-overlay pe-prone-motes">').attr('data-pe', effKey).css({ width: w, height: h, top: 0, left: 0 });
       $container.append($motes);
     }
 

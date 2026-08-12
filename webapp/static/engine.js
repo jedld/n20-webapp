@@ -254,11 +254,13 @@ function invalidateMovementPlanningCaches() {
 let localPathCostMap = null;
 let localPathMovementBudget = null;
 let localPathCostMapFromSnapshot = false;
+let localPathCanMove = true; // Whether the POV entity is physically able to move
 
 function invalidateLocalPathCostMap() {
   localPathCostMap = null;
   localPathMovementBudget = null;
   localPathCostMapFromSnapshot = false;
+  localPathCanMove = true;
 }
 
 function loadLocalPathCostMap(fromCoords, done) {
@@ -274,6 +276,8 @@ function loadLocalPathCostMap(fromCoords, done) {
         localPathCostMap = PathComputeModule.PathfindingCostMap.fromSnapshot(data.snapshot);
         localPathMovementBudget = data.available_movement;
         localPathCostMapFromSnapshot = true;
+        // Track whether the entity can physically move (not unconscious, has movement)
+        localPathCanMove = data.can_move !== false;
         if (done) done(true);
         return;
       }
@@ -310,6 +314,10 @@ function tryBuildLocalPathCostMapFromTiles() {
 }
 
 function computeLocalPathResponse(from, to, accumulatedPath) {
+  // Disable local preview when the entity cannot move (unconscious / speed 0).
+  if (localPathCanMove === false || localPathMovementBudget === 0) {
+    return null;
+  }
   // In battle, only trust backend-generated snapshots because they encode
   // opposing-entity occupancy; tile-derived fallback can miss blockers.
   if (isBattleInProgress() && (!localPathCostMap || !localPathCostMapFromSnapshot)) {
@@ -340,28 +348,40 @@ function computeLocalPathResponse(from, to, accumulatedPath) {
     return null;
   }
   const cm = localPathCostMap;
+  const feetPer = cm.feetPerGrid || 5;
   const terrain_info = path.map(([x, y]) => ({
     x,
     y,
     difficult: !!cm.difficult[cm._idx(x, y)],
   }));
-  let budget = 0;
-  if (localPathMovementBudget != null) {
-    let g = 0;
-    for (let i = 1; i < path.length; i++) {
-      g += pc._baseMoveCost(path[i][0], path[i][1], path[i - 1]);
-    }
-    const spent = g * cm.feetPerGrid;
-    budget = localPathMovementBudget - spent;
+  // Path cost accounting must use integer GRID units to match server
+  // Movement.to_dict() and processMovementData's
+  // `(original_budget - budget) * 5` display math. Do not use
+  // `_baseMoveCost(..., src)` — that adds a 0.1 diagonal A* nudge which
+  // leaks into the "XXft" label as trailing decimals.
+  let spentGrids = 0;
+  for (let i = 1; i < path.length; i++) {
+    spentGrids += Math.floor(pc._baseMoveCost(path[i][0], path[i][1]));
+  }
+  let originalBudgetGrids;
+  let remainingBudgetGrids;
+  if (localPathMovementBudget == null) {
+    // Exploration: uncapped pathfinding (same as server available_movement=null).
+    originalBudgetGrids = spentGrids;
+    remainingBudgetGrids = 0;
+  } else {
+    originalBudgetGrids = Math.round(Number(localPathMovementBudget) / feetPer);
+    remainingBudgetGrids = originalBudgetGrids - spentGrids;
   }
   return {
     path,
     cost: {
-      budget: localPathMovementBudget != null ? budget : 0,
-      original_budget: localPathMovementBudget,
+      budget: remainingBudgetGrids,
+      original_budget: originalBudgetGrids,
     },
     placeable: true,
     terrain_info,
+    can_move: true,
   };
 }
 let currentPathXhr = null;     // in-flight /path jqXHR, aborted on new hover
@@ -617,6 +637,10 @@ function shouldEnableMoveQuickAction() {
     return false;
   }
   if (moveMode || targetMode || multiTargetMode || coneMode || aoePointTargetMode || keyboardMovementMode) {
+    return false;
+  }
+  // Disable movement when the entity is unconscious or physically unable to move
+  if (localPathCanMove === false) {
     return false;
   }
   return true;
@@ -2287,7 +2311,7 @@ let refreshMapDebounceTimer = null;
 let refreshMapResolvers = [];
 
 function scheduleRefreshMap(delayMs = 180, options = {}) {
-  const forceFullRefresh = !!options.forceFullRefresh;
+  const forceFullRefresh = !!options.forceFullRefresh || isEditMode();
   // Suppress /update requests for 500ms after the player commits an action.
   // After clicking attack/target/any multi-step action, the server emits
   // multiple refresh_map/refresh_tiles events while the action resolves,
@@ -3217,6 +3241,57 @@ class EventQueue {
             try { refreshTurn(); } catch (e) { /* non-fatal */ }
           } catch (e) {
             console.warn('Failed to surface control override notification', e, data);
+          }
+          resolve();
+          break;
+        }
+        case "shell_defense_enter":
+        case "shell_enter": {
+          try {
+            const sourceId = data.source || data.entity_id || data.entity_uid;
+            if (sourceId && typeof PersistentEffects !== 'undefined' && PersistentEffects.updateForEntity) {
+              PersistentEffects.updateForEntity(sourceId);
+            }
+          } catch (e) {
+            console.warn('Failed to update shell_defense visual', e, data);
+          }
+          resolve();
+          break;
+        }
+        case "shell_defense_exit":
+        case "shell_exit": {
+          try {
+            const sourceId = data.source || data.entity_id || data.entity_uid;
+            if (sourceId && typeof PersistentEffects !== 'undefined' && PersistentEffects.updateForEntity) {
+              PersistentEffects.updateForEntity(sourceId);
+            }
+          } catch (e) {
+            console.warn('Failed to update shell_defense exit visual', e, data);
+          }
+          resolve();
+          break;
+        }
+        case "prone_enter":
+        case "prone": {
+          try {
+            const sourceId = data.source || data.entity_id || data.entity_uid;
+            if (sourceId && typeof PersistentEffects !== 'undefined' && PersistentEffects.updateForEntity) {
+              PersistentEffects.updateForEntity(sourceId);
+            }
+          } catch (e) {
+            console.warn('Failed to update prone visual', e, data);
+          }
+          resolve();
+          break;
+        }
+        case "prone_exit": {
+          try {
+            const sourceId = data.source || data.entity_id || data.entity_uid;
+            if (sourceId && typeof PersistentEffects !== 'undefined' && PersistentEffects.updateForEntity) {
+              PersistentEffects.updateForEntity(sourceId);
+            }
+          } catch (e) {
+            console.warn('Failed to update prone exit visual', e, data);
           }
           resolve();
           break;
@@ -4356,9 +4431,9 @@ const switchPOV = (entity_uid, canvas) => {
     }
     // update the pov entity id in the body data
     $('body').attr('data-pov-entity', data.pov_entity);
-    // Full refresh on map change without enabling battle-setup plus buttons.
+    // Full refresh on map change; preserve battle-setup plus buttons when active.
     Utils.refreshTileSet(
-      false,
+      battle_setup,
       true,
       0,
       0,
@@ -6717,8 +6792,12 @@ $(document).ready(() => {
 
   // Handle tile-based map selection
   $("#mapModal").on("click", ".map-card", function (event) {
+    if ($(event.target).closest('.upload-overlay').length) {
+      return;
+    }
     const mapName = $(this).data("map-name");
     if (!mapName) return; // ignore non-map tiles (e.g., create-new)
+    event.preventDefault();
     resetViewport();
     Utils.switchMap(mapName, globalCanvas, () => {
       createGlobalCanvas();
@@ -7376,6 +7455,8 @@ $(document).ready(() => {
 
         // Function to process and draw movement path
         const processMovementData = (data) => {
+          if (!data || !data.cost) return;
+          if (data.can_move === false) return;
           if (data.cost.budget < 0) return;
 
           const available_cost = (data.cost.original_budget - data.cost.budget) * 5;
@@ -7502,6 +7583,12 @@ $(document).ready(() => {
               success: (data) => {
                 currentPathXhr = null;
                 setMovePathCache(cacheKey, data);
+                // Update localPathCanMove from the server response so that
+                // mouse-over movement preview is disabled when the entity
+                // cannot physically move (e.g., unconscious).
+                if (data.can_move !== undefined) {
+                  localPathCanMove = data.can_move !== false;
+                }
                 // Only render if the cursor is still on the requested tile.
                 if (lastHoverCoords &&
                     lastHoverCoords.x === pendingDest.x &&
@@ -8119,18 +8206,31 @@ $(document).ready(() => {
       const hasEntity = $tile.find(".entity").length > 0;
       if (!hasEntity) {
         const npcType = draggedNPC;
-        console.log(`Spawning ${npcType} at (${x}, ${y})`);
-        enqueueMapPlacement(() => postJsonPlacement('/spawn_npc', {
-          npc_type: npcType,
-          x: x,
-          y: y,
-        }))
+        console.log(`Placing ${npcType} at (${x}, ${y})`);
+        enqueueMapPlacement(() => {
+          if (isEditMode()) {
+            const payload = { npc_type: npcType, x, y };
+            if (mapName) {
+              payload.map_name = mapName;
+            }
+            return postJsonPlacement('/edit/place_entity', payload);
+          }
+          return postJsonPlacement('/spawn_npc', {
+            npc_type: npcType,
+            x: x,
+            y: y,
+          });
+        })
           .then((data) => {
-            console.log("NPC spawned successfully:", data.entity_uid);
+            if (data && data.placement) {
+              console.log("NPC placed in campaign YAML:", data.placement);
+            } else if (data && data.entity_uid) {
+              console.log("NPC spawned successfully:", data.entity_uid);
+            }
             afterMapPlacementRefresh();
           })
           .catch((err) => {
-            alert("Failed to spawn NPC: " + (err.message || "Unknown error"));
+            alert("Failed to place NPC: " + (err.message || "Unknown error"));
           });
       } else {
         console.log("Cannot place NPC: position is occupied");
@@ -8175,10 +8275,28 @@ $(document).ready(() => {
       if (!hasEntity) {
         const draggedData = e.originalEvent.dataTransfer.getData('text/plain');
         if (draggedData) {
-          console.log(`Moving PC ${draggedData} to (${x}, ${y})`);
+          console.log(`Placing PC ${draggedData} at (${x}, ${y})`);
 
-          // Use ghost token for PC moves too
-          movePCEntityTo(draggedData, x, y);
+          if (isEditMode()) {
+            // In edit mode, persist to campaign YAML
+            const payload = { entity_uid: draggedData, x, y };
+            if (mapName) {
+              payload.map_name = mapName;
+            }
+            enqueueMapPlacement(() => postJsonPlacement('/edit/place_entity', payload))
+              .then((data) => {
+                if (data && data.placement) {
+                  console.log("PC placed in campaign YAML:", data.placement);
+                }
+                afterMapPlacementRefresh();
+              })
+              .catch((err) => {
+                alert("Failed to place PC: " + (err.message || "Unknown error"));
+              });
+          } else {
+            // Use ghost token for PC moves in runtime mode
+            movePCEntityTo(draggedData, x, y);
+          }
         }
       } else {
         console.log("Cannot place PC: position is occupied");
@@ -8425,8 +8543,12 @@ $(document).ready(() => {
       const $item = $(this);
       const objectName = $item.find('.object-item-name').text().toLowerCase();
       const objectMeta = $item.find('.object-item-type').text().toLowerCase();
+      const objectId = String($item.data('object-type') || '').toLowerCase();
       const category = String($item.data('object-category') || 'props');
-      const matchesSearch = !searchTerm || objectName.includes(searchTerm) || objectMeta.includes(searchTerm);
+      const matchesSearch = !searchTerm
+        || objectName.includes(searchTerm)
+        || objectMeta.includes(searchTerm)
+        || objectId.includes(searchTerm);
       const matchesCategory = activeObjectSpawnerCategory === 'all' || category === activeObjectSpawnerCategory;
       $item.toggle(matchesSearch && matchesCategory);
     });
@@ -8453,11 +8575,11 @@ $(document).ready(() => {
              data-spawner-object="true"
              data-object-type="${object.id}"
              data-object-category="${object.category || 'props'}"
-             title="${object.description || object.name}">
+             title="${object.id}${object.description ? ' — ' + object.description : ''}">
           <img class="object-item-image" src="/assets/editor/${object.image}" alt="${object.name}">
           <div class="object-item-info">
             <div class="object-item-name">${object.name}</div>
-            <div class="object-item-type">${categoryLabel} • AC ${object.ac} • HP ${object.hp} • ${passableText}</div>
+            <div class="object-item-type">${object.id} • ${categoryLabel} • AC ${object.ac} • HP ${object.hp} • ${passableText}</div>
           </div>
         </div>
       `);
@@ -8696,6 +8818,56 @@ $(document).ready(() => {
             showPickerInCenterActionBar(entity_uid, 'Use Item', data, coordsx, coordsy);
           },
         );
+        break;
+      }
+      case "select_weapon": {
+        // Weapon selection for spells like Booming Blade / Green-Flame Blade
+        const validWeapons = data.valid_weapons || [];
+        if (!validWeapons || validWeapons.length === 0) {
+          console.warn('handleAction: select_weapon without valid weapons', data);
+          return;
+        }
+        closeCenterActionBar();
+        // create a modal with a list of weapons to select from
+        const $modal = $(
+          '<div class="modal fade" id="select-weapon-modal" tabindex="-1" role="dialog" aria-labelledby="select-weapon-modal-label" aria-hidden="true">',
+        );
+        $modal.html(`
+          <div class="modal-dialog" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="select-weapon-modal-label">Select a weapon</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              </div>
+              <div class="modal-body">
+                <ul class="list-group">
+                  ${validWeapons.map((weapon) => `<li class="list-group-item choice-item" data-weapon="${weapon}">${weapon}</li>`).join('')}
+                </ul>
+              </div>
+            </div>
+          </div>
+        `);
+        $('body').append($modal);
+        $modal.modal('show');
+
+        // Add click handler directly to the modal
+        $modal.on('click', '.choice-item', function () {
+          const weapon = $(this).data('weapon');
+          $modal.modal('hide');
+          const nextOpts = Object.assign({}, opts || {});
+          nextOpts.weapon = weapon;
+          ajaxPost(
+            '/action',
+            { id: entity_uid, action, opts: nextOpts },
+            (response) => {
+              $('#modal-1').modal('hide');
+              handleAction(entity_uid, action, nextOpts, coordsx, coordsy, response);
+            },
+            true,
+          );
+        });
         break;
       }
       case "select_choice": {

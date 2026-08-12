@@ -379,8 +379,14 @@ def _can_edit_character(character_name):
     # already claimed it.
     entry = selectable_character_entry(character_name)
     if entry is not None:
+        owned_uids = {
+            str(entry.get('name') or '').lower(),
+            str((entry.get('overrides') or {}).get('entity_uid') or '').lower(),
+        }
+        owned_uids.discard('')
         for controller in get_controllers():
-            if controller.get('entity_uid') != character_name:
+            ctrl_uid = str(controller.get('entity_uid') or '').lower()
+            if ctrl_uid not in owned_uids:
                 continue
             controllers = controller.get('controllers') or []
             if controllers and username not in controllers:
@@ -569,14 +575,28 @@ def _register_new_character_in_campaign(pc, safe_name):
             idx = {}
         selectable = idx.get('selectable_characters') or []
         lower = str(entity_uid).lower()
+        display_name = (pc.get('name') or safe_name or lower).strip() or lower
         if not any(c.get('name', '').lower() == lower for c in selectable):
             selectable.append({
                 'name': lower,
+                'display_name': display_name,
                 'file': portrait_file,
-                'description': pc.get('description', lower),
+                'description': pc.get('description', display_name),
                 'sheet': sheet_path,
                 'overrides': {'entity_uid': lower},
             })
+        else:
+            # Keep display_name fresh if the sheet is re-registered / re-imported.
+            for entry in selectable:
+                if str(entry.get('name', '')).lower() == lower:
+                    entry['display_name'] = display_name
+                    entry['file'] = portrait_file
+                    entry['description'] = pc.get('description', entry.get('description') or display_name)
+                    entry['sheet'] = sheet_path
+                    overrides = dict(entry.get('overrides') or {})
+                    overrides['entity_uid'] = lower
+                    entry['overrides'] = overrides
+                    break
         idx['selectable_characters'] = selectable
         with open(index_json_path, 'w') as jf:
             json.dump(idx, jf, indent=2)

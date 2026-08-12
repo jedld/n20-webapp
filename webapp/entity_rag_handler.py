@@ -600,7 +600,7 @@ class EntityRAGHandler:
             message = f"{message} ({extras})"
         logger.log(level, message)
 
-    def plan_response_volume(self, receiver: Entity, targets: List[Entity], volume: Optional[str] = None) -> Tuple[Optional[str], List[Entity]]:
+    def plan_response_volume(self, receiver: Entity, targets: List[Entity], volume: Optional[str] = None, *, default_volume: Optional[str] = None) -> Tuple[Optional[str], List[Entity]]:
         if not targets:
             return None, []
 
@@ -610,7 +610,7 @@ class EntityRAGHandler:
             battle_map = None
 
         if battle_map is None:
-            return normalize_speech_mode(mode=volume), list(targets)
+            return normalize_speech_mode(mode=volume or default_volume), list(targets)
 
         battle = None
         try:
@@ -629,6 +629,19 @@ class EntityRAGHandler:
                 if reachability.get(target.entity_uid, {}).get('reachable_now')
             ]
             return (selected_mode if reachable_targets else None), reachable_targets
+
+        if default_volume:
+            selected_mode = normalize_speech_mode(mode=default_volume)
+            reachability = {
+                entry['entity'].entity_uid: entry
+                for entry in conversation_reachability(receiver, battle_map, mode=selected_mode, battle=battle)
+            }
+            reachable_targets = [
+                target for target in targets
+                if reachability.get(target.entity_uid, {}).get('reachable_now')
+            ]
+            if reachable_targets:
+                return selected_mode, reachable_targets
 
         reachability = {
             entry['entity'].entity_uid: entry
@@ -655,6 +668,8 @@ class EntityRAGHandler:
         speaker: Entity = None,
         llm_conversation_handler=None,
         player_speaker: Entity = None,
+        *,
+        default_volume: Optional[str] = None,
     ) -> Dict[str, Any]:
         plan = {
             'language': 'common',
@@ -801,7 +816,12 @@ class EntityRAGHandler:
             return plan
 
         targets = self.resolve_response_targets(receiver, speaker=speaker, target_spec=controls.get('target_spec'))
-        volume, targets = self.plan_response_volume(receiver, targets, volume=controls.get('volume'))
+        volume, targets = self.plan_response_volume(
+            receiver,
+            targets,
+            volume=controls.get('volume'),
+            default_volume=default_volume,
+        )
         if (not targets or not volume) and speaker is not None:
             self._log_conversation_plan(
                 receiver,
@@ -1944,6 +1964,42 @@ class EntityRAGHandler:
         if not text:
             return ''
         return f"Campaign setting (Forgotten Realms backdrop — treat as established local knowledge):\n{text}"
+
+    def npc_backstory_prompt(self, entity: Entity) -> str:
+        """Return formatted backstory text for use in NPC conversation system prompts.
+
+        Pulls from the entity's ``backstory()`` callable (YAML ``backstory`` key),
+        as well as the ``description`` and ``notes`` properties when they carry
+        additional biographical context that the LLM should know about the NPC's
+        personal history.
+        """
+        if entity is None:
+            return ''
+
+        text_parts: List[str] = []
+
+        # Primary backstory via the entity's backstory() callable
+        backstory_fn = getattr(entity, 'backstory', None)
+        if callable(backstory_fn):
+            try:
+                bs = str(backstory_fn() or '').strip()
+                if bs:
+                    text_parts.append(bs)
+            except Exception:
+                pass
+
+        # Also gather description and notes when they add biographical depth
+        props = self._entity_properties_dict(entity)
+        for key in ('description', 'notes'):
+            value = props.get(key)
+            if isinstance(value, str) and value.strip():
+                text_parts.append(value.strip())
+
+        if not text_parts:
+            return ''
+
+        combined = '\n'.join(text_parts)
+        return f"Your backstory and personal history (use to shape demeanor, priorities, and speech):\n{combined}"
 
     def _canonical_item_slug(self, item_slug: str) -> str:
         return canonical_item_slug(item_slug, merged_offer_configs(self._game_properties()))

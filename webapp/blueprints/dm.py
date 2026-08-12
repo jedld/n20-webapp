@@ -2769,12 +2769,11 @@ def admin_npc_conversation_mode():
     if not (callable(getattr(entity, 'is_npc', None)) and entity.is_npc()):
         return jsonify(success=False, error='Conversation mode applies to NPCs only'), 400
     try:
-        normalized = set_npc_conversation_mode(game_session, entity_id, mode)
+        set_npc_conversation_mode(game_session, entity_id, mode)
     except ValueError as exc:
         return jsonify(success=False, error=str(exc)), 400
     return jsonify(
         success=True,
         entity_uid=entity_id,
-        conversation_mode=normalized,
         **npc_conversation_mode_payload(current_game, game_session, entity),
     )

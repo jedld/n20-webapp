@@ -32,7 +32,7 @@
     "effects.min.js": "6b152b276a",
     "engine.min.js": "1c6835dc53",
     "inert-polyfill.min.js": "fcce9c44c6",
-    "map_annotations_edit.min.js": "1dcfe988b7",
+    "map_annotations_edit.min.js": "f201903d9c",
     "map_graph.min.js": "cde7317c95",
     "path_compute.min.js": "ccc22663d8",
     "perf.min.js": "7305880b63",
@@ -51,6 +51,6 @@
     "sheet.min.css": "ee15fe841e",
     "styles.min.css": "af2c2f6709"
   },
-  "generatedAt": "2026-08-04T13:38:58.596Z",
-  "buildVersion": "4c9bdb7d0d7b"
+  "generatedAt": "2026-08-05T02:50:17.859Z",
+  "buildVersion": "4d8383dcea7e"
 }

@@ -24,54 +24,107 @@ const Utils = {
       }
     });
   },
-  switchMap: function (mapId, canvas, first_callback = null) {
-    ajaxPost('/switch_map', { map: mapId }, (data) => {
-      console.log('Map selection successful:', data);
-      $('#mapModal').modal('hide');
-      // The new map will have a different .tiles-container bounding rect and
-      // possibly a different tile size, so any cached pathfinding origin or
-      // memoized /path responses from the previous map are stale.
-      try { if (typeof clearMovePathCache === 'function') clearMovePathCache(); } catch (e) { }
-      Utils.invalidateMovementGridCache();
-      // Update map metadata before fetching tiles so refreshTileSet does not
-      // ignore the response due to a stale body[data-current-map] value.
-      Utils.updateMapDisplay(data, canvas);
-      if (window.EditMode && typeof window.EditMode.clearOverlay === 'function') {
-        window.EditMode.clearOverlay();
+  _switchMapInFlight: false,
+  _pendingSwitchMapId: null,
+  hideMapModalSafely: function () {
+    const $modal = $('#mapModal');
+    if (!$modal.length) {
+      return;
+    }
+    try {
+      if (document.activeElement && $modal[0].contains(document.activeElement)) {
+        document.activeElement.blur();
       }
-      Utils.refreshTileSet(false, false, 0, 0, null, () => {
-        // Re-invalidate after DOM swap so the next draw recomputes from the
-        // freshly mounted tiles container.
+    } catch (e) { /* noop */ }
+    if ($modal.hasClass('in') || $modal.is(':visible')) {
+      $modal.modal('hide');
+    }
+  },
+  finishSwitchMap: function (canvas, first_callback) {
+    Utils._switchMapInFlight = false;
+    const pending = Utils._pendingSwitchMapId;
+    Utils._pendingSwitchMapId = null;
+    if (pending && pending !== String($('body').attr('data-current-map') || '')) {
+      Utils.switchMap(pending, canvas, first_callback);
+      return;
+    }
+    if (typeof first_callback === 'function') {
+      first_callback();
+    }
+  },
+  switchMap: function (mapId, canvas, first_callback = null) {
+    const targetId = String(mapId || '').trim();
+    if (!targetId) {
+      return;
+    }
+    if (Utils._switchMapInFlight) {
+      Utils._pendingSwitchMapId = targetId;
+      return;
+    }
+    Utils._switchMapInFlight = true;
+    $.ajax({
+      url: '/switch_map',
+      type: 'POST',
+      data: { map: targetId },
+      success: (data) => {
+        console.log('Map selection successful:', data);
+        Utils.hideMapModalSafely();
+        // The new map will have a different .tiles-container bounding rect and
+        // possibly a different tile size, so any cached pathfinding origin or
+        // memoized /path responses from the previous map are stale.
+        try { if (typeof clearMovePathCache === 'function') clearMovePathCache(); } catch (e) { }
         Utils.invalidateMovementGridCache();
-        // Refresh portraits when map is switched
-        Utils.refreshPortraits();
-        // Show narration if present
-        Utils.checkNarration(data);
-        // Apply map-default effects if provided and DM has no active override
-        try {
-          if (!data.dm_active && typeof Effects !== 'undefined') {
-            var arr = Array.isArray(data.map_default_effects) ? data.map_default_effects.slice() : [];
-            if (!arr.length && data.map_default_effect) arr = [data.map_default_effect];
-            if (arr.length && Effects.applyEffect) {
-              // Ensure stacking by default
-              arr = arr.map(function (p) { try { if (p && typeof p === 'object' && p.exclusive === undefined) p.exclusive = false; } catch (e) { } return p; });
-              Effects.applyEffect(arr);
-            } else if (Effects.stopAll) {
-              // No default and no DM override: ensure any prior effect is removed
-              Effects.stopAll();
+        // Update map metadata before fetching tiles so refreshTileSet does not
+        // ignore the response due to a stale body[data-current-map] value.
+        Utils.updateMapDisplay(data, canvas);
+        if (window.EditMode && typeof window.EditMode.clearOverlay === 'function') {
+          window.EditMode.clearOverlay();
+        }
+        Utils.refreshTileSet(false, false, 0, 0, null, () => {
+          // Re-invalidate after DOM swap so the next draw recomputes from the
+          // freshly mounted tiles container.
+          Utils.invalidateMovementGridCache();
+          // Refresh portraits when map is switched
+          Utils.refreshPortraits();
+          // Show narration if present
+          Utils.checkNarration(data);
+          // Apply map-default effects if provided and DM has no active override
+          try {
+            if (!data.dm_active && typeof Effects !== 'undefined') {
+              var arr = Array.isArray(data.map_default_effects) ? data.map_default_effects.slice() : [];
+              if (!arr.length && data.map_default_effect) arr = [data.map_default_effect];
+              if (arr.length && Effects.applyEffect) {
+                // Ensure stacking by default
+                arr = arr.map(function (p) { try { if (p && typeof p === 'object' && p.exclusive === undefined) p.exclusive = false; } catch (e) { } return p; });
+                Effects.applyEffect(arr);
+              } else if (Effects.stopAll) {
+                // No default and no DM override: ensure any prior effect is removed
+                Effects.stopAll();
+              }
             }
+          } catch (e) { console.warn('Failed to apply map default effect', e); }
+          // Ask server to (re)send effects after map switch in case client missed anything
+          try { if (typeof socket !== 'undefined' && socket && socket.emit) socket.emit('request_effects'); } catch (e) { }
+          if (window.EditMode && typeof window.EditMode.loadOverlay === 'function') {
+            window.EditMode.loadOverlay();
           }
-        } catch (e) { console.warn('Failed to apply map default effect', e); }
-        // Ask server to (re)send effects after map switch in case client missed anything
-        try { if (typeof socket !== 'undefined' && socket && socket.emit) socket.emit('request_effects'); } catch (e) { }
-        if (window.EditMode && typeof window.EditMode.loadOverlay === 'function') {
-          window.EditMode.loadOverlay();
+          if (window.MapAnnotationsEdit && typeof window.MapAnnotationsEdit.reload === 'function') {
+            window.MapAnnotationsEdit.reload();
+          }
+          Utils.finishSwitchMap(canvas, first_callback);
+        }, true);
+      },
+      error: (jqXHR, textStatus, errorThrown) => {
+        console.error('Map switch failed:', textStatus, errorThrown);
+        Utils._switchMapInFlight = false;
+        Utils._pendingSwitchMapId = null;
+        try {
+          const msg = (jqXHR && jqXHR.responseJSON && jqXHR.responseJSON.error) || 'Failed to switch map.';
+          alert(msg);
+        } catch (e) {
+          alert('Failed to switch map.');
         }
-        if (window.MapAnnotationsEdit && typeof window.MapAnnotationsEdit.reload === 'function') {
-          window.MapAnnotationsEdit.reload();
-        }
-        if (first_callback) first_callback();
-      }, true);
+      },
     });
   },
 
@@ -211,6 +264,7 @@ const Utils = {
       }
 
       if (callback) callback();
+      Utils.reloadEditOverlayIfNeeded();
     });
   },
 
@@ -954,7 +1008,8 @@ const Utils = {
       ctx.fillStyle = 'green';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(String(available_cost) + 'ft', end.x, end.y + half);
+      const costLabel = Math.round(Number(available_cost) || 0);
+      ctx.fillText(String(costLabel) + 'ft', end.x, end.y + half);
 
       if (options && options.stackDescent) {
         const sd = options.stackDescent;
