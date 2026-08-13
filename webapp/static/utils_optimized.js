@@ -502,25 +502,23 @@ const Utils = {
     
     // Update tiles container and data attributes
     const $tilesContainer = $("#main-map-area .tiles-container");
+    const offsetX = Number(imageOffset[0]) || 0;
+    const offsetY = Number(imageOffset[1]) || 0;
     $tilesContainer
       .css({
         position: 'absolute',
-        top: '-' + tile_size + 'px',
-        left: '-' + tile_size + 'px',
+        top: (-tile_size - offsetY) + 'px',
+        left: (-tile_size - offsetX) + 'px',
         width: data.width + 'px',
         height: data.height + 'px',
       })
       .data({ width: data.width, height: data.height });
 
-    // Align offsets with initial map load behavior
-    $("#tiles-area").css({
-      top: (-tile_size + imageOffset[1]) + 'px',
-      left: (-tile_size + imageOffset[0]) + 'px',
-    });
+    // Match index.html: image container at tile_size; tiles at -(tile_size + offset)
     $('.image-container').css({
       height: data.height + 'px',
-      top: (imageOffset[1] + tile_size) + 'px',
-      left: (imageOffset[0] + tile_size) + 'px'
+      top: tile_size + 'px',
+      left: tile_size + 'px'
     });
 
     // Update image

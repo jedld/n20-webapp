@@ -3304,21 +3304,25 @@ class EventQueue {
   }
 
   processMapEvent(data, resolve) {
-    const { message: map_url, width, height, image_offset_px } = data;
+    const { message: map_url, width, height } = data;
+    const image_offset_px = data.image_offset_px || [0, 0];
+    const offsetX = Number(image_offset_px[0]) || 0;
+    const offsetY = Number(image_offset_px[1]) || 0;
     $(".tiles-container").data({ width, height });
     $(".image-container img")
       .attr("src", map_url)
       .css({ width: `${width}px`, objectFit: 'cover', objectPosition: 'top' });
-    const tile_size = $(".tiles-container").data("tile-size");
+    const tile_size = parseInt($(".tiles-container").data("tile-size"), 10) || 0;
+    // Match index.html / Utils.updateMapDisplay: offset on tiles only, not the image container.
     $(".image-container").css({
       height: `${height}px`,
-      top: image_offset_px[1] + tile_size,
-      left: image_offset_px[0] + tile_size,
+      top: tile_size,
+      left: tile_size,
     });
     $("#tiles-area").css({
-      top: -tile_size + image_offset_px[1],
-      left: -tile_size + image_offset_px[0],
-    })
+      top: -tile_size - offsetY,
+      left: -tile_size - offsetX,
+    });
     const canvas = document.querySelector("canvas");
     canvas.width = width + tile_size;
     canvas.height = height + tile_size;
@@ -6526,13 +6530,20 @@ $(document).ready(() => {
 
   $(document).on('change', '#stack-layer-select', function () {
     const mapName = $(this).val();
-    const currentMap = $('body').data('current-map');
+    const currentMap = $('body').attr('data-current-map');
     if (!mapName || mapName === currentMap) {
       return;
     }
     Utils.switchMap(mapName, globalCanvas, () => {
       $('#stack-layer-select').val(mapName);
     });
+  });
+
+  $('#mapModal').on('shown.bs.modal', function () {
+    const currentMap = $('body').attr('data-current-map') || '';
+    if (currentMap && typeof Utils.syncMapPickerUI === 'function') {
+      Utils.syncMapPickerUI(currentMap);
+    }
   });
 
   // --- Canvas Setup ---
@@ -6798,6 +6809,9 @@ $(document).ready(() => {
     const mapName = $(this).data("map-name");
     if (!mapName) return; // ignore non-map tiles (e.g., create-new)
     event.preventDefault();
+    if (typeof Utils.syncMapPickerUI === 'function') {
+      Utils.syncMapPickerUI(mapName);
+    }
     resetViewport();
     Utils.switchMap(mapName, globalCanvas, () => {
       createGlobalCanvas();
@@ -7156,6 +7170,9 @@ $(document).ready(() => {
       e.stopPropagation();
       // Call the note modal function if it's a note button
       if ($(this).hasClass('show-note-btn')) {
+        if (window.__n20SuppressNoteModal) {
+          return;
+        }
         Utils.showNoteModal(this);
       }
     },

@@ -59,6 +59,18 @@
     if (window.EditMode && typeof window.EditMode.fixturePayloadFromItem === 'function') {
       return window.EditMode.fixturePayloadFromItem(item);
     }
+    if (item.source === 'inline_note' && item.parent_id) {
+      return {
+        item_id: String(item.parent_id),
+        kind: String(item.parent_kind || item.kind || 'object'),
+        token: item.token || undefined,
+        layer: item.layer || undefined,
+        source: item.parent_source || undefined,
+        index: item.parent_index != null ? item.parent_index : undefined,
+        object_type: item.parent_object_type || item.object_type || undefined,
+        label: item.label,
+      };
+    }
     return {
       item_id: String(item.id),
       kind: String(item.kind),
@@ -111,6 +123,419 @@
 
   function fieldId(key) {
     return `edit-prop-${String(key).replace(/[^a-z0-9_-]+/gi, '-')}`;
+  }
+
+  function normalizeNoteEntry(entry) {
+    if (entry == null) {
+      return { note: '' };
+    }
+    if (typeof entry === 'string') {
+      return { note: entry };
+    }
+    if (typeof entry !== 'object') {
+      return { note: String(entry) };
+    }
+    const note = Object.assign({}, entry);
+    let text = note.note != null ? note.note : (note.content != null ? note.content : note.message);
+    if (text != null && typeof text === 'object') {
+      text = JSON.stringify(text);
+    } else if (text != null) {
+      text = String(text);
+    } else {
+      text = '';
+    }
+    note.note = text;
+    return note;
+  }
+
+  function coerceNoteListValue(value) {
+    if (Array.isArray(value)) {
+      return value;
+    }
+    if (value == null || value === '') {
+      return [];
+    }
+    if (typeof value === 'string') {
+      if (value.indexOf('[object Object]') !== -1) {
+        return [{ note: '', perception_dc: 0 }];
+      }
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch (err) {
+        /* ignore */
+      }
+      return [{ note: value }];
+    }
+    if (typeof value === 'object') {
+      return Object.values(value);
+    }
+    return [];
+  }
+
+  function isNoteListField(field, value) {
+    const type = field && field.type;
+    if (type === 'note_list') {
+      return true;
+    }
+    if (field && field.key === 'notes') {
+      return true;
+    }
+    if (Array.isArray(value) && value.length && typeof value[0] === 'object') {
+      return field && (field.key === 'notes' || type === 'note_list');
+    }
+    return false;
+  }
+
+  function isInventoryListField(field) {
+    const type = field && field.type;
+    if (type === 'inventory_list') {
+      return true;
+    }
+    return field && field.key === 'inventory';
+  }
+
+  function coerceInventoryListValue(value) {
+    if (Array.isArray(value)) {
+      return value.map(function (entry) {
+        if (typeof entry === 'string') {
+          return { type: entry, qty: 1 };
+        }
+        if (!entry || typeof entry !== 'object') {
+          return null;
+        }
+        const type = entry.type || entry.item || entry.name;
+        if (!type) {
+          return null;
+        }
+        let qty = Number(entry.qty);
+        if (!Number.isFinite(qty) || qty < 1) {
+          qty = 1;
+        }
+        return { type: String(type), qty: qty };
+      }).filter(Boolean);
+    }
+    if (value && typeof value === 'object') {
+      return Object.keys(value).map(function (key) {
+        const entry = value[key];
+        let qty = 1;
+        if (entry && typeof entry === 'object') {
+          qty = Number(entry.qty);
+        } else {
+          qty = Number(entry);
+        }
+        if (!Number.isFinite(qty) || qty < 1) {
+          qty = 1;
+        }
+        return { type: String(key), qty: qty };
+      });
+    }
+    return [];
+  }
+
+  function formatItemLabel(item) {
+    if (!item) {
+      return '';
+    }
+    const label = item.label || item.value || '';
+    const value = item.value || '';
+    if (label && value && label !== value) {
+      return label + ' (' + value + ')';
+    }
+    return label || value;
+  }
+
+  function renderInventoryList(field, inventory) {
+    const key = field.key;
+    const catalogUrl = field.catalog_url || '/edit/catalog/items';
+    const $wrap = $('<div class="edit-inventory-editor"></div>').attr('data-field-key', key);
+    const $list = $('<div class="edit-inventory-list"></div>').attr('data-field-key', key);
+    const $empty = $('<p class="help-block edit-inventory-empty">No items in this container.</p>');
+
+    function syncEmptyState() {
+      $empty.toggle($list.children('.edit-inventory-row').length === 0);
+    }
+
+    function formatContentsSummary(contents) {
+      const rows = coerceInventoryListValue(contents);
+      if (!rows.length) {
+        return '';
+      }
+      return rows.map(function (row) {
+        return row.qty + '× ' + row.type;
+      }).join(', ');
+    }
+
+    function addRow(entry) {
+      const itemType = String((entry && entry.type) || '').trim();
+      const qty = Math.max(1, Number((entry && entry.qty) || 1) || 1);
+      if (!itemType) {
+        return;
+      }
+      const hasContents = entry && (Array.isArray(entry.contents) || entry.is_container);
+      if (!hasContents) {
+        const $existing = $list.children('.edit-inventory-row').filter(function () {
+          return String($(this).attr('data-item-type') || '') === itemType
+            && !$(this).attr('data-contents');
+        });
+        if ($existing.length) {
+          const $qty = $existing.find('.edit-inventory-qty');
+          $qty.val(Math.max(1, Number($qty.val() || 0) + qty));
+          syncEmptyState();
+          return;
+        }
+      }
+      const $row = $('<div class="edit-inventory-row"></div>').attr('data-item-type', itemType);
+      if (hasContents) {
+        const contents = Array.isArray(entry.contents) ? entry.contents : [];
+        $row.attr('data-contents', JSON.stringify(contents));
+        if (entry.is_container) {
+          $row.attr('data-is-container', '1');
+        }
+      }
+      const $meta = $('<div class="edit-inventory-meta"></div>');
+      $meta.append($('<div class="edit-inventory-type"></div>').text(itemType));
+      if (entry && entry.label && entry.label !== itemType) {
+        $meta.append($('<div class="edit-inventory-label text-muted"></div>').text(entry.label));
+      }
+      const contentsSummary = formatContentsSummary(entry && entry.contents);
+      if (contentsSummary) {
+        $meta.append(
+          $('<div class="edit-inventory-contents text-muted"></div>').text('Contains: ' + contentsSummary),
+        );
+      } else if (hasContents) {
+        $meta.append($('<div class="edit-inventory-contents text-muted"></div>').text('Empty container'));
+      }
+      const $qty = $('<input type="number" class="form-control input-sm edit-inventory-qty" min="1">').val(qty);
+      const $remove = $('<button type="button" class="btn btn-link btn-xs text-danger edit-inventory-remove">Remove</button>');
+      $remove.on('click', function () {
+        $row.remove();
+        syncEmptyState();
+      });
+      $row.append($meta, $qty, $remove);
+      $list.append($row);
+      syncEmptyState();
+    }
+
+    coerceInventoryListValue(inventory).forEach(addRow);
+    syncEmptyState();
+
+    const $adder = $('<div class="edit-inventory-adder"></div>');
+    const $searchWrap = $('<div class="edit-inventory-search-wrap"></div>');
+    const $search = $(
+      '<input type="text" class="form-control edit-inventory-search" placeholder="Search items (e.g. healing potion, longsword)" autocomplete="off">',
+    );
+    const $suggestions = $('<div class="edit-inventory-suggestions" role="listbox"></div>').hide();
+    const $qtyAdd = $('<input type="number" class="form-control input-sm edit-inventory-add-qty" min="1" value="1" title="Quantity">');
+    const $addBtn = $('<button type="button" class="btn btn-default btn-sm edit-inventory-add">Add</button>');
+    $searchWrap.append($search, $suggestions);
+    $adder.append($searchWrap, $qtyAdd, $addBtn);
+
+    let searchTimer = null;
+    let activeIndex = -1;
+    let currentSuggestions = [];
+
+    function hideSuggestions() {
+      $suggestions.hide().empty();
+      activeIndex = -1;
+      currentSuggestions = [];
+    }
+
+    function selectSuggestion(item) {
+      if (!item) {
+        return;
+      }
+      $search.val(item.value || '');
+      $search.data('selected-item', item);
+      hideSuggestions();
+      $qtyAdd.focus().select();
+    }
+
+    function renderSuggestions(items) {
+      currentSuggestions = items || [];
+      $suggestions.empty();
+      if (!currentSuggestions.length) {
+        $suggestions.append($('<div class="edit-inventory-suggestion muted">No matching items</div>'));
+        $suggestions.show();
+        activeIndex = -1;
+        return;
+      }
+      currentSuggestions.forEach(function (item, idx) {
+        const $opt = $('<button type="button" class="edit-inventory-suggestion" role="option"></button>');
+        $opt.attr('data-index', idx);
+        $opt.append($('<span class="edit-inventory-suggestion-label"></span>').text(formatItemLabel(item)));
+        if (item.category) {
+          $opt.append($('<span class="edit-inventory-suggestion-cat"></span>').text(item.category));
+        }
+        $opt.on('mousedown', function (e) {
+          e.preventDefault();
+          selectSuggestion(item);
+        });
+        $suggestions.append($opt);
+      });
+      activeIndex = 0;
+      $suggestions.children('.edit-inventory-suggestion').eq(0).addClass('is-active');
+      $suggestions.show();
+    }
+
+    function fetchSuggestions(query) {
+      $.getJSON(catalogUrl, { q: query, limit: 12 }, function (resp) {
+        if (!resp || !resp.success) {
+          hideSuggestions();
+          return;
+        }
+        renderSuggestions(resp.items || []);
+      }).fail(function () {
+        hideSuggestions();
+      });
+    }
+
+    $search.on('input', function () {
+      $search.removeData('selected-item');
+      const query = String($search.val() || '').trim();
+      if (searchTimer) {
+        clearTimeout(searchTimer);
+      }
+      if (!query) {
+        hideSuggestions();
+        return;
+      }
+      searchTimer = setTimeout(function () {
+        fetchSuggestions(query);
+      }, 160);
+    });
+
+    $search.on('keydown', function (e) {
+      const $opts = $suggestions.children('.edit-inventory-suggestion[data-index]');
+      if (e.key === 'ArrowDown' && $opts.length) {
+        e.preventDefault();
+        activeIndex = Math.min($opts.length - 1, activeIndex + 1);
+        $opts.removeClass('is-active').eq(activeIndex).addClass('is-active');
+        return;
+      }
+      if (e.key === 'ArrowUp' && $opts.length) {
+        e.preventDefault();
+        activeIndex = Math.max(0, activeIndex - 1);
+        $opts.removeClass('is-active').eq(activeIndex).addClass('is-active');
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (activeIndex >= 0 && currentSuggestions[activeIndex]) {
+          selectSuggestion(currentSuggestions[activeIndex]);
+          return;
+        }
+        $addBtn.trigger('click');
+        return;
+      }
+      if (e.key === 'Escape') {
+        hideSuggestions();
+      }
+    });
+
+    $search.on('blur', function () {
+      setTimeout(hideSuggestions, 120);
+    });
+
+    $addBtn.on('click', function () {
+      const selected = $search.data('selected-item');
+      const typed = String($search.val() || '').trim();
+      const itemType = (selected && selected.value) || typed;
+      if (!itemType) {
+        $search.focus();
+        return;
+      }
+      let qty = Number($qtyAdd.val());
+      if (!Number.isFinite(qty) || qty < 1) {
+        qty = 1;
+      }
+      addRow({
+        type: itemType,
+        qty: qty,
+        label: selected && selected.label,
+      });
+      $search.val('').removeData('selected-item');
+      $qtyAdd.val(1);
+      hideSuggestions();
+      $search.focus();
+    });
+
+    $wrap.append($list, $empty, $adder);
+    return $wrap;
+  }
+
+  function renderNoteList(key, notes) {
+    const $list = $('<div class="edit-note-list"></div>').attr('data-field-key', key);
+    function addRow(entry) {
+      const note = normalizeNoteEntry(entry);
+      const $row = $('<div class="edit-note-row panel panel-default"></div>');
+      const $body = $('<div class="panel-body"></div>');
+      $body.append($('<label>Text</label>'));
+      $body.append(
+        $('<textarea class="form-control edit-note-text" rows="3"></textarea>').val(note.note || note.content || ''),
+      );
+      const $dcRow = $('<div class="row"></div>');
+      const $perc = $('<div class="col-xs-6"></div>');
+      $perc.append($('<label>Perception DC</label>'));
+      $perc.append(
+        $('<input type="number" class="form-control edit-note-perception" min="0">').val(
+          note.perception_dc != null ? note.perception_dc : 0,
+        ),
+      );
+      const $inv = $('<div class="col-xs-6"></div>');
+      $inv.append($('<label>Investigation DC</label>'));
+      $inv.append(
+        $('<input type="number" class="form-control edit-note-investigation" min="0" placeholder="optional">').val(
+          note.investigation_dc != null ? note.investigation_dc : '',
+        ),
+      );
+      $dcRow.append($perc, $inv);
+      $body.append($dcRow);
+      const $skillRow = $('<div class="row"></div>');
+      const $rel = $('<div class="col-xs-6"></div>');
+      $rel.append($('<label>Religion DC</label>'));
+      $rel.append(
+        $('<input type="number" class="form-control edit-note-religion" min="0" placeholder="optional">').val(
+          note.religion_dc != null ? note.religion_dc : '',
+        ),
+      );
+      const $arc = $('<div class="col-xs-6"></div>');
+      $arc.append($('<label>Arcana DC</label>'));
+      $arc.append(
+        $('<input type="number" class="form-control edit-note-arcana" min="0" placeholder="optional">').val(
+          note.arcana_dc != null ? note.arcana_dc : '',
+        ),
+      );
+      $skillRow.append($rel, $arc);
+      $body.append($skillRow);
+      $body.append($('<label>Image filename</label>'));
+      $body.append(
+        $('<input type="text" class="form-control edit-note-image" placeholder="e.g. pit_trap_image">').val(note.image || ''),
+      );
+      $body.append($('<p class="help-block">Optional image under static/assets/objects/</p>'));
+      const $remove = $('<button type="button" class="btn btn-link btn-xs text-danger">Remove note</button>');
+      $remove.on('click', function () {
+        $row.remove();
+      });
+      $body.append($remove);
+      $row.append($body);
+      $list.append($row);
+    }
+    const rows = coerceNoteListValue(notes);
+    rows.forEach((entry) => addRow(entry));
+    if (!rows.length) {
+      addRow({ note: '', perception_dc: 0 });
+    }
+    const $add = $('<button type="button" class="btn btn-default btn-sm edit-note-add">Add note</button>');
+    $add.on('click', function () {
+      addRow({ note: '', perception_dc: 0 });
+    });
+    const $wrap = $('<div></div>');
+    $wrap.append($list);
+    $wrap.append($add);
+    return $wrap;
   }
 
   function renderField(field, values) {
@@ -182,6 +607,23 @@
         .attr('data-field-key', key)
         .val(value || field.default || '#22c55e');
       $group.append($input);
+    } else if (type === 'offset_px') {
+      const coords = Array.isArray(value) ? value : [0, 0];
+      const $row = $('<div class="row edit-properties-point"></div>');
+      const $topCol = $('<div class="col-xs-6"></div>');
+      const $leftCol = $('<div class="col-xs-6"></div>');
+      const $top = $(`<input type="number" class="form-control" id="${id}-top">`).val(coords[0] || 0);
+      const $left = $(`<input type="number" class="form-control" id="${id}-left">`).val(coords[1] || 0);
+      $top.attr('data-field-key', key).attr('data-offset-part', 'top');
+      $left.attr('data-field-key', key).attr('data-offset-part', 'left');
+      $topCol.append($('<label>Top (px)</label>')).append($top);
+      $leftCol.append($('<label>Left (px)</label>')).append($left);
+      $row.append($topCol, $leftCol);
+      $group.append($row);
+    } else if (isInventoryListField(field)) {
+      $group.append(renderInventoryList(field, value));
+    } else if (isNoteListField(field, value)) {
+      $group.append(renderNoteList(key, value));
     } else if (type === 'text') {
       const $textarea = $(`<textarea class="form-control" rows="3" id="${id}"></textarea>`)
         .attr('data-field-key', key)
@@ -192,6 +634,9 @@
         .attr('data-field-key', key)
         .val(value == null ? '' : value);
       $group.append($input);
+    }
+    if (field.help) {
+      $group.append($('<p class="help-block"></p>').text(field.help));
     }
     return $group;
   }
@@ -218,6 +663,68 @@
           const x = Number($(`[data-field-key="${key}"][data-point-part="x"]`).val());
           const y = Number($(`[data-field-key="${key}"][data-point-part="y"]`).val());
           values[key] = [x, y];
+        } else if (type === 'offset_px') {
+          const top = Number($(`[data-field-key="${key}"][data-offset-part="top"]`).val() || 0);
+          const left = Number($(`[data-field-key="${key}"][data-offset-part="left"]`).val() || 0);
+          values[key] = [top, left];
+        } else if (isInventoryListField(field)) {
+          const items = [];
+          $(`.edit-inventory-list[data-field-key="${key}"] .edit-inventory-row`).each(function () {
+            const $row = $(this);
+            const itemType = String($row.attr('data-item-type') || '').trim();
+            if (!itemType) {
+              return;
+            }
+            let qty = Number($row.find('.edit-inventory-qty').val());
+            if (!Number.isFinite(qty) || qty < 1) {
+              qty = 1;
+            }
+            const row = { type: itemType, qty: qty };
+            const contentsRaw = $row.attr('data-contents');
+            if (contentsRaw != null && contentsRaw !== '') {
+              try {
+                row.contents = JSON.parse(contentsRaw);
+                row.is_container = true;
+              } catch (err) {
+                row.contents = [];
+                row.is_container = true;
+              }
+            } else if ($row.attr('data-is-container') === '1') {
+              row.contents = [];
+              row.is_container = true;
+            }
+            items.push(row);
+          });
+          values[key] = items;
+        } else if (isNoteListField(field, values[key])) {
+          const notes = [];
+          $(`.edit-note-list[data-field-key="${key}"] .edit-note-row`).each(function () {
+            const $row = $(this);
+            const text = String($row.find('.edit-note-text').val() || '');
+            const perception = $row.find('.edit-note-perception').val();
+            const investigation = $row.find('.edit-note-investigation').val();
+            const religion = $row.find('.edit-note-religion').val();
+            const arcana = $row.find('.edit-note-arcana').val();
+            const image = String($row.find('.edit-note-image').val() || '').trim();
+            const entry = { note: text };
+            if (perception !== '') {
+              entry.perception_dc = Number(perception);
+            }
+            if (investigation !== '') {
+              entry.investigation_dc = Number(investigation);
+            }
+            if (religion !== '') {
+              entry.religion_dc = Number(religion);
+            }
+            if (arcana !== '') {
+              entry.arcana_dc = Number(arcana);
+            }
+            if (image) {
+              entry.image = image;
+            }
+            notes.push(entry);
+          });
+          values[key] = notes;
         } else if (type === 'boolean') {
           values[key] = $(`[data-field-key="${key}"]`).prop('checked');
         } else if (type === 'map_ref' || type === 'enum') {

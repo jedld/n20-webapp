@@ -144,15 +144,27 @@
                 </div>
               {% endif %}
               {% if obj['notes'] %}
-                <button class="show-note-btn{% if obj['id'] not in read_notes %} unread{% endif %}" onclick="Utils.showNoteModal(this)" 
+                {% set note_off = obj.get('image_offset_px') or [0, 0] %}
+                <button class="show-note-btn{% if obj['id'] not in (read_notes|default([])) %} unread{% endif %}"
                         data-name="{{ obj['name'] }}"
                         data-label="{{ obj['label'] }}"
                         data-note-id="{{ obj['id'] }}"
-                        style="top: {{obj['image_offset_px'][0]}}px; left: {{obj['image_offset_px'][1]}}px;">
+                        data-offset-top="{{ note_off[0] }}"
+                        data-offset-left="{{ note_off[1] }}"
+                        style="top: {{ note_off[0] }}px; left: {{ note_off[1] }}px;">
                   <i class="glyphicon glyphicon-info-sign"></i>
                 </button>
                 <div class="note-content" style="display: none;">
                   {% for note in obj['notes'] %}
+                    {% if note.get('perception_dc') %}
+                      <p class="note-dc-badge">Perception DC {{ note['perception_dc'] }}</p>
+                    {% endif %}
+                    {% if note.get('religion_dc') %}
+                      <p class="note-dc-badge">Religion DC {{ note['religion_dc'] }}</p>
+                    {% endif %}
+                    {% if note.get('arcana_dc') %}
+                      <p class="note-dc-badge">Arcana DC {{ note['arcana_dc'] }}</p>
+                    {% endif %}
                     {% if note['image'] %}
                       <img class="note-image" src="{{ url_for('static', filename='assets/objects/' ~ note['image']) }}" >
                     {% endif %}

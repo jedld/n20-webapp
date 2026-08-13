@@ -5,7 +5,13 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, render_template, request, session
 
 from natural20.edit_properties import resolve_property_binding, update_property_binding
-from natural20.edit_schema import editable_object_types, get_edit_ui_schema, object_type_has_editor, resolve_editor_schema
+from natural20.edit_schema import (
+    editable_object_types,
+    get_edit_ui_schema,
+    list_item_catalog,
+    object_type_has_editor,
+    resolve_editor_schema,
+)
 from natural20.map_annotations import normalize_annotation, normalize_annotation_id, validate_annotation_id
 from natural20.map_editor import (
     apply_terrain_placement_to_live_map,
@@ -66,12 +72,20 @@ def _require_edit_dm():
 
 
 def _binding_from_payload(data: dict) -> dict:
+    index = data.get("index")
+    if index not in (None, ""):
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            index = None
+    else:
+        index = None
     return {
         "item_id": str(data["item_id"]),
         "kind": str(data["kind"]),
         "source": data.get("source"),
         "token": data.get("token"),
-        "index": data.get("index"),
+        "index": index,
         "layer": data.get("layer"),
     }
 
@@ -91,7 +105,11 @@ def edit_overlay():
     for collection in (overlay.get("items") or [], overlay.get("terrain") or []):
         for item in collection:
             object_type = item.get("object_type")
-            item["editable"] = bool(object_type and str(object_type) in editable_types)
+            item["editable"] = bool(
+                (object_type and str(object_type) in editable_types)
+                or item.get("source") == "inline_note"
+                or str(object_type or "") == "note"
+            )
     return jsonify(
         {
             "success": True,
@@ -168,6 +186,7 @@ def edit_object_properties_get():
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
+    map_name = _resolve_edit_map_name(current_game, battle_map, dict(request.args))
     binding_args = _binding_from_payload(dict(request.args))
     index_raw = binding_args.get("index")
     if index_raw not in (None, ""):
@@ -181,7 +200,7 @@ def edit_object_properties_get():
     try:
         resolved = resolve_property_binding(
             current_game.game_session,
-            battle_map.name,
+            map_name,
             **binding_args,
         )
     except (KeyError, ValueError) as exc:
@@ -190,13 +209,13 @@ def edit_object_properties_get():
     schema = resolve_editor_schema(
         current_game.game_session,
         resolved["object_type"],
-        current_map=battle_map.name,
+        current_map=map_name,
         values=resolved.get("values"),
     )
     return jsonify(
         {
             "success": True,
-            "map": battle_map.name,
+            "map": map_name,
             "object_type": resolved["object_type"],
             "binding": resolved["binding"],
             "values": resolved["values"],
@@ -215,19 +234,35 @@ def edit_object_properties_post():
         return jsonify({"success": False, "error": "Request must be JSON"}), 400
 
     data = request.get_json() or {}
-    required = ("item_id", "kind", "object_type", "binding", "values")
+    required = ("item_id", "kind", "values")
     if any(key not in data for key in required):
         return jsonify({"success": False, "error": "Missing required parameters"}), 400
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
+    map_name = _resolve_edit_map_name(current_game, battle_map, data)
+
+    binding = data.get("binding")
+    object_type = data.get("object_type")
+    if not binding or not object_type:
+        binding_args = _binding_from_payload(data)
+        try:
+            resolved = resolve_property_binding(
+                current_game.game_session,
+                map_name,
+                **binding_args,
+            )
+        except (KeyError, ValueError) as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+        binding = binding or resolved["binding"]
+        object_type = object_type or resolved["object_type"]
 
     try:
         update_property_binding(
             current_game.game_session,
-            battle_map.name,
-            object_type=str(data["object_type"]),
-            binding=data["binding"],
+            map_name,
+            object_type=str(object_type),
+            binding=binding,
             values=data["values"],
         )
     except (KeyError, ValueError) as exc:
@@ -235,9 +270,9 @@ def edit_object_properties_post():
     except OSError as exc:
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
 
-    current_game.reload_map_by_name(battle_map.name)
+    current_game.reload_map_by_name(map_name)
     get_socketio().emit("message", {"type": "refresh_map"})
-    return jsonify({"success": True, "map": battle_map.name})
+    return jsonify({"success": True, "map": map_name})
 
 
 @edit_bp.route("/edit/catalog/maps", methods=["GET"])
@@ -250,6 +285,24 @@ def edit_catalog_maps():
     maps = (current_game.game_session.game_properties or {}).get("maps") or {}
     items = [{"value": key, "label": str(key)} for key in sorted(maps.keys())]
     return jsonify({"success": True, "maps": items})
+
+
+@edit_bp.route("/edit/catalog/items", methods=["GET"])
+def edit_catalog_items():
+    """Autocomplete catalog for container inventory editing."""
+    denied = _require_edit_dm()
+    if denied:
+        return denied
+
+    current_game = get_current_game()
+    query = request.args.get("q") or request.args.get("query") or ""
+    try:
+        limit = int(request.args.get("limit") or 40)
+    except (TypeError, ValueError):
+        limit = 40
+    limit = max(1, min(limit, 100))
+    items = list_item_catalog(current_game.game_session, query=query, limit=limit)
+    return jsonify({"success": True, "items": items, "query": query})
 
 
 def _require_dm():

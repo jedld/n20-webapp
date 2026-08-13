@@ -46,7 +46,7 @@ from webapp.pov_utils import build_portrait_render_context, dm_pov_portrait_enti
 from natural20.web.json_renderer import JsonRenderer
 from natural20.web.stack_renderer import build_stack_render_layers, stack_for_map, stack_floors_for_ui, annotate_base_tiles_with_stack_overlay_entities
 
-from .helpers.auth_utils import logged_in, user_role
+from .helpers.auth_utils import logged_in, session_username, user_role
 from .helpers.pvp import pvp_team_config
 from .helpers.runtime_state import (
     get_current_game,
@@ -157,6 +157,16 @@ def _stack_floors_for_user(session, battle_map):
     return stack_floors_for_ui(stack)
 
 
+def _json_renderer(battle_map, battle, padding, logger=None):
+    return JsonRenderer(
+        battle_map,
+        battle,
+        padding=padding,
+        logger=logger,
+        reveal_all_notes=bool(get_edit_mode()),
+    )
+
+
 def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_entities, logger=None, metrics=None):
     """Return (stack_layers dict|None, tiles list for template)."""
     _t0 = time.perf_counter()
@@ -169,7 +179,7 @@ def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_en
         floor = stack.floor_for_map(battle_map.name)
         if floor is not None and floor.is_base:
             _t_render = time.perf_counter()
-            renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
+            renderer = _json_renderer(battle_map, battle, map_padding, logger=logger)
             tiles = renderer.render(entity_pov=pov_entities)
             metrics['json_render_ms'] = (time.perf_counter() - _t_render) * 1000.0
             _t_annotate = time.perf_counter()
@@ -189,6 +199,7 @@ def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_en
         _t_layers = time.perf_counter()
         stack_layers = build_stack_render_layers(
             session, battle_map, battle, padding=map_padding, entity_pov=pov_entities,
+            reveal_all_notes=bool(get_edit_mode()),
         )
         metrics['stack_layers_ms'] = (time.perf_counter() - _t_layers) * 1000.0
         if stack_layers and stack_layers.get('composite_mode'):
@@ -198,7 +209,7 @@ def _render_tiles_for_user(current_game, battle_map, battle, map_padding, pov_en
             metrics['tiles_rendered'] = len(base_layer.get('tiles') or [])
             return stack_layers, [base_layer['tiles']]
     _t_plain = time.perf_counter()
-    renderer = JsonRenderer(battle_map, battle, padding=map_padding, logger=logger)
+    renderer = _json_renderer(battle_map, battle, map_padding, logger=logger)
     tiles = renderer.render(entity_pov=pov_entities)
     metrics['json_render_ms'] = (time.perf_counter() - _t_plain) * 1000.0
     metrics['render_mode'] = 'plain'
@@ -291,11 +302,7 @@ def index():
 
     if get_builder_only_mode():
         return redirect(url_for('character.character_builder'))
-    if get_edit_mode() and 'username' not in session:
-        session['username'] = next(
-            (str(login['name']).lower() for login in (get_logins() or []) if 'dm' in login.get('role', [])),
-            'dm',
-        )
+    username = session_username()
     if not logged_in():
         print("not logged in")
         return redirect(url_for('auth.login'))
@@ -479,6 +486,9 @@ def focus():
 
 @navigation_bp.route('/switch_map', methods=['POST'], endpoint='switch_map')
 def switch_map():
+    username = session_username()
+    if not username:
+        return jsonify(error='Not logged in'), 401
     current_game = get_current_game()
     game_session = get_game_session()
     active_effects = get_active_effects()
@@ -487,8 +497,10 @@ def switch_map():
     tile_px = get_tile_px()
 
     map_name = request.form['map']
-    current_game.switch_map_for_user(session['username'], map_name)
-    battle_map = current_game.get_map_for_user(session['username'])
+    if map_name not in current_game.maps:
+        return jsonify(error=f'Unknown map: {map_name}'), 404
+    current_game.switch_map_for_user(username, map_name)
+    battle_map = current_game.get_map_for_user(username)
     battle = current_game.get_current_battle()
     display_map = _stack_display_map(current_game, battle_map)
     stack = stack_for_map(current_game.game_session, battle_map)
@@ -496,7 +508,7 @@ def switch_map():
     stack_underlay_mode = bool(stack and floor and not floor.is_base)
     stack_composite = stack_underlay_mode
     background = _background_for_stack_view(
-        current_game, session['username'], battle_map, display_map, stack_composite,
+        current_game, username, battle_map, display_map, stack_composite,
     )
     map_width, map_height = display_map.size
     tiles_dimension_height = map_height * tile_px
@@ -527,9 +539,11 @@ def switch_map():
     except Exception:
         dm_active = False
 
+    stack_floors = _stack_floors_for_user(game_session, battle_map)
+
     return jsonify(
         background=f"assets/{background}",
-        name=map_name,
+        name=battle_map.name,
         image_offset_px=display_map.image_offset_px,
         height=tiles_dimension_height,
         width=tiles_dimension_width,
@@ -538,6 +552,7 @@ def switch_map():
         dm_active=dm_active,
         narration=battle_map.narration(),
         special_effects_enabled=special_effects_enabled(),
+        stack_floors=stack_floors,
     )
 
 
@@ -1183,6 +1198,9 @@ def refresh_portraits():
 @navigation_bp.route('/update', endpoint='update')
 def update():
     _t0 = time.perf_counter()
+    username = session_username()
+    if not username:
+        return make_response('', 401)
     logger = get_logger()
     current_game = get_current_game()
     map_padding = get_map_padding()
@@ -1192,13 +1210,13 @@ def update():
     y = int(request.args.get('y'))
     entity_uid = request.args.get('entity_uid')
     is_pov = request.args.get('pov', 'false') == 'true'
-    battle_map = _battle_map_for_render(current_game, session['username'])
+    battle_map = _battle_map_for_render(current_game, username)
     battle = current_game.get_current_battle()
 
     # Step 1: Entity lookup
     _t_entity = time.perf_counter()
     entity = battle_map.entity_by_uid(entity_uid) if entity_uid else battle_map.entity_at(x, y)
-    pov_entity = current_game.get_pov_entity_for_user(session['username'])
+    pov_entity = current_game.get_pov_entity_for_user(username)
     _timing_log(f"update:entity_lookup={(time.perf_counter()-_t_entity)*1000:.1f}ms")
 
     # Step 2: POV entity resolution
@@ -1213,25 +1231,25 @@ def update():
                 if isinstance(e, PlayerCharacter)
             ]
         else:
-            _pov_entities = entities_controlled_by(session['username'], battle_map) or []
+            _pov_entities = entities_controlled_by(username, battle_map) or []
         if not _pov_entities:
             _pov_entities = render_pov_entities()
     else:
-        _pov_entities = entities_controlled_by(session['username'], battle_map)
+        _pov_entities = entities_controlled_by(username, battle_map)
         if not _pov_entities:
             _pov_entities = render_pov_entities()
 
-    if entity and ('dm' in user_role() or entity in entities_controlled_by(session['username'], battle_map)):
-        current_game.set_pov_entity_for_user(session['username'], entity)
+    if entity and ('dm' in user_role() or entity in entities_controlled_by(username, battle_map)):
+        current_game.set_pov_entity_for_user(username, entity)
         pov_entity = entity
-        _pov_entities = entities_controlled_by(session['username'], battle_map) or [entity]
+        _pov_entities = entities_controlled_by(username, battle_map) or [entity]
     elif is_pov and not entity:
-        current_game.set_pov_entity_for_user(session['username'], None)
+        current_game.set_pov_entity_for_user(username, None)
         pov_entity = None
-        _pov_entities = entities_controlled_by(session['username'], battle_map) or render_pov_entities()
+        _pov_entities = entities_controlled_by(username, battle_map) or render_pov_entities()
 
     if 'dm' not in user_role() and pov_entity is None and (_pov_entities is None or len(_pov_entities) == 0):
-        user_entities = entities_controlled_by(session['username'], battle_map)
+        user_entities = entities_controlled_by(username, battle_map)
         _pov_entities = user_entities if user_entities else []
     _timing_log(f"update:pov_resolve={(time.perf_counter()-_t_pov)*1000:.1f}ms entity_count={len(_pov_entities) if _pov_entities else 0}")
 
@@ -1240,7 +1258,6 @@ def update():
     # Step 2.5: short-circuit unchanged renders using a versioned cache.
     # The epoch is bumped by GameManagement on commits/map switches/POV changes.
     _t_cache = time.perf_counter()
-    username = session.get('username') or 'anonymous'
     try:
         render_epoch = int(current_game.render_epoch_for_user(username))
     except Exception:

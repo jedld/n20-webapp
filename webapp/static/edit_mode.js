@@ -62,7 +62,7 @@
     }
     const $banner = $('<div class="edit-mode-banner" role="status"></div>');
     $banner.text(
-      'Edit mode — drag NPCs to reposition. Use the Landmarks panel (bottom-left) to add areas and points. Click fixture or landmark labels to edit; Shift+drag to move. Changes save to campaign YAML.',
+      'Edit mode — drag NPCs to reposition. Click fixture labels to edit notes and properties. Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures. Changes save to campaign YAML.',
     );
     $('body').append($banner);
   }
@@ -498,7 +498,7 @@
     );
     $('#actionBarCustomizeToggle, #actionBarHotkeyToggle').hide();
     $('#centerActionBarInstructions').text(
-      'Use Edit properties to change map object fields. Shift+drag labels to move fixtures.',
+      'Use Edit properties to change notes, perception DCs, images, and other fields. Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures.',
     );
     $('#centerActionBar').show();
   }
@@ -522,6 +522,20 @@
   }
 
   function fixturePayloadFromItem(item) {
+    if (item.source === 'inline_note' && item.parent_id) {
+      return {
+        item_id: String(item.parent_id),
+        kind: String(item.parent_kind || item.kind || 'object'),
+        token: item.token || undefined,
+        layer: item.layer || undefined,
+        source: item.parent_source || undefined,
+        index: item.parent_index != null ? item.parent_index : undefined,
+        object_type: item.parent_object_type || item.object_type || undefined,
+        label: item.label,
+        x: item.x != null ? item.x : undefined,
+        y: item.y != null ? item.y : undefined,
+      };
+    }
     return {
       item_id: String(item.id),
       kind: String(item.kind),
@@ -960,7 +974,7 @@
       }
       if (
         $(e.target).closest(
-          '.edit-mode-drag-handle, .modal, #centerActionBar, .popover-menu, .popover-menu-2, .edit-fixture-properties-btn, .edit-fixture-remove-btn',
+          '.edit-mode-drag-handle, .modal, #centerActionBar, .popover-menu, .popover-menu-2, .edit-fixture-properties-btn, .edit-fixture-remove-btn, .show-note-btn',
         ).length
       ) {
         return;
@@ -1039,6 +1053,152 @@
     }
   });
 
+  function persistNoteOffset(item, top, left) {
+    const payload = fixturePayloadFromItem(item);
+    payload.values = { image_offset_px: [Math.round(top), Math.round(left)] };
+    const stack = stackEditContext();
+    if (stack && stack.mapName) {
+      payload.map_name = stack.mapName;
+    }
+    return $.ajax({
+      url: '/edit/object/properties',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify(payload),
+    })
+      .done(function (resp) {
+        if (!resp || !resp.success) {
+          alert('Could not save note offset: ' + ((resp && resp.error) || 'unknown error'));
+          loadOverlay();
+          return;
+        }
+        refreshTilesAfterEditChange();
+      })
+      .fail(function (xhr) {
+        let message = 'Could not save note offset';
+        try {
+          const body = JSON.parse(xhr.responseText || '{}');
+          message = body.error || message;
+        } catch (err) {
+          /* ignore */
+        }
+        alert(message);
+        loadOverlay();
+      });
+  }
+
+  function fixtureForNoteButton($btn) {
+    const uid = String($btn.attr('data-note-id') || '');
+    if (uid && overlayState.itemsByRuntimeUid[uid]) {
+      return overlayState.itemsByRuntimeUid[uid];
+    }
+    const $tile = $btn.closest('.tile');
+    const x = Number($tile.data('coords-x'));
+    const y = Number($tile.data('coords-y'));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+    const fixtures = getFixturesAt(x, y);
+    return (
+      fixtures.find((item) => item.runtime_uid === uid)
+      || fixtures.find((item) => item.category === 'note' || item.object_type === 'note' || item.source === 'inline_note')
+      || fixtures.find((item) => item.kind === 'object')
+      || fixtures[0]
+      || null
+    );
+  }
+
+  let noteOffsetDrag = null;
+
+  function beginNoteOffsetDrag($btn, e) {
+    const startTop = parseFloat($btn.css('top')) || 0;
+    const startLeft = parseFloat($btn.css('left')) || 0;
+    noteOffsetDrag = {
+      $btn,
+      startX: e.clientX,
+      startY: e.clientY,
+      startTop,
+      startLeft,
+      moved: false,
+    };
+    $btn.addClass('edit-note-indicator-dragging');
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') {
+      e.stopImmediatePropagation();
+    }
+  }
+
+  document.addEventListener(
+    'mousedown',
+    function (e) {
+      if (!isEditMode() || e.button !== 0 || e.shiftKey) {
+        return;
+      }
+      const $btn = $(e.target).closest('.show-note-btn');
+      if (!$btn.length) {
+        return;
+      }
+      beginNoteOffsetDrag($btn, e);
+    },
+    true,
+  );
+
+  $(document).on('mousemove', function (e) {
+    if (!noteOffsetDrag) {
+      return;
+    }
+    const dx = e.clientX - noteOffsetDrag.startX;
+    const dy = e.clientY - noteOffsetDrag.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      noteOffsetDrag.moved = true;
+    }
+    const $tile = noteOffsetDrag.$btn.closest('.tile');
+    const tileEl = $tile.get(0);
+    const nativeSize = Number($('.tiles-container').data('tile-size')) || 70;
+    let scale = 1;
+    if (tileEl) {
+      const rect = tileEl.getBoundingClientRect();
+      if (rect.width) {
+        scale = rect.width / nativeSize;
+      }
+    }
+    const top = noteOffsetDrag.startTop + (dy / scale);
+    const left = noteOffsetDrag.startLeft + (dx / scale);
+    noteOffsetDrag.$btn.css({ top: `${top}px`, left: `${left}px` });
+    e.preventDefault();
+  });
+
+  $(document).on('mouseup', function (e) {
+    if (!noteOffsetDrag) {
+      return;
+    }
+    const drag = noteOffsetDrag;
+    noteOffsetDrag = null;
+    drag.$btn.removeClass('edit-note-indicator-dragging');
+    const item = fixtureForNoteButton(drag.$btn);
+    window.__n20SuppressNoteModal = true;
+    setTimeout(function () {
+      window.__n20SuppressNoteModal = false;
+    }, 0);
+    if (!drag.moved) {
+      if (item && window.EditProperties && typeof window.EditProperties.openFromFixture === 'function') {
+        window.EditProperties.openFromFixture(item);
+      }
+      return;
+    }
+    if (!item) {
+      alert('Could not find the note fixture to save this offset.');
+      loadOverlay();
+      return;
+    }
+    const top = parseFloat(drag.$btn.css('top')) || 0;
+    const left = parseFloat(drag.$btn.css('left')) || 0;
+    persistNoteOffset(item, top, left);
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
   window.EditMode = {
     isEditMode,
     loadOverlay,
@@ -1062,11 +1222,58 @@
     scopedEditTiles,
   };
 
+  // --- Tile coordinate tooltip on hover (edit mode) ---
+  let coordsTooltip = null;
+
+  function ensureCoordsTooltip() {
+    if (coordsTooltip && coordsTooltip.length) {
+      return coordsTooltip;
+    }
+    coordsTooltip = $('<div class="edit-tile-coords-tooltip" aria-hidden="true"></div>');
+    $('body').append(coordsTooltip);
+    return coordsTooltip;
+  }
+
+  function showCoordsTooltip($tile) {
+    const x = Number($tile.data('coords-x'));
+    const y = Number($tile.data('coords-y'));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+    const $tooltip = ensureCoordsTooltip();
+    $tooltip.text(`(${x}, ${y})`);
+    // Position centered above the tile
+    const offset = $tile.offset();
+    const tileW = $tile.outerWidth() || 0;
+    $tooltip.css({ left: (offset.left + tileW / 2) + 'px', top: (offset.top - 2) + 'px' });
+    $tooltip.addClass('visible');
+  }
+
+  function hideCoordsTooltip() {
+    if (coordsTooltip) {
+      coordsTooltip.removeClass('visible');
+    }
+  }
+
   $(function () {
     if (!isEditMode()) {
       return;
     }
     ensureBanner();
+
+    // Wire up tile coordinate tooltips
+    $(document)
+      .on('mouseenter.editCoords', '.tile', function () {
+        if (!isEditMode()) return;
+        showCoordsTooltip($(this));
+      })
+      .on('mouseleave.editCoords', '.tile', function () {
+        hideCoordsTooltip();
+      });
+
+    if (typeof Utils.syncMapPickerUI === 'function') {
+      Utils.syncMapPickerUI($('body').attr('data-current-map') || '');
+    }
     loadOverlay();
     const originalRefresh = window.Utils && window.Utils.refreshTileSet;
     if (originalRefresh) {

@@ -26,6 +26,67 @@ const Utils = {
   },
   _switchMapInFlight: false,
   _pendingSwitchMapId: null,
+  _tilesContainer: function () {
+    return $('#main-map-area .tiles-container, #tiles-area').first();
+  },
+  syncMapPickerUI: function (mapName, stackFloors) {
+    const name = String(mapName || '').trim();
+    $('#map-grid .map-card[data-map-name]').removeClass('is-current');
+    if (name) {
+      $('#map-grid .map-card').filter(function () {
+        return String($(this).data('map-name') || '') === name;
+      }).addClass('is-current');
+    }
+    if (name) {
+      $('body').attr('data-current-map', name);
+      $('body').data('current-map', name);
+    }
+    Utils.updateStackLayerUI(stackFloors, name);
+    if (String($('body').data('edit-mode')).toLowerCase() === 'true') {
+      const $banner = $('.edit-mode-banner');
+      if ($banner.length && name) {
+        $banner.text(
+          'Edit mode — map: ' + name
+            + ' — drag NPCs to reposition. Click fixture labels to edit notes and properties.'
+            + ' Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures.'
+            + ' Changes save to campaign YAML.',
+        );
+      }
+    }
+  },
+  updateStackLayerUI: function (stackFloors, currentMap) {
+    const floors = Array.isArray(stackFloors) ? stackFloors : [];
+    let $focus = $('#stack-layer-focus');
+    if (floors.length <= 1) {
+      if ($focus.length) {
+        $focus.hide();
+      }
+      return;
+    }
+    if (!$focus.length) {
+      $focus = $(
+        '<div id="stack-layer-focus" title="Switch which floor you are viewing in this building">'
+          + '<label for="stack-layer-select">Floor</label>'
+          + '<select id="stack-layer-select" class="form-control input-sm"></select>'
+          + '</div>',
+      );
+      $('#coords-box').after($focus);
+    }
+    const $select = $('#stack-layer-select');
+    $select.empty();
+    floors.forEach(function (floor) {
+      const mapName = floor.map_name || floor.map;
+      if (!mapName) {
+        return;
+      }
+      const label = floor.label || mapName;
+      $select.append($('<option></option>').val(mapName).text(label));
+    });
+    if (currentMap) {
+      $select.val(currentMap);
+    }
+    $focus.show();
+  },
   hideMapModalSafely: function () {
     const $modal = $('#mapModal');
     if (!$modal.length) {
@@ -77,6 +138,7 @@ const Utils = {
         // Update map metadata before fetching tiles so refreshTileSet does not
         // ignore the response due to a stale body[data-current-map] value.
         Utils.updateMapDisplay(data, canvas);
+        Utils.syncMapPickerUI(data.name, data.stack_floors);
         if (window.EditMode && typeof window.EditMode.clearOverlay === 'function') {
           window.EditMode.clearOverlay();
         }
@@ -112,7 +174,16 @@ const Utils = {
             window.MapAnnotationsEdit.reload();
           }
           Utils.finishSwitchMap(canvas, first_callback);
-        }, true);
+        }, true, () => {
+          Utils._switchMapInFlight = false;
+          Utils._pendingSwitchMapId = null;
+          try {
+            alert('Map switched but tile refresh failed. Try Reload Map or refresh the page.');
+          } catch (e) { /* noop */ }
+          if (typeof first_callback === 'function') {
+            first_callback();
+          }
+        });
       },
       error: (jqXHR, textStatus, errorThrown) => {
         console.error('Map switch failed:', textStatus, errorThrown);
@@ -129,15 +200,24 @@ const Utils = {
   },
 
 
-  refreshTileSet: function (is_setup = false, pov = false, x = 0, y = 0, entity_uid = null, callback = null, forceFullRefresh = false) {
+  refreshTileSet: function (is_setup = false, pov = false, x = 0, y = 0, entity_uid = null, callback = null, forceFullRefresh = false, onError = null) {
     if (!window.tileUpdateSequence) {
       window.tileUpdateSequence = 0;
     }
 
 
     const currentSequence = ++window.tileUpdateSequence;
+    const $tilesContainer = Utils._tilesContainer();
     // Capture any active map toasts so we can restore them after refresh
     const _activeToasts = Utils.collectAllToasts ? Utils.collectAllToasts() : [];
+
+    const handleRefreshError = () => {
+      if (typeof onError === 'function') {
+        onError();
+      } else if (callback) {
+        callback();
+      }
+    };
 
     // Full DOM replace when debugging, battle setup, or post-move reconcile — not
     // the same as is_setup (which also enables add-to-initiative plus buttons).
@@ -146,7 +226,7 @@ const Utils = {
         // Only apply if this is still the most recent request
         if (currentSequence >= (window.lastAppliedSequence || 0)) {
           lastMovedEntityBeforeRefresh = null;
-          $('.tiles-container').html(data);
+          $tilesContainer.html(data);
           window.lastAppliedSequence = currentSequence;
           // Refresh portraits when tiles are refreshed
           Utils.refreshPortraits();
@@ -163,7 +243,7 @@ const Utils = {
         if (callback) callback();
         try { if (window.PersistentEffects && PersistentEffects.applyAll) PersistentEffects.applyAll(); } catch (e) { }
         Utils.reloadEditOverlayIfNeeded();
-      });
+      }, handleRefreshError);
       return;
     }
 
@@ -177,7 +257,7 @@ const Utils = {
       // Parse the HTML to extract individual tiles and check for map info
       const $newContent = $('<div>').html(data);
       if ($newContent.find('[data-stack-id]').length) {
-        $('.tiles-container').html(data);
+        $tilesContainer.html(data);
         window.lastAppliedSequence = currentSequence;
         try { if (typeof applyPovPerceptionQuickActionVisibility === 'function') applyPovPerceptionQuickActionVisibility(); } catch (_) { }
         if (callback) callback();
@@ -265,7 +345,7 @@ const Utils = {
 
       if (callback) callback();
       Utils.reloadEditOverlayIfNeeded();
-    });
+    }, handleRefreshError);
   },
 
   // Optimized tile update that preserves interactive elements
@@ -629,7 +709,7 @@ const Utils = {
     });
   },
 
-  ajaxGet: function (url, data, onSuccess) {
+  ajaxGet: function (url, data, onSuccess, onError) {
     $.ajax({
       url,
       type: 'GET',
@@ -637,6 +717,9 @@ const Utils = {
       success: onSuccess,
       error: (jqXHR, textStatus, errorThrown) => {
         console.error('Error with GET ' + url + ':', textStatus, errorThrown);
+        if (typeof onError === 'function') {
+          onError(jqXHR, textStatus, errorThrown);
+        }
       }
     });
   },
@@ -1144,40 +1227,33 @@ const Utils = {
   },
 
   updateMapDisplay: function (data, canvas) {
-    const tile_size = $('.tiles-container').data('tile-size');
+    const tile_size = parseInt($('.tiles-container').data('tile-size'), 10) || 0;
     const $imageContainer = $("#main-map-area .image-container");
+    const imageOffset = data.image_offset_px || [0, 0];
+    const offsetX = Number(imageOffset[0]) || 0;
+    const offsetY = Number(imageOffset[1]) || 0;
 
-    // Update image container size
+    // Match index.html initial load:
+    // - .image-container at (tile_size, tile_size); image_offset is NOT applied here
+    // - #tiles-area at -(tile_size + image_offset)
+    // The previous formula (-tile_size + offset on tiles, +offset on the container)
+    // flipped the sign vs a full page refresh and misaligned maps like basement_2.
     $imageContainer.css({
       height: data.height + 'px',
+      top: tile_size + 'px',
+      left: tile_size + 'px',
     });
 
-    // Update image container position with consistent offset handling
-    const imageOffset = data.image_offset_px || [0, 0];
-
-    // Update tiles container (align with processMapEvent math)
-    // Also update data attributes used elsewhere for bounds/validation
     const $tilesContainer = $("#main-map-area .tiles-container");
     $tilesContainer
       .css({
         position: 'absolute',
-        top: '-' + tile_size + 'px',
-        left: '-' + tile_size + 'px',
+        top: (-tile_size - offsetY) + 'px',
+        left: (-tile_size - offsetX) + 'px',
         width: data.width + 'px',
         height: data.height + 'px',
       })
       .data({ width: data.width, height: data.height });
-
-    // Keep the same sign convention used when initially loading the map
-    $("#tiles-area").css({
-      top: (-tile_size + imageOffset[1]) + 'px',
-      left: (-tile_size + imageOffset[0]) + 'px',
-    });
-    $('.image-container').css({
-      height: data.height + 'px',
-      top: (imageOffset[1] + tile_size) + 'px',
-      left: (imageOffset[0] + tile_size) + 'px'
-    });
 
     // Do NOT resize or reposition the global overlay canvas here.
     // It's created as a full-viewport fixed canvas in createGlobalCanvas().
@@ -1236,6 +1312,7 @@ const Utils = {
 
     // Update map name in body data
     $('body').attr('data-current-map', data.name);
+    $('body').data('current-map', data.name);
   },
 
   /**

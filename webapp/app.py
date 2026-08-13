@@ -248,6 +248,16 @@ logger.info(
 
 
 @app.before_request
+def _n20_ensure_session_username():
+    """Edit/builder modes must always have a real username for per-user map view."""
+    from webapp.blueprints.helpers.auth_utils import session_username
+    from webapp.blueprints.helpers.runtime_state import get_builder_only_mode, get_edit_mode
+
+    if get_edit_mode() or get_builder_only_mode():
+        session_username()
+
+
+@app.before_request
 def _n20_bind_campaign_prompt_root():
     try:
         gs = getattr(current_game, 'game_session', None)
@@ -4580,7 +4590,7 @@ def reset_narrations():
 
 @app.route('/logout', methods=['POST', 'GET'])
 def logout():
-    session['username'] = None
+    session.pop('username', None)
     return redirect(url_for('login'))
 
 @app.route('/turn')
