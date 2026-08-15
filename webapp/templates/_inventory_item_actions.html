@@ -1,0 +1,38 @@
+{% set game_session = game_session if game_session is defined else entity.session %}
+{% set item_name = item.get('name') or item.get('type') %}
+{% set container_name = item.get('container') or '' %}
+{% set show_container_toggle = show_container_toggle if show_container_toggle is defined else true %}
+<div class="inventory-slot-menu-actions">
+    {% if item.get('type') == 'letter' %}
+    <form method="post" class="form-read-letter" action="/read_letter" target="_blank">
+        <input type="hidden" name="id" value="{{ entity.entity_uid }}">
+        <input type="hidden" name="item_id" value="{{ item_name }}">
+        <button type="submit" class="inventory-action-btn inventory-action-btn-read">Read</button>
+    </form>
+    {% endif %}
+    {% if item.get('usable') %}
+    <form method="post" class="form-use-item" action="/inventory/use">
+        <input type="hidden" name="id" value="{{ entity.entity_uid }}">
+        <input type="hidden" name="item_id" value="{{ item_name }}">
+        {% if container_name %}
+        <input type="hidden" name="container_name" value="{{ container_name }}">
+        {% endif %}
+        <button type="submit" class="inventory-action-btn inventory-action-btn-use">Use</button>
+    </form>
+    {% endif %}
+    {% if entity.check_equip(item_name) == 'ok' %}
+    <form method="post" class="form-equip" action="/equip">
+        <input type="hidden" name="id" value="{{ entity.entity_uid }}">
+        <input type="hidden" name="item_id" value="{{ item_name }}">
+        {% if container_name %}
+        <input type="hidden" name="container_name" value="{{ container_name }}">
+        {% endif %}
+        <button type="submit" class="inventory-action-btn equip-button">Equip</button>
+    </form>
+    {% elif not entity.is_container(item_name, game_session) and item.get('type') != 'letter' and not item.get('usable') %}
+    <span class="item-equip-note">Cannot equip</span>
+    {% endif %}
+    {% if show_container_toggle and not item.get('nested') and entity.is_container(item_name, game_session) %}
+    <button type="button" class="inventory-action-btn container-toggle-btn" data-entity="{{ entity.entity_uid }}" data-container="{{ item_name }}" data-open-label="Open" data-close-label="Close">Open</button>
+    {% endif %}
+</div>

@@ -43,6 +43,7 @@ from .helpers.character_builder_utils import (
     _parse_json_dict_form,
     _parse_spells_by_level_form,
     _apply_class_and_feat_choices,
+    validate_weapon_mastery_selections,
     _resolve_character_yaml_path,
     _can_edit_character,
     _load_character_image_from_request,
@@ -53,6 +54,8 @@ from .helpers.character_builder_utils import (
     filter_language_pool,
     validate_background_language_selections,
     validate_background_skill_selections,
+    validate_race_tool_selections,
+    apply_race_tool_proficiencies,
 )
 from .helpers.character_builder_restrictions import load_character_builder_restrictions
 from .helpers.character_builder_levels import (
@@ -121,6 +124,12 @@ def _character_builder_view_context(*, edit_klass=None, **extra):
         'builder_min_level': restrictions.min_level,
         'builder_max_level': restrictions.max_level,
         'alignment_options': ALIGNMENT_OPTIONS,
+        'ruleset': getattr(getattr(game_session, 'ruleset', None), 'name', '5e-2014'),
+        'ability_bonus_source': (
+            getattr(game_session.ruleset, 'ability_bonus_source', lambda: 'species')()
+            if getattr(game_session, 'ruleset', None)
+            else 'species'
+        ),
     }
     ctx.update(extra)
     return ctx
@@ -371,6 +380,8 @@ def character_editor(character_name):
             'spells_by_level': spells_by_level,
             'subclass': extract_subclass_choice(klass, pc),
             'feats': list(pc.get('feats') or []),
+            'known_weapon_masteries': list(pc.get('known_weapon_masteries') or []),
+            'tool_proficiencies': list(pc.get('tool_proficiencies') or []),
             'inventory': list(pc.get('inventory') or []),
             'outward_appearance': pc.get('outward_appearance') or pc.get('appearance') or '',
             **_profile_edit_dict(pc),
@@ -418,6 +429,8 @@ def update_character(character_name):
         selected_level1 = _parse_json_list_form(request.form, 'level1_spells')
         spells_by_level = _parse_spells_by_level_form(request.form, selected_level1)
         selected_feats = _parse_json_list_form(request.form, 'feats')
+        selected_weapon_masteries = _parse_json_list_form(request.form, 'weapon_masteries')
+        race_tool_selections = _parse_json_list_form(request.form, 'race_tools')
         subclass_choice = (request.form.get('subclass') or '').strip()
         asi_boosts = _parse_json_dict_form(request.form, 'asi_boosts')
         background_key = (request.form.get('background') or '').strip()
@@ -456,6 +469,12 @@ def update_character(character_name):
         if not ok:
             return jsonify(error=bg_lang_error), 400
 
+        ok, race_tool_error = validate_race_tool_selections(
+            race_def, subrace_def, race_tool_selections,
+        )
+        if not ok:
+            return jsonify(error=race_tool_error), 400
+
         classes_def = get_game_session().load_classes() or {}
         restrictions = load_character_builder_restrictions()
         cdef = classes_def.get(klass, {}) or {}
@@ -484,6 +503,12 @@ def update_character(character_name):
         existing_skills = list(pc.get('skills') or [])
         non_class_skills = [s for s in existing_skills if s not in class_skill_pool]
 
+        ok, mastery_error = validate_weapon_mastery_selections(
+            klass, level, cdef, selected_weapon_masteries,
+        )
+        if not ok:
+            return jsonify(error=mastery_error), 400
+
         _apply_class_and_feat_choices(
             pc,
             klass,
@@ -497,6 +522,7 @@ def update_character(character_name):
             subclass_choice=subclass_choice,
             asi_boosts=asi_boosts,
             restrictions=restrictions,
+            selected_weapon_masteries=selected_weapon_masteries,
         )
 
         if non_class_skills:
@@ -535,6 +561,8 @@ def update_character(character_name):
             apply_background_starting_equipment(pc, background_def)
         elif not background_key:
             pc.pop('background', None)
+
+        apply_race_tool_proficiencies(pc, race_def, subrace_def, race_tool_selections)
 
         # Update inventory from character builder
         inventory_json = (request.form.get('inventory') or '').strip()
@@ -800,6 +828,7 @@ def create_character():
         selected_level1 = _parse_json_list_form(request.form, 'level1_spells')
         spells_by_level = _parse_spells_by_level_form(request.form, selected_level1)
         selected_feats = _parse_json_list_form(request.form, 'feats')
+        selected_weapon_masteries = _parse_json_list_form(request.form, 'weapon_masteries')
 
         restriction_errors = restrictions.validate_selection(
             klass=klass,
@@ -835,6 +864,7 @@ def create_character():
         race_bonus_map = _parse_json_dict_form(request.form, 'race_ability_bonuses')
         race_skill_selections = _parse_json_list_form(request.form, 'race_skills')
         race_language_selections = _parse_json_list_form(request.form, 'race_languages')
+        race_tool_selections = _parse_json_list_form(request.form, 'race_tools')
 
         # Background handling
         background_key = (request.form.get('background') or '').strip()
@@ -904,22 +934,23 @@ def create_character():
                 return jsonify(error='Unexpected racial language choices'), 400
             race_language_selections = []
 
-        def _apply_racial_bonus(bonus_map):
-            if not isinstance(bonus_map, dict):
-                return
-            for key, value in bonus_map.items():
-                if key in ability:
-                    try:
-                        ability[key] = min(20, ability[key] + int(value))
-                    except Exception:
-                        continue
+        ok, race_tool_error = validate_race_tool_selections(
+            race_def, subrace_def, race_tool_selections,
+        )
+        if not ok:
+            return jsonify(error=race_tool_error), 400
 
-        _apply_racial_bonus(race_def.get('attribute_bonus'))
-        if subrace_def:
-            _apply_racial_bonus(subrace_def.get('attribute_bonus'))
-        if race_bonus_map:
-            for key, value in race_bonus_map.items():
-                ability[key] = min(20, ability[key] + int(value))
+        from webapp.blueprints.helpers.character_builder_utils import (
+            apply_chargen_ability_bonuses,
+        )
+        apply_chargen_ability_bonuses(
+            ability,
+            race_def=race_def,
+            subrace_def=subrace_def,
+            background_def=background_def,
+            race_bonus_map=race_bonus_map,
+            session=get_game_session(),
+        )
 
         base_languages = []
         for lang_src in (race_def.get('languages', []), subrace_def.get('languages', [])):
@@ -985,6 +1016,8 @@ def create_character():
             )
             apply_background_starting_equipment(pc, background_def)
 
+        apply_race_tool_proficiencies(pc, race_def, subrace_def, race_tool_selections)
+
         languages = list(dict.fromkeys(base_languages + race_language_selections))
         if pc.get('languages'):
             languages = list(dict.fromkeys(languages + list(pc.get('languages') or [])))
@@ -993,6 +1026,12 @@ def create_character():
 
         # Validate and apply class choices from templates
         try:
+            ok, mastery_error = validate_weapon_mastery_selections(
+                klass, level, cdef, selected_weapon_masteries,
+            )
+            if not ok:
+                return jsonify(error=mastery_error), 400
+
             _apply_class_and_feat_choices(
                 pc,
                 klass,
@@ -1006,6 +1045,7 @@ def create_character():
                 subclass_choice=subclass_choice,
                 asi_boosts=asi_boosts,
                 restrictions=restrictions,
+                selected_weapon_masteries=selected_weapon_masteries,
             )
 
             # Apply equipment pack if selected (or background default)
@@ -1514,4 +1554,33 @@ def inventory_container_retrieve():
     status = entity.container_status(container_name, game_session)
     status['stowable_items'] = entity.stowable_inventory_items(container_name, game_session)
     return jsonify(success=True, status=status)
+
+
+@character_bp.route('/inventory/use', methods=['POST'])
+def inventory_use_item():
+    if not logged_in():
+        return jsonify(success=False, error='Login required'), 401
+    from webapp.blueprints.helpers.inventory_container import (
+        can_manage_inventory_entity,
+        resolve_inventory_entity,
+        use_inventory_item,
+    )
+
+    data = request.get_json(silent=True) or request.form
+    entity_id = (data.get('id') or data.get('entity_id') or '').strip()
+    item_name = (data.get('item_id') or data.get('item_name') or '').strip()
+    container_name = (data.get('container_name') or '').strip() or None
+    if not entity_id or not item_name:
+        return jsonify(success=False, error='id and item_id are required'), 400
+
+    entity = resolve_inventory_entity(entity_id)
+    if entity is None:
+        return jsonify(success=False, error='Entity not found'), 404
+    if not can_manage_inventory_entity(entity):
+        return jsonify(success=False, error='Not authorized to manage this inventory'), 403
+
+    ok, payload = use_inventory_item(entity, item_name, container_name=container_name)
+    if not ok:
+        return jsonify(success=False, error=payload), 400
+    return jsonify(status='ok', success=True, **(payload or {}))
 

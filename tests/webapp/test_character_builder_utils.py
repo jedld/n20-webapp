@@ -577,6 +577,24 @@ class TestCharacterBuilderUtils(unittest.TestCase):
         self.assertEqual(entry['sheet'], 'characters/Test_Hero.yml')
         self.assertEqual(entry['overrides'], {'entity_uid': 'test_hero'})
 
+    def test_race_tool_choice_validation_and_apply(self):
+        race_def = {
+            'tool_proficiencies_choice': 1,
+            'tool_proficiencies': ['smiths_tools', 'brewers_supplies', 'masons_tools'],
+        }
+        ok, err = self.mod.validate_race_tool_selections(race_def, {}, [])
+        self.assertFalse(ok)
+        self.assertIn('Choose 1', err)
+
+        ok, err = self.mod.validate_race_tool_selections(
+            race_def, {}, ['smiths_tools'],
+        )
+        self.assertTrue(ok)
+
+        pc = {'tool_proficiencies': ['thieves_tools', 'brewers_supplies']}
+        self.mod.apply_race_tool_proficiencies(pc, race_def, {}, ['smiths_tools'])
+        self.assertEqual(pc['tool_proficiencies'], ['thieves_tools', 'smiths_tools'])
+
 
 if __name__ == '__main__':
     unittest.main()

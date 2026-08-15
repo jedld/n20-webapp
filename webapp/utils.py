@@ -845,6 +845,29 @@ class GameManagement:
         except Exception:
             pass
 
+    def recalc_lights_for_user(self, username):
+        """Recompute cached light grids and bump the render epoch.
+
+        Called after mutations that change entity-borne lighting outside the
+        normal action commit path (e.g. equipping/unequipping a torch from the
+        character sheet, or DM-side item swaps).  Without this, the server's
+        cached per-tile light grid stays stale and the /update render cache
+        keeps serving pre-equip HTML, so the map only picks up the new light
+        source after a full page reload.
+        """
+        try:
+            maps = self.maps or {}
+        except Exception:
+            maps = {}
+        for map_obj in maps.values():
+            compute = getattr(map_obj, '_compute_lights', None)
+            if compute is not None:
+                try:
+                    compute()
+                except Exception:
+                    self.logger.debug('recalc_lights_for_user: failed to recompute lights for %r', getattr(map_obj, 'name', map_obj), exc_info=True)
+        self.bump_render_epoch(username=username)
+
     def campaign_default_soundtrack_name(self):
         for soundtrack in (self.soundtracks or []):
             if 'background' in soundtrack['name'].lower():

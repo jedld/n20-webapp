@@ -205,6 +205,39 @@
     .ability-value { font-size: 24px; margin: 5px 0; }
     .ability-controls .btn { padding: 2px 8px; }
     .points-remaining { font-weight: bold; color: #9cdcfe; }
+
+    .dice-icon {
+      width: 16px;
+      height: 16px;
+      display: block;
+      flex: 0 0 auto;
+    }
+    .btn-dice {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #3a2a1a;
+      color: #f5deb3;
+      border: 1px solid #d4af37;
+      font-weight: 600;
+    }
+    #roll-abilities.btn-dice {
+      margin-left: 10px;
+    }
+    .btn-dice:hover,
+    .btn-dice:focus {
+      background: #d4af37;
+      color: #1a1208;
+      border-color: #f5deb3;
+    }
+    .btn-dice.is-rolling .dice-icon {
+      animation: dice-roll-spin 0.55s ease;
+    }
+    @keyframes dice-roll-spin {
+      0% { transform: rotate(0deg) scale(1); }
+      40% { transform: rotate(210deg) scale(1.18); }
+      100% { transform: rotate(360deg) scale(1); }
+    }
     .form-inline .form-control { min-width: 180px; }
     .helper { color: #bbb; font-size: 12px; }
     .spell-preview-badge { font-size: 10px; margin-left: 4px; padding: 1px 4px; border-radius: 3px; background: #5a4a20; color: #f5deb3; border: 1px solid #70532f; }
@@ -749,7 +782,13 @@
                   <div class="form-inline">
                     <label class="radio-inline"><input type="radio" name="ability_mode" value="pointbuy" checked> Point Buy (27 pts)</label>
                     <label class="radio-inline"><input type="radio" name="ability_mode" value="random"> Random (4d6 drop lowest)</label>
-                    <button type="button" id="roll-abilities" class="btn btn-default btn-sm" style="margin-left:10px; display:none;">Roll</button>
+                    <button type="button" id="roll-abilities" class="btn btn-dice btn-sm" style="display:none;" title="Roll 4d6, drop the lowest">
+                      <svg class="dice-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" d="M12 2.3 20.7 7.3v9.4L12 21.7 3.3 16.7V7.3Z"/>
+                        <path fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" d="M12 2.3v19.4M3.3 7.3h17.4M3.3 16.7 12 7.3l8.7 9.4M3.3 7.3 12 16.7 20.7 7.3"/>
+                      </svg>
+                      <span>Roll</span>
+                    </button>
                   </div>
                   <div class="helper">Point buy: scores 8–15, costs escalate per SRD.</div>
                 </div>

@@ -305,6 +305,12 @@ const Utils = {
       });
     });
   },
+  diceIconSvg: function() {
+    return '<svg class="dice-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" d="M12 2.3 20.7 7.3v9.4L12 21.7 3.3 16.7V7.3Z"/>' +
+      '<path fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" d="M12 2.3v19.4M3.3 7.3h17.4M3.3 16.7 12 7.3l8.7 9.4M3.3 7.3 12 16.7 20.7 7.3"/>' +
+      '</svg>';
+  },
   autoInsertDieRoll: function() {
     $('.auto-die-roll').each(function(){
       var $container = $(this);
@@ -319,14 +325,26 @@ const Utils = {
           rollStr = $container.text();
         }
         var safeDescription = $('<div>').text(description).html();
-        
+        var dice = Utils.diceIconSvg();
+        var rollControl = '<span class="rollable-die" data-roll="' + rollStr + '" data-entity="' + entityId +
+          '" data-description="' + safeDescription + '" title="Roll" role="button" tabindex="0">' +
+          dice + '<span class="rollable-die-label">Roll</span></span>';
+        var switchHtml = '<div class="roll-switch">' +
+          '<button type="button" class="roll-mode" data-mode="normal" title="Normal" aria-label="Normal">&nbsp;</button>' +
+          '<button type="button" class="roll-mode" data-mode="advantage" title="Advantage" aria-label="Advantage">+</button>' +
+          '<button type="button" class="roll-mode" data-mode="disadvantage" title="Disadvantage" aria-label="Disadvantage">-</button>' +
+          '</div>';
+
         if (compact) {
-          $container.append('<button class="die-roll-toggle">Roll</button><div class="die-roll-component" style="display: none;"><span class="rollable-die" data-roll="' + rollStr + '" data-entity="' + entityId + '" data-description="' + safeDescription + '">Roll!</span><div class="roll-switch"><button type="button" class="roll-mode" data-mode="normal" label="Normal">&nbsp;</button><button type="button" class="roll-mode" data-mode="advantage" label="Advantage">+</button><button type="button" class="roll-mode" data-mode="disadvantage" label="Disadvantage">-</button></div></div>');
+          $container.append(
+            '<button type="button" class="die-roll-toggle" title="Roll" aria-label="Roll">' + dice + '</button>' +
+            '<div class="die-roll-component" style="display: none;">' + rollControl + switchHtml + '</div>'
+          );
           $container.find('.die-roll-toggle').click(function() {
             $container.find('.die-roll-component').toggle();
           });
         } else {
-          $container.append('<div class="die-roll-component"><span class="rollable-die" data-roll="' + rollStr + '" data-entity="' + entityId + '" data-description="' + safeDescription + '">Roll!</span><div class="roll-switch"><button type="button" class="roll-mode" data-mode="normal">&nbsp;</button><button type="button" class="roll-mode" data-mode="advantage">+</button><button type="button" class="roll-mode" data-mode="disadvantage">-</button></div></div>');
+          $container.append('<div class="die-roll-component">' + rollControl + switchHtml + '</div>');
         }
       }
     });

@@ -14,7 +14,7 @@ from natural20.actions.stand_action import StandAction
 from natural20.actions.attack_action import TwoWeaponAttackAction, LinkedAttackAction
 from natural20.actions.action_surge_action import ActionSurgeAction
 from natural20.actions.drop_concentration_action import DropConcentrationAction
-from natural20.actions.shove_action import ShoveAction
+from natural20.actions.shove_action import ShoveAction, PushAction
 from natural20.actions.hide_action import HideAction, HideBonusAction
 from natural20.actions.first_aid_action import FirstAidAction
 from natural20.actions.grapple_action import GrappleAction, DropGrappleAction
@@ -54,6 +54,7 @@ _ACTION_TYPE_MAP = {
     'ActionSurgeAction': ActionSurgeAction,
     'DropConcentrationAction': DropConcentrationAction,
     'ShoveAction': ShoveAction,
+    'PushAction': PushAction,
     'HideAction': HideAction,
     'HideBonusAction': HideBonusAction,
     'FirstAidAction': FirstAidAction,

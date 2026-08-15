@@ -720,6 +720,9 @@ def register(registry: ToolRegistry) -> None:
         except Exception as exc:
             raise tool_error(f'Failed to {op}: {exc}')
         context.log_dm(f"DM {op}ped {item_id} on {ent.label()}")
+        # Invalidate the /update render cache so the client re-renders the map
+        # with the new lighting state (e.g. equipping a torch in a dark room).
+        _recalc_lights(context)
         context.emit_refresh()
         return {
             'entity_uid': entity_uid,
@@ -732,9 +735,10 @@ def register(registry: ToolRegistry) -> None:
         registry,
         name='dm.set_resource',
         description='Mutate a numeric resource on an entity. '
-                    'resource_type: action | bonus_action | reaction | spell_slot | temp_hp | resource_pool. '
+                    'resource_type: action | bonus_action | reaction | spell_slot | temp_hp | resource_pool | inspiration. '
                     'op: set | add | subtract. For spell_slot, `character_class` and `level` are required. '
                     'For resource_pool, `resource_name` is required (e.g. "superiority_dice"). '
+                    'inspiration is a 0/1 Heroic Inspiration (2024) or Inspiration (2014) token. '
                     'Battle-required for action/bonus_action/reaction.',
         input_schema={
             'type': 'object',
@@ -743,7 +747,7 @@ def register(registry: ToolRegistry) -> None:
                 'entity_uid': {'type': 'string'},
                 'resource_type': {
                     'type': 'string',
-                    'enum': ['action', 'bonus_action', 'reaction', 'spell_slot', 'temp_hp', 'resource_pool'],
+                    'enum': ['action', 'bonus_action', 'reaction', 'spell_slot', 'temp_hp', 'resource_pool', 'inspiration'],
                 },
                 'value': {'type': 'integer', 'minimum': 0},
                 'op': {'type': 'string', 'enum': ['set', 'add', 'subtract'], 'default': 'set'},
@@ -816,6 +820,16 @@ def register(registry: ToolRegistry) -> None:
             result = {'entity_uid': entity_uid, 'resource_type': rt,
                       'resource_name': resource_name, 'old_value': current,
                       'new_value': new_value, 'max_value': int(pool.max_value)}
+        elif rt in ('inspiration', 'heroic_inspiration'):
+            current = 1 if getattr(ent, 'has_inspiration', lambda: False)() else 0
+            new_value = 1 if _apply(current, 1) else 0
+            if hasattr(ent, 'set_inspiration'):
+                ent.set_inspiration(bool(new_value))
+            else:
+                raise tool_error('Entity cannot hold inspiration')
+            result = {'entity_uid': entity_uid, 'resource_type': 'inspiration',
+                      'old_value': current, 'new_value': new_value,
+                      'label': ent.inspiration_label() if hasattr(ent, 'inspiration_label') else 'Inspiration'}
         else:
             # action / bonus_action / reaction
             battle = _safe_call(lambda: context.current_game.get_current_battle())
@@ -1504,6 +1518,27 @@ def register(registry: ToolRegistry) -> None:
         context.log_dm(f"DM user_admin {op} username={username or ''} character={character_uid or ''}")
         context.emit_refresh()
         return result
+
+
+def _recalc_lights(context: MCPContext) -> None:
+    """Invalidate the /update render cache for the DM user.
+
+    Entity-borne lighting (equipped torches, the Light cantrip, ...) is
+    computed dynamically by ``Map.light_at``, so the only thing that must be
+    refreshed here is the render epoch.  Without it, the client's ``/update``
+    request hits the cached pre-equip tile HTML and the map does not pick up
+    the new light source until a full page reload.
+    """
+    cg = context.current_game
+    if cg is None:
+        return
+    recalc = getattr(cg, 'recalc_lights_for_user', None)
+    if recalc is None:
+        return
+    try:
+        recalc('dm')
+    except Exception:
+        pass
 
 
 def _resolve(context: MCPContext, entity_uid: str):

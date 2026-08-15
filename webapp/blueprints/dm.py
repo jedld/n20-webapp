@@ -966,24 +966,37 @@ def seek():
 
 @dm_bp.route('/unequip', methods=['POST'])
 def unequip():
-    battle_map = get_current_game().get_map_for_user(session['username'])
+    game = get_current_game()
+    battle_map = game.get_map_for_user(session['username'])
     entity_id = request.form['id']
     item_id = request.form['item_id']
     entity = battle_map.entity_by_uid(entity_id)
     if entity:
         entity.unequip(item_id)
+        # Invalidate the /update render cache so the client re-renders the map
+        # with the new lighting state (e.g. removing a torch in a dark room).
+        game.recalc_lights_for_user(session['username'])
         get_socketio().emit('message', {'type': 'refresh_map'})
         return jsonify(status='ok')
     return jsonify(error="Entity not found"), 404
 
 @dm_bp.route('/equip', methods=['POST'])
 def equip():
-    battle_map = get_current_game().get_map_for_user(session['username'])
+    game = get_current_game()
+    battle_map = game.get_map_for_user(session['username'])
     entity_id = request.form['id']
     item_id = request.form['item_id']
+    container_name = (request.form.get('container_name') or '').strip()
     entity = battle_map.entity_by_uid(entity_id)
     if entity:
+        if container_name and hasattr(entity, 'retrieve_item'):
+            ok, reason = entity.retrieve_item(container_name, item_id, 1, getattr(entity, 'session', None))
+            if not ok:
+                return jsonify(error=reason or 'Item is not in that container'), 400
         entity.equip(item_id)
+        # Invalidate the /update render cache so the client re-renders the map
+        # with the new lighting state (e.g. equipping a torch in a dark room).
+        game.recalc_lights_for_user(session['username'])
         get_socketio().emit('message', {'type': 'refresh_map'})
         return jsonify(status='ok')
 
@@ -1292,6 +1305,28 @@ def get_equipment():
     if entity:
         return render_template('equipment.html', entity=entity, role=user_role())
     return jsonify(error="Entity not found"), 404
+
+
+@dm_bp.route('/item_card', methods=['GET'])
+def get_item_card():
+    """Render the character-sheet item card for an inventory or equipped item."""
+    entity_id = request.args.get('id')
+    item_name = request.args.get('item')
+    container_name = (request.args.get('container') or '').strip() or None
+    if not entity_id or not item_name:
+        return jsonify(error="Missing required id or item"), 400
+
+    battle_map = get_current_game().get_map_for_user(session['username'])
+    entity = battle_map.entity_by_uid(entity_id) if battle_map is not None else None
+    if entity is None:
+        entity = get_current_game().get_entity_by_uid(entity_id)
+    if not entity:
+        return jsonify(error="Entity not found"), 404
+
+    card = entity.item_card(item_name, container_name=container_name)
+    if not card:
+        return jsonify(error="Item not found"), 404
+    return render_template('_item_card.html', entity=entity, item=card)
 
 @dm_bp.route('/usable_items', methods=['GET'])
 def usable_items():
@@ -1698,6 +1733,47 @@ def update_hp():
         
     except Exception as e:
         return jsonify({'success': False, 'error': f'Failed to update HP: {str(e)}'}), 500
+
+
+@dm_bp.route('/update_inspiration', methods=['POST'])
+def update_inspiration():
+    """Grant or spend Inspiration / Heroic Inspiration (DM only)."""
+    if 'dm' not in user_role():
+        return jsonify({'success': False, 'error': 'DM access required'}), 403
+
+    if not request.is_json:
+        return jsonify({'success': False, 'error': 'Request must be JSON'}), 400
+
+    data = request.get_json() or {}
+    entity_id = data.get('entity_id')
+    if not entity_id or 'value' not in data:
+        return jsonify({'success': False, 'error': 'Missing required parameters'}), 400
+
+    entity = get_current_game().get_entity_by_uid(entity_id)
+    if not entity:
+        battle_map = get_current_game().get_map_for_user(session['username'])
+        entity = battle_map.entity_by_uid(entity_id) if battle_map else None
+    if not entity:
+        return jsonify({'success': False, 'error': 'Entity not found'}), 404
+
+    if not hasattr(entity, 'set_inspiration'):
+        return jsonify({'success': False, 'error': 'Entity cannot hold inspiration'}), 400
+
+    try:
+        granted = entity.set_inspiration(bool(data.get('value')))
+        label = entity.inspiration_label() if hasattr(entity, 'inspiration_label') else 'Inspiration'
+        get_output_logger().log(
+            f"DM {'granted' if granted else 'cleared'} {label} on {entity.label()}",
+            visibility='dm_only',
+        )
+        get_socketio().emit('message', {'type': 'refresh_map'})
+        return jsonify({
+            'success': True,
+            'inspiration': granted,
+            'label': label,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Failed to update inspiration: {str(e)}'}), 500
 
 @dm_bp.route('/update_action_resources', methods=['POST'])
 def update_action_resources():

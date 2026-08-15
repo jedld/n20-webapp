@@ -4790,8 +4790,13 @@ def equip():
     battle_map = current_game.get_map_for_user(session['username'])
     entity_id = request.form['id']
     item_id = request.form['item_id']
+    container_name = (request.form.get('container_name') or '').strip()
     entity = battle_map.entity_by_uid(entity_id)
     if entity:
+        if container_name and hasattr(entity, 'retrieve_item'):
+            ok, reason = entity.retrieve_item(container_name, item_id, 1, getattr(entity, 'session', None))
+            if not ok:
+                return jsonify(error=reason or 'Item is not in that container'), 400
         entity.equip(item_id)
         socketio.emit('message', {'type': 'refresh_map'})
         return jsonify(status='ok')

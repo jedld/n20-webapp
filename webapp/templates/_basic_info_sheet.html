@@ -1,0 +1,698 @@
+{% set gallery = entity.sheet_images() %}
+{% set appearance_info = format_outward_appearance(entity) %}
+{% set languages_display = format_languages(entity) %}
+{% set xp_progress = entity.xp_progress() if entity.__class__.__name__ == 'PlayerCharacter' and entity.xp_progress is defined else none %}
+{% set skill_ability = {
+    'acrobatics': 'Dex', 'sleight_of_hand': 'Dex', 'stealth': 'Dex',
+    'animal_handling': 'Wis', 'insight': 'Wis', 'medicine': 'Wis', 'perception': 'Wis', 'survival': 'Wis',
+    'arcana': 'Int', 'history': 'Int', 'investigation': 'Int', 'nature': 'Int', 'religion': 'Int',
+    'athletics': 'Str',
+    'deception': 'Cha', 'intimidation': 'Cha', 'performance': 'Cha', 'persuasion': 'Cha'
+} %}
+{% set ability_rows = [
+    ('Strength', 'str', entity.ability_score_str(), entity.str_mod()),
+    ('Dexterity', 'dex', entity.ability_score_dex(), entity.dex_mod()),
+    ('Constitution', 'con', entity.ability_score_con(), entity.con_mod()),
+    ('Intelligence', 'int', entity.ability_score_int(), entity.int_mod()),
+    ('Wisdom', 'wis', entity.ability_score_wis(), entity.wis_mod()),
+    ('Charisma', 'cha', entity.ability_score_cha(), entity.cha_mod())
+] if entity.ability_scores else [] %}
+<div class="dnd-sheet">
+    <header class="dnd-sheet-header">
+        <div class="dnd-sheet-portrait">
+            {% if gallery %}
+            <img id="sheet-primary-image"
+                 src="/assets/{{ gallery[0].image }}"
+                 alt="{{ gallery[0].label }}">
+            {% if gallery|length > 1 %}
+            <div class="sheet-image-gallery" role="tablist" aria-label="Character images">
+                {% for item in gallery %}
+                <button type="button"
+                        class="sheet-image-thumb{% if loop.first %} active{% endif %}"
+                        data-image="/assets/{{ item.image }}"
+                        data-label="{{ item.label }}"
+                        aria-label="{{ item.label }}"
+                        aria-selected="{{ 'true' if loop.first else 'false' }}"
+                        {% if item.description %}title="{{ item.description }}"{% endif %}>
+                    <img src="/assets/{{ item.image }}" alt="{{ item.label }}">
+                </button>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% else %}
+            <img src="/assets/{{ entity.profile_image() }}" alt="Profile Image">
+            {% endif %}
+        </div>
+        <div class="dnd-sheet-identity">
+            <h1>{{ entity.label() }}</h1>
+            {% if entity.familiar() %}
+            <div class="dnd-sheet-familiar">{{ entity.owner.label() }}'s Familiar</div>
+            {% endif %}
+            <div class="dnd-sheet-meta">
+                <div class="dnd-meta-field">
+                    <span class="dnd-meta-label">Class &amp; Level</span>
+                    <span class="dnd-meta-value">
+                        {% if not entity.object() and entity.class_and_level() %}
+                            {% for class, level in entity.class_and_level() %}
+                                {%- if not loop.first %} / {% endif -%}
+                                {%- if level -%}{{ class | replace('_', ' ') | title }} {{ level }}{%- else -%}{{ class | replace('_', ' ') | title }}{%- endif -%}
+                            {% endfor %}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="dnd-meta-field">
+                    <span class="dnd-meta-label">Race</span>
+                    <span class="dnd-meta-value">{{ entity.race() | replace('_', ' ') | title if not entity.object() and entity.race() else '—' }}</span>
+                </div>
+                <div class="dnd-meta-field">
+                    <span class="dnd-meta-label">Background</span>
+                    <span class="dnd-meta-value">
+                        {% if entity.background %}
+                            {{ entity.background.label or entity.background.name }}
+                        {% elif entity.properties.get('background') %}
+                            {{ entity.properties.get('background') | replace('_', ' ') | title }}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="dnd-meta-field">
+                    <span class="dnd-meta-label">Alignment</span>
+                    <span class="dnd-meta-value">{{ entity.alignment() | replace('_', ' ') | title }}</span>
+                </div>
+                <div class="dnd-meta-field">
+                    <span class="dnd-meta-label">Languages</span>
+                    <span class="dnd-meta-value">{{ languages_display or '—' }}</span>
+                </div>
+                <div class="dnd-meta-field">
+                    <span class="dnd-meta-label">Experience</span>
+                    <span class="dnd-meta-value">
+                        {% if xp_progress %}
+                            {{ xp_progress.xp }} XP
+                            {% if xp_progress.progression_mode == 'xp' and xp_progress.next_level_xp %}
+                                / {{ xp_progress.next_level_xp }}
+                            {% elif xp_progress.progression_mode != 'xp' %}
+                                ({{ xp_progress.progression_mode|upper }})
+                            {% endif %}
+                            {% if xp_progress.next_level_xp %}
+                            {% set span = xp_progress.next_level_xp - xp_progress.current_level_xp %}
+                            {% set gained = xp_progress.xp - xp_progress.current_level_xp %}
+                            {% set pct = (100 * gained / span) if span > 0 else 100 %}
+                            <div class="dnd-xp-bar" title="{{ xp_progress.xp_to_next_level }} XP to next level">
+                                <div style="width: {{ [0, [pct, 100]|min]|max }}%"></div>
+                            </div>
+                            {% endif %}
+                            {% if xp_progress.pending_level_ups > 0 %}
+                            <button class="hp-save-btn" type="button" onclick="openLevelUpPreview('{{ entity.entity_uid }}')">Level Up</button>
+                            {% endif %}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    {% if not entity.object() and entity.ability_scores %}
+    <div class="dnd-sheet-body">
+        <div class="dnd-col">
+            <div class="dnd-left-stack">
+                <div class="dnd-ability-stack">
+                    {% for label, abbr, score, modifier in ability_rows %}
+                    <div class="dnd-ability">
+                        <div class="dnd-ability-name">{{ label }}</div>
+                        <div class="dnd-ability-mod auto-die-roll"
+                             data-entity="{{ entity.entity_uid }}"
+                             data-compact="true"
+                             data-roll="1d20{{ modifier | mod_str }}"
+                             data-description="{{ label }} Check"
+                             title="{{ label }} check">{{ modifier | mod_str }}</div>
+                        <div class="dnd-ability-score">{{ score }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div>
+                    <div class="dnd-split-row" style="margin-bottom: 8px;">
+                        <div class="dnd-panel">
+                            <div class="dnd-stat-box" style="min-height: 0; border: 0; padding: 4px;">
+                                <span class="dnd-stat-value">+{{ entity.proficiency_bonus() }}</span>
+                                <span class="dnd-stat-label">Proficiency Bonus</span>
+                            </div>
+                        </div>
+                        <div class="dnd-panel">
+                            {% set has_insp = entity.has_inspiration() %}
+                            <div class="dnd-insp-box">
+                                {% if 'dm' in role %}
+                                <button type="button"
+                                        id="inspiration-pip"
+                                        class="dnd-insp-pip{% if has_insp %} filled{% endif %}"
+                                        onclick="toggleInspiration()"
+                                        aria-pressed="{{ 'true' if has_insp else 'false' }}"
+                                        title="{{ 'Click to spend' if has_insp else 'Click to grant' }} {{ entity.inspiration_label() }}"></button>
+                                {% else %}
+                                <span id="inspiration-pip"
+                                      class="dnd-insp-pip{% if has_insp %} filled{% endif %}"
+                                      title="{{ entity.inspiration_label() }}"
+                                      aria-hidden="true"></span>
+                                {% endif %}
+                                <span class="dnd-stat-label">{{ entity.inspiration_label() }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="dnd-panel" style="margin-bottom: 8px;">
+                        <h3 class="dnd-panel-title">Saving Throws</h3>
+                        <ul class="dnd-list">
+                            {% for ability in entity.ATTRIBUTE_TYPES %}
+                            <li>
+                                <span class="dnd-prof-pip{% if entity.proficient(ability + '_save') %} filled{% endif %}" title="{{ 'Proficient' if entity.proficient(ability + '_save') else 'Not proficient' }}"></span>
+                                <span class="dnd-list-name">{{ ability | title }}</span>
+                                <span class="dnd-list-mod auto-die-roll"
+                                      data-entity="{{ entity.entity_uid }}"
+                                      data-compact="true"
+                                      data-roll="1d20{{ entity.saving_throw_mod(ability) | mod_str }}"
+                                      data-description="{{ ability }} save">{{ entity.saving_throw_mod(ability) | mod_str }}</span>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    <div class="dnd-panel">
+                        <h3 class="dnd-panel-title">Skills</h3>
+                        <ul class="dnd-list">
+                            {% for skill in entity.ALL_SKILLS %}
+                            {% set _skill_mod = entity|attr(skill ~ '_mod') %}
+                            <li>
+                                <span class="dnd-prof-pip{% if entity.proficient(skill) %} filled{% endif %}{% if entity.expertise(skill) %} expertise{% endif %}"
+                                      title="{% if entity.expertise(skill) %}Expertise{% elif entity.proficient(skill) %}Proficient{% else %}Not proficient{% endif %}"></span>
+                                <span class="dnd-list-name">{{ skill | replace('_', ' ') | title }}</span>
+                                <span class="dnd-list-ability">({{ skill_ability.get(skill, '') }})</span>
+                                <span class="dnd-list-mod auto-die-roll"
+                                      data-entity="{{ entity.entity_uid }}"
+                                      data-compact="true"
+                                      data-roll="1d20{{ _skill_mod() | mod_str }}"
+                                      data-description="{{ skill | replace('_', ' ') }} check">{{ _skill_mod() | mod_str }}</span>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="dnd-panel dnd-passive">
+                <div class="dnd-passive-value">{{ entity.passive_perception() }}</div>
+                <div>
+                    <div class="dnd-panel-title" style="margin: 0; border: 0; padding: 0;">Passive Perception</div>
+                    <div style="font-size: 12px; color: #6b4423;">
+                        Investigation {{ entity.passive_investigation() }}
+                        · Insight {{ entity.passive_insight() }}
+                    </div>
+                </div>
+            </div>
+            {% set other_profs = entity.other_proficiencies() if entity.other_proficiencies is defined else {'armor': [], 'weapons': [], 'tools': []} %}
+            {% if other_profs.armor or other_profs.weapons or other_profs.tools %}
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Other Proficiencies</h3>
+                {% if other_profs.armor %}
+                <div class="dnd-prof-block">
+                    <div class="dnd-prof-kind">Armor</div>
+                    <div class="dnd-prof-values">{{ other_profs.armor | map('replace', '_', ' ') | map('title') | join(', ') }}</div>
+                </div>
+                {% endif %}
+                {% if other_profs.weapons %}
+                <div class="dnd-prof-block">
+                    <div class="dnd-prof-kind">Weapons</div>
+                    <div class="dnd-prof-values">{{ other_profs.weapons | map('replace', '_', ' ') | map('title') | join(', ') }}</div>
+                </div>
+                {% endif %}
+                {% if other_profs.tools %}
+                <div class="dnd-prof-block">
+                    <div class="dnd-prof-kind">Tools</div>
+                    <div class="dnd-prof-values">{{ other_profs.tools | map('replace', '_', ' ') | map('title') | join(', ') }}</div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="dnd-col">
+            <div class="dnd-stat-row">
+                <div class="dnd-stat-box">
+                    <span class="dnd-stat-value">
+                        {% if entity.equipped_ac() != entity.armor_class() %}
+                        {{ entity.equipped_ac() }}
+                        {% else %}
+                        {{ entity.armor_class() }}
+                        {% endif %}
+                    </span>
+                    <span class="dnd-stat-label">Armor Class</span>
+                    {% if entity.equipped_ac() != entity.armor_class() %}
+                    <span style="font-size: 11px; color: #6b4423;">({{ entity.armor_class() }})</span>
+                    {% endif %}
+                </div>
+                <div class="dnd-stat-box">
+                    <span class="dnd-stat-value auto-die-roll"
+                          data-entity="{{ entity.entity_uid }}"
+                          data-compact="true"
+                          data-roll="1d20{{ entity.initiative_bonus() | mod_str }}"
+                          data-description="Initiative">{{ entity.initiative_bonus() | mod_str }}</span>
+                    <span class="dnd-stat-label">Initiative</span>
+                </div>
+                <div class="dnd-stat-box">
+                    <span class="dnd-stat-value">{{ entity.speed() }} ft.</span>
+                    <span class="dnd-stat-label">Speed</span>
+                    {% if entity.properties.get('speed_fly') %}
+                    <span style="font-size: 11px; color: #6b4423;">Fly {{ entity.properties.get('speed_fly') }} ft.</span>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if entity.hp() is not none %}
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Hit Points</h3>
+                <div class="dnd-hp-max">
+                    Hit Point Maximum
+                    {% if 'dm' in role %}
+                    <input type="number" class="hp-editable" id="max-hp-input" value="{{ entity.max_hp() }}" min="1" max="999">
+                    <button class="hp-save-btn" onclick="updateMaxHP()" id="save-max-hp-btn">Save</button>
+                    {% else %}
+                    <strong>{{ entity.max_hp() }}</strong>
+                    {% endif %}
+                </div>
+                <div class="dnd-hp-current">
+                    {% if 'dm' in role %}
+                    <input type="number" class="hp-editable" id="current-hp-input" value="{{ entity.hp() }}" min="0" max="{{ entity.max_hp() }}">
+                    <button class="hp-save-btn" onclick="updateCurrentHP()" id="save-current-hp-btn">Save</button>
+                    {% else %}
+                    {{ entity.hp() }}
+                    {% endif %}
+                </div>
+                <div class="dnd-hp-max">
+                    Temporary HP
+                    {% if 'dm' in role %}
+                    <input type="number" class="hp-editable" id="temp-hp-input" value="{{ entity.temp_hp() }}" min="0" max="999">
+                    <button class="hp-save-btn" onclick="updateTempHP()" id="save-temp-hp-btn">Save</button>
+                    {% else %}
+                    {{ entity.temp_hp() }}
+                    {% endif %}
+                </div>
+                {% if not restricted and can_rest_for(entity.entity_uid) %}
+                <div class="rest-controls">
+                    <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                        <button type="button" class="hp-save-btn" id="rest-btn-short"
+                            data-rest-entity="{{ entity.entity_uid }}" data-rest-type="short"
+                            onclick="openRestModal('{{ entity.entity_uid }}', 'short')">Short Rest</button>
+                        <button type="button" class="hp-save-btn" id="rest-btn-long"
+                            data-rest-entity="{{ entity.entity_uid }}" data-rest-type="long"
+                            onclick="openRestModal('{{ entity.entity_uid }}', 'long')">Long Rest</button>
+                        <span id="rest-status-indicator" style="font-size: 12px; color: #b00;"></span>
+                    </div>
+                    <div id="rest-status-detail" style="font-size: 12px; color: #666; margin-top: 4px;"></div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <div class="dnd-split-row">
+                <div class="dnd-panel">
+                    <h3 class="dnd-panel-title">Hit Dice</h3>
+                    {% set hit_dice = entity.hit_die() if entity.hit_die is defined else none %}
+                    {% if hit_dice %}
+                        {% for die_type, count in hit_dice.items() %}
+                        <div style="font-size: 16px; font-weight: 700;">{{ count }}d{{ die_type }}</div>
+                        {% endfor %}
+                    {% else %}
+                        <div style="color: #6b4423;">—</div>
+                    {% endif %}
+                </div>
+                <div class="dnd-panel">
+                    <h3 class="dnd-panel-title">Death Saves</h3>
+                    <div class="dnd-death-row">
+                        <span>Successes</span>
+                        <div class="dnd-death-pips">
+                            {% for i in range(3) %}
+                            <span class="dnd-death-pip success{% if entity.death_saves > i %} filled{% endif %}"></span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <div class="dnd-death-row">
+                        <span>Failures</span>
+                        <div class="dnd-death-pips">
+                            {% for i in range(3) %}
+                            <span class="dnd-death-pip fail{% if entity.death_fails > i %} filled{% endif %}"></span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {% set _has_ki = entity.max_ki|default(0) %}
+            {% set _has_rage = entity.rage_max|default(0) %}
+            {% set _has_sw = entity.second_wind_count is defined and entity.second_wind_count is not none %}
+            {% set _has_loh = entity.lay_on_hands_count is defined and entity.lay_on_hands_count is not none %}
+            {% set _has_bardic = entity.bardic_inspiration_max|default(0) %}
+            {% set _has_wild = entity.wild_shape_max|default(0) %}
+            {% set _has_arcane = entity.arcane_recovery is defined and entity.arcane_recovery is not none %}
+            {% set _resource_pools = entity.character_resource_pools() if entity.character_resource_pools is defined else (entity.resources if entity.resources is defined else {}) %}
+            {% if _has_ki or _has_rage or _has_sw or _has_loh or _has_bardic or _has_wild or _has_arcane or _resource_pools %}
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Class Resources</h3>
+                <table class="class-resources-table">
+                    {% if _has_ki %}
+                    <tr>
+                        <th>Ki Points</th>
+                        <td>
+                            <span class="resource-value">{{ entity.ki_count or 0 }}/{{ entity.max_ki }}</span>
+                            <div class="resource-pips" aria-hidden="true">
+                                {% for i in range(entity.max_ki) %}
+                                <span class="pip {{ 'filled' if i < (entity.ki_count or 0) else 'empty' }}" title="Ki point"></span>
+                                {% endfor %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% if _has_rage %}
+                    <tr>
+                        <th>Rage Uses</th>
+                        <td>
+                            <span class="resource-value">{{ entity.rage_count or 0 }}/{{ entity.rage_max }}</span>
+                            {% if entity.is_raging() %}
+                            <span class="badge badge-danger" style="background:#c0392b;color:#fff;padding:2px 6px;border-radius:4px;margin-left:6px;">Raging ({{ entity.rage_rounds_remaining }} rd)</span>
+                            {% endif %}
+                            {% if entity.is_reckless() %}
+                            <span class="badge" style="background:#e67e22;color:#fff;padding:2px 6px;border-radius:4px;margin-left:6px;">Reckless</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% if _has_sw %}
+                    <tr>
+                        <th>Second Wind</th>
+                        <td><span class="resource-value">{{ entity.second_wind_count }}/1</span></td>
+                    </tr>
+                    {% endif %}
+                    {% if _has_loh %}
+                    <tr>
+                        <th>Lay on Hands</th>
+                        <td><span class="resource-value">{{ entity.lay_on_hands_count }} HP</span></td>
+                    </tr>
+                    {% endif %}
+                    {% if _has_bardic %}
+                    <tr>
+                        <th>Bardic Inspiration</th>
+                        <td><span class="resource-value">{{ entity.bardic_inspiration_count or 0 }}/{{ entity.bardic_inspiration_max }}</span></td>
+                    </tr>
+                    {% endif %}
+                    {% if _has_wild %}
+                    <tr>
+                        <th>Wild Shape</th>
+                        <td><span class="resource-value">{{ entity.wild_shape_count or 0 }}/{{ entity.wild_shape_max }}</span></td>
+                    </tr>
+                    {% endif %}
+                    {% if _has_arcane %}
+                    <tr>
+                        <th>Arcane Recovery</th>
+                        <td><span class="resource-value">{{ 'Available' if entity.arcane_recovery else 'Used' }}</span></td>
+                    </tr>
+                    {% endif %}
+                    {% for resource_name, resource in _resource_pools.items() %}
+                    <tr>
+                        <th>{{ resource_name | replace('_', ' ') | title }}</th>
+                        <td>
+                            {% if 'dm' in role %}
+                            <div class="action-resource-controls">
+                                <input type="number" class="action-resource-input"
+                                       id="resource-{{ resource_name }}-input"
+                                       value="{{ resource.current }}"
+                                       min="0"
+                                       max="{{ resource.max_value }}"
+                                       title="Current {{ resource_name | replace('_', ' ') }}">
+                                <div class="action-resource-buttons">
+                                    <button class="action-resource-btn minus-btn" onclick="updateResourcePool('{{ resource_name }}', -1)" title="Remove one">-</button>
+                                    <button class="action-resource-btn plus-btn" onclick="updateResourcePool('{{ resource_name }}', 1)" title="Add one">+</button>
+                                    <button class="action-resource-save-btn" onclick="setResourcePool('{{ resource_name }}')" id="save-resource-{{ resource_name }}-btn" title="Set to the specified value">Set</button>
+                                </div>
+                            </div>
+                            {% else %}
+                            <span class="resource-value">{{ resource.current }}/{{ resource.max_value }}</span>
+                            {% endif %}
+                            <span style="font-size:0.85em;color:#777;margin-left:6px;">{{ resource.restore_on | replace('_', ' ') }}</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+            {% endif %}
+
+            {% set _unarmed = entity.unarmed_strike_info() if entity.unarmed_strike_info is defined else none %}
+            {% if _unarmed %}
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Unarmed Strike</h3>
+                <table class="unarmed-strike-table">
+                    <tr>
+                        <th>Attack</th>
+                        <td>
+                            <span class="unarmed-bonus">{{ '+' if _unarmed.attack_bonus >= 0 else '' }}{{ _unarmed.attack_bonus }}</span>
+                            <span class="unarmed-ability">({{ _unarmed.ability }})</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Damage</th>
+                        <td>
+                            <span class="unarmed-damage">{{ _unarmed.damage }}</span>
+                            <span class="unarmed-damage-type">{{ _unarmed.damage_type }}</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Range</th>
+                        <td>{{ _unarmed.range }} ft</td>
+                    </tr>
+                    {% if _unarmed.properties %}
+                    <tr>
+                        <th>Properties</th>
+                        <td>
+                            {% for prop in _unarmed.properties %}
+                            <span class="badge" style="background:#34495e;color:#fff;padding:2px 6px;border-radius:4px;margin-right:4px;">{{ prop }}</span>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+            {% endif %}
+
+            {% set defenses = entity.sheet_defenses() %}
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Defenses</h3>
+                {% if defenses.resistances %}
+                <p class="dnd-resist-line"><strong>Resistances</strong> {{ defenses.resistances | map('replace', '_', ' ') | map('title') | join(', ') }}</p>
+                {% endif %}
+                {% if defenses.immunities %}
+                <p class="dnd-resist-line"><strong>Immunities</strong> {{ defenses.immunities | map('replace', '_', ' ') | map('title') | join(', ') }}</p>
+                {% endif %}
+                {% if defenses.vulnerabilities %}
+                <p class="dnd-resist-line"><strong>Vulnerabilities</strong> {{ defenses.vulnerabilities | map('replace', '_', ' ') | map('title') | join(', ') }}</p>
+                {% endif %}
+                {% if defenses.condition_immunities %}
+                <p class="dnd-resist-line"><strong>Condition Immunities</strong> {{ defenses.condition_immunities | map('replace', '_', ' ') | map('title') | join(', ') }}</p>
+                {% endif %}
+                {% if not (defenses.resistances or defenses.immunities or defenses.vulnerabilities or defenses.condition_immunities) %}
+                <p class="dnd-empty-note">None</p>
+                {% endif %}
+            </div>
+            {% set conditions = entity.sheet_conditions() %}
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Conditions</h3>
+                {% if conditions %}
+                <div class="dnd-condition-list">
+                    {% for condition in conditions %}
+                    <span class="dnd-condition-chip">{{ condition }}</span>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="dnd-empty-note">None</p>
+                {% endif %}
+            </div>
+
+            {% if 'dm' in role and battle and battle.entity_state_for(entity) %}
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Action Resources</h3>
+                <p style="font-size: 0.85em; color: #666; margin: 0 0 8px;">
+                    Modify action economy during battle.
+                </p>
+                <table>
+                    <tr>
+                        <th>Actions</th>
+                        <td>
+                            <div class="action-resource-controls">
+                                <input type="number" class="action-resource-input" id="action-input" value="{{ battle.entity_state_for(entity).get('action', 0) }}" min="0" max="10" title="Current number of actions available">
+                                <div class="action-resource-buttons">
+                                    <button class="action-resource-btn minus-btn" onclick="updateActionResource('action', -1)" title="Remove one action">-</button>
+                                    <button class="action-resource-btn plus-btn" onclick="updateActionResource('action', 1)" title="Add one action">+</button>
+                                    <button class="action-resource-save-btn" onclick="setActionResource('action')" id="save-action-btn" title="Set to the specified value">Set</button>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Bonus Actions</th>
+                        <td>
+                            <div class="action-resource-controls">
+                                <input type="number" class="action-resource-input" id="bonus-action-input" value="{{ battle.entity_state_for(entity).get('bonus_action', 0) }}" min="0" max="10" title="Current number of bonus actions available">
+                                <div class="action-resource-buttons">
+                                    <button class="action-resource-btn minus-btn" onclick="updateActionResource('bonus_action', -1)" title="Remove one bonus action">-</button>
+                                    <button class="action-resource-btn plus-btn" onclick="updateActionResource('bonus_action', 1)" title="Add one bonus action">+</button>
+                                    <button class="action-resource-save-btn" onclick="setActionResource('bonus_action')" id="save-bonus-action-btn" title="Set to the specified value">Set</button>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Reactions</th>
+                        <td>
+                            <div class="action-resource-controls">
+                                <input type="number" class="action-resource-input" id="reaction-input" value="{{ battle.entity_state_for(entity).get('reaction', 0) }}" min="0" max="10" title="Current number of reactions available">
+                                <div class="action-resource-buttons">
+                                    <button class="action-resource-btn minus-btn" onclick="updateActionResource('reaction', -1)" title="Remove one reaction">-</button>
+                                    <button class="action-resource-btn plus-btn" onclick="updateActionResource('reaction', 1)" title="Add one reaction">+</button>
+                                    <button class="action-resource-save-btn" onclick="setActionResource('reaction')" id="save-reaction-btn" title="Set to the specified value">Set</button>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="dnd-col">
+            {% if not character_description_suppressed_for(entity, viewer_is_dm=('dm' in role)) %}
+            <div class="description">
+                <h3 class="dnd-panel-title">Character Appearance</h3>
+                <p>{{ entity.description() }}</p>
+            </div>
+            {% endif %}
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Outward Appearance</h3>
+                <p id="appearance-display-text" style="margin: 0;">{{ appearance_info.resolved }}</p>
+                {% if appearance_info.is_derived %}
+                <p class="helper" style="color:#6b4423; font-size: 0.85em; margin: 6px 0 0;">Derived from race, class, and gear unless you add a custom description.</p>
+                {% endif %}
+            </div>
+            <div class="dnd-panel">
+                <h3 class="dnd-panel-title">Features &amp; Traits</h3>
+                <div class="features-container">
+                    {% set advanced_features = [
+                        'sneak_attack', 'cunning_action', 'uncanny_dodge',
+                        'evasion', 'reliable_talent', 'blindsense',
+                        'slippery_mind', 'fancy_footwork',
+                        'rakish_audacity', 'panache', 'sentinel',
+                        'martial_adept', 'arcane_recovery',
+                        'abjuration_savant', 'arcane_ward',
+                        'projected_ward', 'improved_abjuration',
+                        'spell_resistance'
+                    ] %}
+                    <div class="feature-section">
+                        <h3>Active Features</h3>
+                        <ul class="feature-list">
+                        {% for feature in advanced_features if entity.class_feature(feature) %}
+                            <li class="feature-item" data-tooltip="{{ feature }}">{{ feature | replace('_', ' ') | title }}</li>
+                        {% endfor %}
+                        </ul>
+                    </div>
+
+                    {% if entity.properties.get('class_features') %}
+                    <div class="feature-section">
+                        <h3>Class Features</h3>
+                        <ul class="feature-list">
+                        {% for feature in entity.properties.get('class_features', []) %}
+                            <li class="feature-item" data-tooltip="{{ feature }}">{{ feature | replace('_', ' ') | title }}</li>
+                        {% endfor %}
+                        {% if entity.session.ruleset and entity.session.ruleset.weapon_mastery_enabled() and entity.class_feature('weapon_mastery') %}
+                            {% set known = entity.properties.get('known_weapon_masteries') %}
+                            <li class="feature-item" data-tooltip="weapon_mastery">
+                                Known Masteries:
+                                {% if known %}
+                                  {{ known | map('title') | join(', ') }}
+                                {% else %}
+                                  All (unspecified)
+                                {% endif %}
+                            </li>
+                        {% endif %}
+                        </ul>
+                    </div>
+                    {% endif %}
+
+                    {% if entity.race_properties %}
+                    <div class="feature-section">
+                        <h3>Racial Traits</h3>
+                        <ul class="feature-list">
+                        {% for feature in entity.race_properties.get('race_features', []) %}
+                            <li class="feature-item" data-tooltip="{{ t( 'features.' + feature) }}">{{ feature | replace('_', ' ') | title }}</li>
+                        {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+
+                    {% if entity.properties.get('attributes') %}
+                    <div class="feature-section">
+                        <h3>Other Traits</h3>
+                        <ul class="feature-list">
+                        {% for feature in entity.properties.get('attributes', []) %}
+                            <li class="feature-item" data-tooltip="{{ feature }}">{{ feature | replace('_', ' ') | title }}</li>
+                        {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+
+                    {% if entity.properties.get('feats') %}
+                    <div class="feature-section">
+                        <h3>Feats</h3>
+                        <ul class="feature-list">
+                        {% for feat in entity.properties.get('feats', []) %}
+                            <li class="feature-item" data-tooltip="{{ feat }}">{{ feat | replace('_', ' ') | title }}</li>
+                        {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+
+                    {% if entity.properties.get('maneuvers') %}
+                    <div class="feature-section">
+                        <h3>Maneuvers</h3>
+                        <ul class="feature-list">
+                        {% for maneuver in entity.properties.get('maneuvers', []) %}
+                            <li class="feature-item" data-tooltip="{{ maneuver }}">{{ maneuver | replace('_', ' ') | title }}</li>
+                        {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="dnd-sheet-body" style="grid-template-columns: 1fr;">
+        <div class="dnd-col">
+            {% if not character_description_suppressed_for(entity, viewer_is_dm=('dm' in role)) %}
+            <div class="description">
+                <p>{{ entity.description() }}</p>
+            </div>
+            {% endif %}
+            {% if entity.hp() is not none or entity.armor_class() is not none %}
+            <div class="dnd-stat-row">
+                <div class="dnd-stat-box">
+                    <span class="dnd-stat-value">{{ entity.armor_class() }}</span>
+                    <span class="dnd-stat-label">Armor Class</span>
+                </div>
+                {% if entity.hp() is not none %}
+                <div class="dnd-stat-box">
+                    <span class="dnd-stat-value">{{ entity.hp() }} / {{ entity.max_hp() }}</span>
+                    <span class="dnd-stat-label">Hit Points</span>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>

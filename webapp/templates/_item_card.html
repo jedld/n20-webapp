@@ -1,0 +1,146 @@
+<div class="item-card{% if item.magical %} item-card-magic{% endif %} item-card-{{ item.category }}">
+    <div class="item-card-banner">
+        <div class="item-card-icon-wrap">
+            <img class="item-card-icon" src="{{ item.icon }}" alt="{{ item.label }}">
+        </div>
+        <div class="item-card-heading">
+            <h3 class="item-card-title" id="item-card-title">{{ item.label }}</h3>
+            <p class="item-card-kind">
+                {% if item.rarity_label %}<span class="item-card-rarity">{{ item.rarity_label }}</span>{% endif %}
+                {{ item.type_label }}{% if item.subtype_label and item.subtype_label != item.type_label %} · {{ item.subtype_label }}{% endif %}
+                {% if item.proficiency_label %} · {{ item.proficiency_label }}{% endif %}
+            </p>
+            <div class="item-card-badges">
+                {% if item.magical %}
+                <span class="item-card-badge item-card-badge-magic" title="Magical">✦ Magical{% if item.magic_bonus %}+{{ item.magic_bonus }}{% endif %}</span>
+                {% endif %}
+                {% if item.equipped %}
+                <span class="item-card-badge">Equipped</span>
+                {% endif %}
+                {% if item.usable %}
+                <span class="item-card-badge">Usable</span>
+                {% endif %}
+                {% if item.consumable %}
+                <span class="item-card-badge">Consumable</span>
+                {% endif %}
+                {% if item.qty and item.qty > 1 %}
+                <span class="item-card-badge">Qty {{ item.qty }}</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    {% if item.flavor %}
+    <blockquote class="item-card-flavor">{{ item.flavor }}</blockquote>
+    {% endif %}
+
+    {% if item.description %}
+    <p class="item-card-description">{{ item.description }}</p>
+    {% endif %}
+
+    {% if item.effect %}
+    <div class="item-card-effects">
+        <h4>Effect</h4>
+        <ul>
+            {% for effect in item.effect %}
+            <li>{{ effect }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if item.stats %}
+    <table class="item-card-stats">
+        <tbody>
+            {% for row in item.stats %}
+            <tr>
+                <th>{{ row.label }}</th>
+                <td>{{ row.value }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if item.properties %}
+    <div class="item-card-properties">
+        {% for prop in item.properties %}
+        <span class="item-card-chip">{{ prop }}</span>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if item.masteries %}
+    <div class="item-card-mastery">
+        <h4>Weapon Mastery</h4>
+        {% for mastery in item.masteries %}
+        <div class="item-card-mastery-row{% if not mastery.trained %} item-card-mastery-untrained{% endif %}">
+            <span class="item-card-chip">{{ mastery.label }}</span>
+            {% if mastery.blurb %}<span class="item-card-mastery-blurb">{{ mastery.blurb }}</span>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if item.attunement_note %}
+    <p class="item-card-attunement">{{ item.attunement_note }}</p>
+    {% endif %}
+
+    {% if item.charges %}
+    <p class="item-card-charges">Charges {{ item.charges.current }}/{{ item.charges.max }}</p>
+    {% endif %}
+
+    {% if item.content %}
+    <div class="item-card-letter">
+        <h4>Contents</h4>
+        <pre>{{ item.content }}</pre>
+    </div>
+    {% endif %}
+
+    {% if item.container_label %}
+    <p class="item-card-container-note">Inside {{ item.container_label }}</p>
+    {% endif %}
+
+    {% if item.is_container %}
+    <div class="item-card-contents">
+        <h4>Contains</h4>
+        {% if item.contents %}
+        <ul class="item-card-contents-list">
+            {% for nested in item.contents %}
+            <li class="item-card-content-row" data-item-name="{{ nested.name }}">
+                <button type="button" class="item-card-content-inspect item-card-trigger" data-item-name="{{ nested.name }}" data-container="{{ nested.container }}" title="Inspect {{ nested.label }}">
+                    <img class="item-card-content-icon" src="{{ nested.icon }}" alt="">
+                    <span class="item-card-content-label">{{ nested.label }}</span>
+                    {% if nested.qty and nested.qty > 1 %}
+                    <span class="item-card-content-qty">×{{ nested.qty }}</span>
+                    {% endif %}
+                </button>
+                <div class="item-card-content-actions">
+                    {% with item=nested, show_container_toggle=false %}
+                    {% include '_inventory_item_actions.html' %}
+                    {% endwith %}
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="item-card-contents-empty">Empty</p>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="item-card-actions">
+        {% with show_container_toggle=false %}
+        {% include '_inventory_item_actions.html' %}
+        {% endwith %}
+    </div>
+
+    <div class="item-card-footer">
+        {% if item.weight is not none %}
+        <span>{{ item.weight }} lb{% if item.qty and item.qty > 1 %} each{% endif %}</span>
+        {% endif %}
+        {% if item.cost_label %}
+        <span>{{ item.cost_label }}</span>
+        {% endif %}
+    </div>
+</div>

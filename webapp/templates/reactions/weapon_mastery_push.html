@@ -1,0 +1,19 @@
+{% set entity = waiting_for_reaction[0] %}
+<img class="current-turn-img" src="/assets/{{ entity.token_image() }}" style="max-width: 75px;">
+{% if controller_of(entity.entity_uid, username) %}
+<h4>Weapon Mastery — Push</h4>
+<p>You hit. Push this creature 10 feet away?</p>
+{% for reaction_id, label, _ in waiting_for_reaction[3] %}
+    <div>
+        <input type="radio" id="{{ reaction_id }}" name="reaction" value="{{ reaction_id }}">
+        <label for="{{ reaction_id }}">{{ label }}</label>
+    </div>
+{% endfor %}
+<div>
+    <input type="radio" id="no-reaction" name="reaction" value="no-reaction" checked>
+    <label for="no-reaction">Skip</label>
+</div>
+<button type="submit" class="btn btn-primary">Submit Choice</button>
+{% else %}
+<h4>Waiting on Weapon Mastery (Push) for {{ entity.name }}.</h4>
+{% endif %}

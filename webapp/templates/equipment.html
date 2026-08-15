@@ -62,12 +62,15 @@
             <th>Damage</th>
             <th>Type</th>
             <th>Range</th>
+            {% if entity.session.ruleset and entity.session.ruleset.weapon_mastery_enabled() %}
+            <th>Mastery</th>
+            {% endif %}
         </tr>
     </thead>
     <tbody>
         <tr>
             <td>
-                <div class="tile-item">
+                <div class="tile-item item-card-trigger" data-item-name="{{ item['name'] }}" role="button" tabindex="0" title="View item">
                 <img class="item-icon"
                           src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}"
                           alt="{{ item['label'] }}">
@@ -91,6 +94,22 @@
             {% else %}
             <td>{{ item['range'] }}</td>
             {% endif %}
+            {% if entity.session.ruleset and entity.session.ruleset.weapon_mastery_enabled() %}
+            <td>
+              {% set masteries = item.get('weapon_mastery') or [] %}
+              {% if masteries is string %}{% set masteries = [masteries] %}{% endif %}
+              {% if masteries %}
+                {% set known = entity.properties.get('known_weapon_masteries') %}
+                {% for m in masteries %}
+                  {% set trained = (known is none and entity.class_feature('weapon_mastery')) or (known and m in known) %}
+                  <span class="weapon-mastery-chip{% if not trained %} weapon-mastery-untrained{% endif %}"
+                        title="{{ 'Known mastery' if trained else 'Weapon mastery (not trained)' }}">{{ m|title }}</span>
+                {% endfor %}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            {% endif %}
         </tr>
     </tbody>
 </table>
@@ -104,7 +123,7 @@
     </tr>
     <tr>
         <td>
-            <div class="tile-item">
+            <div class="tile-item item-card-trigger" data-item-name="{{ item['name'] }}" role="button" tabindex="0" title="View item">
             <img class="item-icon"
                       src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}"
                       alt="{{ item['label'] }}">
@@ -125,7 +144,7 @@
     </tr>
     <tr>
         <td>
-            <div class="tile-item">
+            <div class="tile-item item-card-trigger" data-item-name="{{ item['name'] }}" role="button" tabindex="0" title="View item">
                 <img class="item-icon" src="{{ item.get('icon', '/assets/items/' ~ item['image'] ~ '.png') }}" alt="{{ item['label'] }}">
                 {% with item_name=item['name'] %}{% include '_item_charge_badge.html' %}{% endwith %}
             </div>
@@ -153,12 +172,34 @@
 {% endfor %}
 <h2 class="unequipped-items-title">Carried Gear</h2>
 <input type="hidden" id="inventory-is-dm" value="{{ '1' if role is defined and 'dm' in role else '0' }}">
+<div class="inventory-toolbar" role="search">
+    <label class="inventory-search-label" for="inventory-search">
+        <span class="visually-hidden">Search inventory</span>
+        <input type="search" id="inventory-search" class="inventory-search" placeholder="Search items…" autocomplete="off">
+    </label>
+    <label class="inventory-sort-label" for="inventory-sort">
+        Sort
+        <select id="inventory-sort" class="inventory-sort">
+            <option value="name">Name</option>
+            <option value="price">Price</option>
+            <option value="weight">Weight</option>
+        </select>
+    </label>
+    <button type="button" id="inventory-sort-dir" class="inventory-sort-dir" data-dir="asc" title="Sort ascending" aria-label="Sort ascending">▲</button>
+</div>
 <ul class="unequipped-items-list tile-inventory">
 {% for item in entity.carried_gear_items() %}
-    <li class="inventory-slot tile-item {% if entity.is_container(item['name'], game_session) %}container-item{% endif %}"
-        data-item-name="{{ item['name'] }}">
-        <div class="inventory-slot-face">
-            {% if entity.is_container(item['name'], game_session) %}
+    <li class="inventory-slot tile-item {% if entity.is_container(item['name'], game_session) and not item.get('nested') %}container-item{% endif %}{% if item.get('nested') %} inventory-slot-nested{% endif %}"
+        data-item-name="{{ item['name'] }}"
+        data-item-label="{{ item['label'] }}"
+        data-weight="{{ item['weight'] if item.get('weight') is not none else '' }}"
+        data-cost="{{ item['cost_gp'] if item.get('cost_gp') is not none else '' }}"
+        data-container="{{ item.get('container') or '' }}"
+        data-container-label="{{ item.get('container_label') or '' }}">
+        <div class="inventory-slot-face item-card-trigger" data-item-name="{{ item['name'] }}"{% if item.get('container') %} data-container="{{ item['container'] }}"{% endif %} role="button" tabindex="0" title="{{ item['label'] }}{% if item.get('nested') %} (in {{ item['container_label'] }}){% endif %}">
+            {% if item.get('nested') %}
+            <span class="inventory-nested-badge" title="Inside {{ item['container_label'] }}">{{ item['container_label'] }}</span>
+            {% elif entity.is_container(item['name'], game_session) %}
             <span class="container-indicator" title="Container">📦</span>
             {% elif item.get('magical') %}
             <span class="container-indicator magic-indicator" title="Magical">✦</span>
@@ -170,37 +211,23 @@
             {% endif %}
         </div>
         <div class="inventory-slot-menu">
-            <div class="inventory-slot-menu-title">{{ item['label'] }}</div>
+            <div class="inventory-slot-menu-title item-card-trigger" data-item-name="{{ item['name'] }}"{% if item.get('container') %} data-container="{{ item['container'] }}"{% endif %}>{{ item['label'] }}</div>
+            {% if item.get('nested') %}
+            <div class="inventory-slot-menu-meta inventory-slot-container-note">In {{ item['container_label'] }}</div>
+            {% endif %}
             {% if item.get('weight') is not none %}
             <div class="inventory-slot-menu-meta">{{ item['weight'] }} lb{% if item.get('qty', 1) > 1 %} each{% endif %}</div>
+            {% endif %}
+            {% if item.get('cost') %}
+            <div class="inventory-slot-menu-meta">{{ item.get('cost') }}{% if item.get('cost') is number %} gp{% endif %}</div>
             {% endif %}
             {% set charge = entity.item_charge_summary(item['name']) if entity.item_charge_summary is defined else none %}
             {% if charge %}
             <div class="inventory-slot-menu-meta">Charges: {{ charge.current }}/{{ charge.max }}</div>
             {% endif %}
-            <div class="inventory-slot-menu-actions">
-                {% if item.get('type') == 'letter' %}
-                <form method="post" class="form-read-letter" action="/read_letter" target="_blank">
-                    <input type="hidden" name="id" value="{{ entity.entity_uid }}">
-                    <input type="hidden" name="item_id" value="{{ item['name'] }}">
-                    <button type="submit" class="inventory-action-btn inventory-action-btn-read">Read</button>
-                </form>
-                {% endif %}
-                {% if entity.check_equip(item['name']) %}
-                <form method="post" class="form-equip" action="/equip">
-                    <input type="hidden" name="id" value="{{ entity.entity_uid }}">
-                    <input type="hidden" name="item_id" value="{{ item['name'] }}">
-                    <button type="submit" class="inventory-action-btn equip-button">Equip</button>
-                </form>
-                {% elif not entity.is_container(item['name'], game_session) and item.get('type') != 'letter' %}
-                <span class="item-equip-note">Cannot equip</span>
-                {% endif %}
-                {% if entity.is_container(item['name'], game_session) %}
-                <button type="button" class="inventory-action-btn container-toggle-btn" data-entity="{{ entity.entity_uid }}" data-container="{{ item['name'] }}" data-open-label="Open" data-close-label="Close">Open</button>
-                {% endif %}
-            </div>
+            {% include '_inventory_item_actions.html' %}
         </div>
-        {% if entity.is_container(item['name'], game_session) %}
+        {% if not item.get('nested') and entity.is_container(item['name'], game_session) %}
         {% set cap_lbs = entity.container_capacity_lbs(item['name'], game_session) %}
         {% set cap_cu = entity.container_capacity_cu_ft(item['name'], game_session) %}
         <div class="container-contents-wrapper" id="container-wrapper-{{ item['name'] | replace(' ', '-') }}" style="display: none;">

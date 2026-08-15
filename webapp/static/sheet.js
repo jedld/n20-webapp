@@ -32,6 +32,95 @@ $(document).ready(function () {
         $(evt.currentTarget).addClass('active');
     }
 
+    var inventoryFilterState = { q: '', sort: 'name', dir: 'asc' };
+
+    function isInventoryDm() {
+        return $('#inventory-is-dm').val() === '1';
+    }
+
+    function applyInventoryFilter() {
+        const $list = $('.unequipped-items-list');
+        if (!$list.length) {
+            return;
+        }
+        const q = String(inventoryFilterState.q || '').trim().toLowerCase();
+        const sortKey = inventoryFilterState.sort || 'name';
+        const dir = inventoryFilterState.dir === 'desc' ? -1 : 1;
+        const $slots = $list.children('.inventory-slot');
+        const slots = $slots.get();
+        slots.sort(function (a, b) {
+            const $a = $(a);
+            const $b = $(b);
+            const av = inventorySortValue($a, sortKey);
+            const bv = inventorySortValue($b, sortKey);
+            if (typeof av === 'string' || typeof bv === 'string') {
+                return dir * String(av).localeCompare(String(bv), undefined, { sensitivity: 'base' });
+            }
+            if (av === bv) {
+                return dir * String($a.data('item-label') || '').localeCompare(String($b.data('item-label') || ''), undefined, { sensitivity: 'base' });
+            }
+            return dir * (av - bv);
+        });
+        slots.forEach(function (slot) {
+            $list.append(slot);
+        });
+        let visible = 0;
+        $slots.each(function () {
+            const $slot = $(this);
+            const hay = [
+                $slot.attr('data-item-label'),
+                $slot.attr('data-item-name'),
+                $slot.attr('data-container-label')
+            ].join(' ').toLowerCase();
+            const match = !q || hay.indexOf(q) !== -1;
+            $slot.toggle(match);
+            if (match) {
+                visible += 1;
+            }
+        });
+        let $empty = $list.children('.inventory-filter-empty');
+        if (!$empty.length) {
+            $empty = $('<li class="container-empty inventory-filter-empty">No matching items</li>');
+            $list.append($empty);
+        } else {
+            $list.append($empty);
+        }
+        const hasSlots = $list.children('.inventory-slot').length > 0;
+        $empty.toggle(hasSlots && visible === 0);
+    }
+
+    function inventorySortValue($slot, key) {
+        if (key === 'price') {
+            const value = parseFloat($slot.attr('data-cost'));
+            return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
+        }
+        if (key === 'weight') {
+            const value = parseFloat($slot.attr('data-weight'));
+            return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
+        }
+        return String($slot.attr('data-item-label') || $slot.attr('data-item-name') || '').toLowerCase();
+    }
+
+    function restoreInventoryToolbar() {
+        const $search = $('#inventory-search');
+        const $sort = $('#inventory-sort');
+        const $dir = $('#inventory-sort-dir');
+        if ($search.length) {
+            $search.val(inventoryFilterState.q);
+        }
+        if ($sort.length) {
+            $sort.val(inventoryFilterState.sort);
+        }
+        if ($dir.length) {
+            const descending = inventoryFilterState.dir === 'desc';
+            $dir.attr('data-dir', descending ? 'desc' : 'asc');
+            $dir.text(descending ? '▼' : '▲');
+            $dir.attr('title', descending ? 'Sort descending' : 'Sort ascending');
+            $dir.attr('aria-label', descending ? 'Sort descending' : 'Sort ascending');
+        }
+        applyInventoryFilter();
+    }
+
     function refreshEquipment() {
         $.get('/equipment',
             {
@@ -39,7 +128,19 @@ $(document).ready(function () {
             },
             function (response) {
                 $('.equipment-container').html(response);
+                populateDmCatalog();
+                restoreInventoryToolbar();
             });
+    }
+
+    function updateSheetHp(hp) {
+        if (hp == null || hp === '') {
+            return;
+        }
+        const $input = $('#current-hp-input');
+        if ($input.length) {
+            $input.val(hp);
+        }
     }
 
 
@@ -91,20 +192,62 @@ $(document).ready(function () {
         var url = form.attr('action');
         var data = form.serialize();
         $.post(url, data, function (response) {
-            // Update the spell list
             refreshEquipment();
         });
     });
 
-    $('.equipment-container').on('submit', '.form-equip', function (event) {
+    $(document).on('submit', '.form-equip', function (event) {
         event.preventDefault();
         var form = $(this);
         var url = form.attr('action');
         var data = form.serialize();
         $.post(url, data, function (response) {
-            // Update the spell list
+            if (response && response.error) {
+                alert(response.error);
+                return;
+            }
+            closeItemCard();
             refreshEquipment();
+        }).fail(function (xhr) {
+            const message = (xhr.responseJSON && (xhr.responseJSON.error || xhr.responseJSON.message)) || 'Unable to equip that item.';
+            alert(message);
         });
+    });
+
+    $(document).on('submit', '.form-use-item', function (event) {
+        event.preventDefault();
+        var form = $(this);
+        var url = form.attr('action');
+        var data = form.serialize();
+        $.post(url, data, function (response) {
+            if (response && response.error) {
+                alert(response.error);
+                return;
+            }
+            if (response && response.hp != null) {
+                updateSheetHp(response.hp);
+            }
+            closeItemCard();
+            refreshEquipment();
+        }).fail(function (xhr) {
+            const message = (xhr.responseJSON && (xhr.responseJSON.error || xhr.responseJSON.message)) || 'Unable to use that item.';
+            alert(message);
+        });
+    });
+
+    $('.equipment-container').on('input', '#inventory-search', function () {
+        inventoryFilterState.q = $(this).val() || '';
+        applyInventoryFilter();
+    });
+
+    $('.equipment-container').on('change', '#inventory-sort', function () {
+        inventoryFilterState.sort = $(this).val() || 'name';
+        applyInventoryFilter();
+    });
+
+    $('.equipment-container').on('click', '#inventory-sort-dir', function () {
+        inventoryFilterState.dir = inventoryFilterState.dir === 'desc' ? 'asc' : 'desc';
+        restoreInventoryToolbar();
     });
 
     // Attach the openTab function to the window so it can be called inline
@@ -202,8 +345,11 @@ $(document).ready(function () {
     });
 
     // Container Management Functionality
-    const inventoryIsDm = $('#inventory-is-dm').val() === '1';
-    const containerApiBase = inventoryIsDm ? '/dm/container' : '/inventory/container';
+    let dmItemCatalog = [];
+
+    function containerApiBase() {
+        return isInventoryDm() ? '/dm/container' : '/inventory/container';
+    }
 
     function containerDomId(containerName) {
         return containerName.replace(/\s+/g, '-');
@@ -257,25 +403,47 @@ $(document).ready(function () {
 
         contents.forEach(content => {
             const label = content.label || content.type;
+            const itemName = content.type || content.name;
             const weightNote = content.weight_total != null ? ` · ${content.weight_total} lb` : '';
-            itemsList.append(`
-                <li class="container-item" data-item-name="${content.type}">
-                    <span class="container-item-name">${label}</span>
-                    <span class="container-item-meta">x${content.qty || 1}${weightNote}</span>
+            const containerAttr = `data-container="${containerName}"`;
+            let actions = `
                     <button type="button" class="btn btn-sm btn-secondary retrieve-container-item"
                             data-entity="${entityUid}"
                             data-container="${containerName}"
-                            data-item="${content.type}"
+                            data-item="${itemName}"
                             data-qty="${content.qty || 1}">
                         Take Out
-                    </button>
+                    </button>`;
+            if (content.usable) {
+                actions = `
+                    <form method="post" class="form-use-item" action="/inventory/use">
+                        <input type="hidden" name="id" value="${entityUid}">
+                        <input type="hidden" name="item_id" value="${itemName}">
+                        <input type="hidden" name="container_name" value="${containerName}">
+                        <button type="submit" class="inventory-action-btn inventory-action-btn-use">Use</button>
+                    </form>` + actions;
+            }
+            if (content.equippable) {
+                actions = `
+                    <form method="post" class="form-equip" action="/equip">
+                        <input type="hidden" name="id" value="${entityUid}">
+                        <input type="hidden" name="item_id" value="${itemName}">
+                        <input type="hidden" name="container_name" value="${containerName}">
+                        <button type="submit" class="inventory-action-btn equip-button">Equip</button>
+                    </form>` + actions;
+            }
+            itemsList.append(`
+                <li class="container-item" data-item-name="${itemName}">
+                    <span class="container-item-name item-card-trigger" data-item-name="${itemName}" ${containerAttr} role="button" tabindex="0" title="View item">${label}</span>
+                    <span class="container-item-meta">x${content.qty || 1}${weightNote}</span>
+                    ${actions}
                 </li>
             `);
         });
     }
 
     function fetchContainerStatus(entityUid, containerName, onSuccess) {
-        const url = inventoryIsDm ? `${containerApiBase}/contents` : `${containerApiBase}/status`;
+        const url = isInventoryDm() ? `${containerApiBase()}/contents` : `${containerApiBase()}/status`;
         $.get(url, {
             entity_id: entityUid,
             container_name: containerName
@@ -306,14 +474,26 @@ $(document).ready(function () {
         }
     }
 
-    if (inventoryIsDm) {
+    function populateDmCatalog() {
+        const datalist = $('#items-catalog');
+        if (!datalist.length || !dmItemCatalog.length) {
+            return;
+        }
+        datalist.empty();
+        dmItemCatalog.forEach(item => {
+            datalist.append(`<option value="${item.name}"></option>`);
+        });
+        $('#dm-free-text-group').show();
+    }
+
+    if (isInventoryDm()) {
         $.get('/dm/items_catalog', function(data) {
-            const datalist = $('#items-catalog');
-            if (data.success && data.items) {
-                data.items.forEach(item => {
-                    datalist.append(`<option value="${item.name}"></option>`);
-                });
+            if (data.items) {
+                dmItemCatalog = data.items;
+            } else if (data.success && data.items) {
+                dmItemCatalog = data.items;
             }
+            populateDmCatalog();
         });
         $('#dm-free-text-group').show();
     }
@@ -382,11 +562,11 @@ $(document).ready(function () {
         });
     });
 
-    $('.modal-close').on('click', function() {
+    $('.equipment-container').on('click', '.modal-close', function() {
         $('#container-modal').fadeOut(200);
     });
 
-    $('#container-add-form').on('submit', function(e) {
+    $('.equipment-container').on('submit', '#container-add-form', function(e) {
         e.preventDefault();
         const entityUid = $('#modal-entity-id').val();
         const containerName = $('#modal-container-name').val();
@@ -400,8 +580,8 @@ $(document).ready(function () {
             return;
         }
 
-        const postUrl = inventoryIsDm ? `${containerApiBase}/add` : `${containerApiBase}/stow`;
-        const payload = inventoryIsDm
+        const postUrl = isInventoryDm() ? `${containerApiBase()}/add` : `${containerApiBase()}/stow`;
+        const payload = isInventoryDm()
             ? { entity_id: entityUid, container_name: containerName, item_name: itemName, qty }
             : { entity_id: entityUid, container_name: containerName, item_name: itemName, qty };
 
@@ -437,7 +617,7 @@ $(document).ready(function () {
             return;
         }
 
-        const postUrl = inventoryIsDm ? `${containerApiBase}/remove` : `${containerApiBase}/retrieve`;
+        const postUrl = isInventoryDm() ? `${containerApiBase()}/remove` : `${containerApiBase()}/retrieve`;
         $.post(postUrl, {
             entity_id: entityUid,
             container_name: containerName,
@@ -458,5 +638,92 @@ $(document).ready(function () {
         }).fail(function() {
             alert('Error retrieving item');
         });
+    });
+
+    const $itemCardModal = $('#item-card-modal');
+    const $itemCardBody = $itemCardModal.find('.item-card-modal-body');
+    let itemCardRequest = null;
+
+    function closeItemCard() {
+        $itemCardModal.attr('hidden', true);
+        $('body').removeClass('item-card-open');
+        if (itemCardRequest && itemCardRequest.abort) {
+            itemCardRequest.abort();
+            itemCardRequest = null;
+        }
+    }
+
+    function openItemCard(itemName, containerName) {
+        if (!itemName || !entityId) {
+            return;
+        }
+        $itemCardBody.html('<p class="item-card-loading">Loading item…</p>');
+        $itemCardModal.removeAttr('hidden');
+        $('body').addClass('item-card-open');
+        if (itemCardRequest && itemCardRequest.abort) {
+            itemCardRequest.abort();
+        }
+        const params = { id: entityId, item: itemName };
+        if (containerName) {
+            params.container = containerName;
+        }
+        itemCardRequest = $.get('/item_card', params)
+            .done(function (html) {
+                $itemCardBody.html(html);
+            })
+            .fail(function (xhr) {
+                const message = (xhr.responseJSON && xhr.responseJSON.error) || 'Unable to load this item.';
+                $itemCardBody.html('<p class="item-card-error">' + message + '</p>');
+            })
+            .always(function () {
+                itemCardRequest = null;
+            });
+    }
+
+    function itemNameFromTrigger(el) {
+        const $el = $(el);
+        return $el.attr('data-item-name') || $el.closest('[data-item-name]').attr('data-item-name');
+    }
+
+    function containerFromTrigger(el) {
+        const $el = $(el);
+        return $el.attr('data-container') || $el.closest('[data-container]').attr('data-container') || '';
+    }
+
+    $(document).on('click', '#Equipment .item-card-trigger, #item-card-modal .item-card-trigger', function (event) {
+        if ($(event.target).closest('form, a, input, select, textarea').length) {
+            return;
+        }
+        if ($(event.target).closest('button:not(.item-card-trigger)').length) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const itemName = itemNameFromTrigger(this);
+        if (itemName) {
+            openItemCard(itemName, containerFromTrigger(this));
+        }
+    });
+
+    $(document).on('keydown', '#Equipment .item-card-trigger, #item-card-modal .item-card-trigger', function (event) {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+            return;
+        }
+        event.preventDefault();
+        const itemName = itemNameFromTrigger(this);
+        if (itemName) {
+            openItemCard(itemName, containerFromTrigger(this));
+        }
+    });
+
+    $itemCardModal.on('click', '[data-item-card-dismiss], .item-card-modal-close', function (event) {
+        event.preventDefault();
+        closeItemCard();
+    });
+
+    $(document).on('keydown', function (event) {
+        if (event.key === 'Escape' && !$itemCardModal.is('[hidden]')) {
+            closeItemCard();
+        }
     });
 });

@@ -39,6 +39,60 @@ PREBUILT_CHARACTER_DIR = os.path.join(
 )
 
 
+def campaign_ability_bonus_source(session=None):
+    """Return ``species`` or ``background`` from the campaign ruleset."""
+    session = session or get_game_session()
+    ruleset = getattr(session, "ruleset", None) if session is not None else None
+    if ruleset is None:
+        return "species"
+    return ruleset.ability_bonus_source()
+
+
+def apply_chargen_ability_bonuses(
+    ability,
+    *,
+    race_def=None,
+    subrace_def=None,
+    background_def=None,
+    race_bonus_map=None,
+    background_bonus_map=None,
+    session=None,
+):
+    """Apply ASI per campaign ruleset (species vs background).
+
+    Fixed YAML ``attribute_bonus`` maps are applied from the active source.
+    Floating ``race_bonus_map`` / ``background_bonus_map`` player picks apply
+    when that source is active.
+    """
+
+    def _apply(bonus_map):
+        if not isinstance(bonus_map, dict):
+            return
+        for key, value in bonus_map.items():
+            if key in ability:
+                try:
+                    ability[key] = min(20, ability[key] + int(value))
+                except Exception:
+                    continue
+
+    source = campaign_ability_bonus_source(session)
+    if source == "background":
+        _apply((background_def or {}).get("attribute_bonus"))
+        if background_bonus_map:
+            for key, value in background_bonus_map.items():
+                if key in ability:
+                    ability[key] = min(20, ability[key] + int(value))
+    else:
+        _apply((race_def or {}).get("attribute_bonus"))
+        if subrace_def:
+            _apply(subrace_def.get("attribute_bonus"))
+        if race_bonus_map:
+            for key, value in race_bonus_map.items():
+                if key in ability:
+                    ability[key] = min(20, ability[key] + int(value))
+    return ability
+
+
 # --------------------------------------------------------------------------- #
 # Form parsing helpers
 # --------------------------------------------------------------------------- #
@@ -99,6 +153,66 @@ def validate_background_skill_selections(background_def, selections):
       validate_background_skill_selections as _validate,
   )
   return _validate(background_def, selections)
+
+
+def race_tool_proficiency_pool(race_def=None, subrace_def=None):
+    """Return (tool_ids, choice_count) for racial tool proficiencies."""
+    race_def = race_def or {}
+    subrace_def = subrace_def or {}
+    tools = []
+    seen = set()
+    for src in (race_def, subrace_def):
+        for tool in src.get('tool_proficiencies') or []:
+            key = str(tool or '').strip()
+            lowered = key.lower()
+            if not key or lowered in seen:
+                continue
+            seen.add(lowered)
+            tools.append(key)
+    choice = int(
+        subrace_def.get('tool_proficiencies_choice')
+        or race_def.get('tool_proficiencies_choice')
+        or 0
+    )
+    return tools, choice
+
+
+def validate_race_tool_selections(race_def, subrace_def, selections):
+    """Validate racial tool proficiency picks."""
+    pool, choice = race_tool_proficiency_pool(race_def, subrace_def)
+    selected = [str(v).strip() for v in (selections or []) if str(v or '').strip()]
+    pool_set = {item.lower() for item in pool}
+    if choice <= 0:
+        if selected:
+            return False, 'Unexpected racial tool choices'
+        return True, None
+    if len(selected) != choice:
+        label = 'racial tool proficiency' if choice == 1 else 'racial tool proficiencies'
+        return False, f'Choose {choice} {label}.'
+    if not all(item.lower() in pool_set for item in selected):
+        return False, 'Invalid racial tool choices'
+    return True, None
+
+
+def apply_race_tool_proficiencies(pc, race_def, subrace_def, selections=None):
+    """Merge granted or chosen racial tools onto a PC dict."""
+    pool, choice = race_tool_proficiency_pool(race_def, subrace_def)
+    pool_set = {item.lower() for item in pool}
+    existing = [str(t).strip() for t in (pc.get('tool_proficiencies') or []) if str(t or '').strip()]
+    if choice:
+        existing = [item for item in existing if item.lower() not in pool_set]
+        for tool in selections or []:
+            key = str(tool or '').strip()
+            if key and key.lower() in pool_set and key not in existing:
+                existing.append(key)
+    else:
+        for tool in pool:
+            if tool not in existing:
+                existing.append(tool)
+    if existing:
+        pc['tool_proficiencies'] = existing
+    else:
+        pc.pop('tool_proficiencies', None)
 
 
 def _parse_json_list_form(form, key):
@@ -203,7 +317,8 @@ def _spell_choice_caps(klass, level, ability, class_def):
 def _apply_class_and_feat_choices(pc, klass, level, classes_def, selected_skills,
                                   selected_cantrips, selected_level1, selected_feats,
                                   spells_by_level=None, subclass_choice=None,
-                                  asi_boosts=None, restrictions=None):
+                                  asi_boosts=None, restrictions=None,
+                                  selected_weapon_masteries=None):
     """Apply class and feat choices to a player character dict.
 
     This function validates selections against the class definition, applies
@@ -287,6 +402,43 @@ def _apply_class_and_feat_choices(pc, klass, level, classes_def, selected_skills
         pc['feats'] = list(dict.fromkeys(feats))
     elif selected_feats:
         pc['feats'] = list(dict.fromkeys(selected_feats))
+
+    if 'weapon_mastery' in features:
+        from natural20.weapon_mastery import MASTERY_PROPERTIES, known_mastery_count
+        allowed = set(MASTERY_PROPERTIES)
+        picked = [m for m in (selected_weapon_masteries or []) if str(m).lower() in allowed]
+        picked = list(dict.fromkeys(str(m).lower() for m in picked))
+        cap = known_mastery_count(klass, level, cdef)
+        if cap > 0:
+            picked = picked[:cap]
+        if picked:
+            pc['known_weapon_masteries'] = picked
+        elif selected_weapon_masteries is not None:
+            pc['known_weapon_masteries'] = []
+    elif selected_weapon_masteries is not None:
+        pc.pop('known_weapon_masteries', None)
+
+
+def validate_weapon_mastery_selections(klass, level, class_def, selected, features=None):
+    """Return (ok, error) for chargen Weapon Mastery picks."""
+    from natural20.weapon_mastery import MASTERY_PROPERTIES, known_mastery_count
+
+    feature_list = features
+    if feature_list is None:
+        feature_list = collect_progression_features(class_def, level)
+    if 'weapon_mastery' not in (feature_list or []):
+        return True, ''
+    cap = known_mastery_count(klass, level, class_def)
+    if cap <= 0:
+        return True, ''
+    allowed = set(MASTERY_PROPERTIES)
+    picked = [str(m).lower() for m in (selected or []) if str(m).lower() in allowed]
+    picked = list(dict.fromkeys(picked))
+    if len(picked) != cap:
+        plural = '' if cap == 1 else 'ies'
+        word = 'mastery' if cap == 1 else 'master'
+        return False, f'Choose {cap} weapon {word}{plural}.'
+    return True, ''
 
 
 # --------------------------------------------------------------------------- #

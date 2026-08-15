@@ -4,6 +4,31 @@
   const MIN = 8, MAX = 15, BUDGET = 27;
   const abilities = ["str","dex","con","int","wis","cha"];
   const abilityLabels = { str: 'Strength', dex: 'Dexterity', con: 'Constitution', int: 'Intelligence', wis: 'Wisdom', cha: 'Charisma' };
+  const ARMOR_PROFS = { light_armor: true, medium_armor: true, heavy_armor: true, shields: true, shield: true };
+
+  function prettyProf(name){
+    return String(name || '').replace(/_/g, ' ');
+  }
+
+  function splitWeaponProfs(list){
+    const armor = [];
+    const weapons = [];
+    (list || []).forEach((item)=>{
+      const key = String(item || '');
+      if(!key) return;
+      if(ARMOR_PROFS[key] || /_armor$/.test(key)) armor.push(key);
+      else weapons.push(key);
+    });
+    return { armor, weapons };
+  }
+
+  function appendProficiencyLines($parent, title, items){
+    if(!items || !items.length) return;
+    $parent.append(
+      `<div class="form-group"><label>${title}</label>` +
+      `<div class="helper">${items.map(prettyProf).join(', ')}</div></div>`
+    );
+  }
   let pool = BUDGET;
 
   function updatePoints() {
@@ -232,7 +257,15 @@
     }
   });
 
-  $('#roll-abilities').on('click', setRandom);
+  const DICE_ICON = '<svg class="dice-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" d="M12 2.3 20.7 7.3v9.4L12 21.7 3.3 16.7V7.3Z"/><path fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" d="M12 2.3v19.4M3.3 7.3h17.4M3.3 16.7 12 7.3l8.7 9.4M3.3 7.3 12 16.7 20.7 7.3"/></svg>';
+
+  $('#roll-abilities').on('click', function(){
+    const btn = this;
+    btn.classList.remove('is-rolling');
+    void btn.offsetWidth;
+    btn.classList.add('is-rolling');
+    setRandom();
+  });
 
   // Race -> subrace
   $('#race').on('change', function(){
@@ -264,6 +297,11 @@
     }
     const kdata = CLASSES[klass];
     $panel.show();
+
+    const classProfs = splitWeaponProfs(kdata.weapon_proficiencies || []);
+    appendProficiencyLines($body, 'Armor Proficiencies', classProfs.armor);
+    appendProficiencyLines($body, 'Weapon Proficiencies', classProfs.weapons);
+    appendProficiencyLines($body, 'Tool Proficiencies', kdata.tool_proficiencies || []);
 
     // Skills selection
     const skills = kdata.available_skills || [];
@@ -297,6 +335,74 @@
           $body.find('.cb-skill:not(:checked)').prop('disabled', true);
         } else {
           $body.find('.cb-skill').prop('disabled', false);
+        }
+      });
+    }
+
+    const WEAPON_MASTERIES = [
+      {id:'cleave', label:'Cleave', blurb:'Hit a second creature within 5 ft after a melee hit (once/turn).'},
+      {id:'graze', label:'Graze', blurb:'On a miss, deal damage equal to the attack ability modifier.'},
+      {id:'nick', label:'Nick', blurb:'Make the extra Light-weapon attack as part of the Attack action.'},
+      {id:'push', label:'Push', blurb:'On a hit vs Large or smaller, push the target 10 feet.'},
+      {id:'sap', label:'Sap', blurb:'On a hit, disadvantage on the target’s next attack.'},
+      {id:'slow', label:'Slow', blurb:'On a damaging hit, −10 ft Speed until the start of your next turn.'},
+      {id:'topple', label:'Topple', blurb:'On a hit, CON save or the target has the Prone condition.'},
+      {id:'vex', label:'Vex', blurb:'On a hit, advantage on your next attack vs that creature.'},
+    ];
+
+    function masteryKnownCount(klassName, klassData, levelNum){
+      const features = klassData.class_features || [];
+      const prog = klassData.progression || {};
+      let hasFeature = features.indexOf('weapon_mastery') >= 0;
+      for(let n = 1; n <= levelNum; n++){
+        const extra = ((prog['level_' + n] || {}).class_features) || [];
+        if(extra.indexOf('weapon_mastery') >= 0) hasFeature = true;
+      }
+      if(!hasFeature) return 0;
+      let count = parseInt(klassData.weapon_mastery_known || 0, 10) || 0;
+      const key = String(klassName || '').toLowerCase();
+      if(key === 'fighter'){
+        if(levelNum >= 16) return 6;
+        if(levelNum >= 10) return 5;
+        if(levelNum >= 4) return 4;
+        return count || 3;
+      }
+      if(['barbarian','paladin','ranger','rogue'].indexOf(key) >= 0){
+        if(levelNum >= 16) return 5;
+        if(levelNum >= 10) return 4;
+        if(levelNum >= 4) return 3;
+        return count || 2;
+      }
+      return count;
+    }
+
+    const nMastery = masteryKnownCount(klass, kdata, level);
+    if(nMastery > 0){
+      const mWrap = $('<div class="form-group" id="mastery-panel"/>');
+      mWrap.attr('data-mastery-count', nMastery);
+      mWrap.append(`<label>Weapon Masteries: choose ${nMastery}</label>`);
+      const row = $('<div class="row"/>');
+      WEAPON_MASTERIES.forEach((m, i)=>{
+        const col = $('<div class="col-xs-6 col-sm-4 col-md-3"/>');
+        col.append(`
+          <div class="checkbox">
+            <label title="${m.blurb}">
+              <input type="checkbox" class="cb-mastery" data-name="${m.id}" id="mastery-${i}"> ${m.label}
+            </label>
+          </div>`);
+        row.append(col);
+      });
+      mWrap.append(row);
+      mWrap.append(`<div class="helper" id="mastery-helper">${nMastery} remaining. You can change these after a Long Rest.</div>`);
+      $body.append(mWrap);
+      $body.on('change', '.cb-mastery', function(){
+        const selected = $body.find('.cb-mastery:checked').length;
+        const remaining = Math.max(0, nMastery - selected);
+        $('#mastery-helper').text(`${remaining} remaining. You can change these after a Long Rest.`);
+        if(selected >= nMastery){
+          $body.find('.cb-mastery:not(:checked)').prop('disabled', true);
+        } else {
+          $body.find('.cb-mastery').prop('disabled', false);
         }
       });
     }
@@ -709,6 +815,53 @@
       }
     }
 
+    const raceWeapons = splitWeaponProfs(
+      [].concat(base.weapon_proficiencies || [], sub.weapon_proficiencies || [])
+    );
+    if(raceWeapons.armor.length || raceWeapons.weapons.length){
+      appendProficiencyLines($body, 'Racial Armor Proficiencies', raceWeapons.armor);
+      appendProficiencyLines($body, 'Racial Weapon Proficiencies', raceWeapons.weapons);
+      hasOptions = true;
+    }
+
+    const raceTools = [].concat(base.tool_proficiencies || [], sub.tool_proficiencies || []);
+    const toolChoice = parseInt(sub.tool_proficiencies_choice || base.tool_proficiencies_choice || 0, 10);
+    if(toolChoice > 0 && raceTools.length){
+      const wrap = $('<div class="form-group"/>');
+      wrap.append(`<label>Tool Proficiency: choose ${toolChoice}</label>`);
+      const row = $('<div class="row"/>');
+      raceTools.forEach((tool, idx)=>{
+        const col = $('<div class="col-xs-6 col-sm-4 col-md-3"/>');
+        const id = `race-tool-${idx}`;
+        col.append(`
+          <div class="checkbox">
+            <label>
+              <input type="checkbox" class="cb-race-tool" data-name="${tool}" id="${id}"> ${prettyProf(tool)}
+            </label>
+          </div>`);
+        row.append(col);
+      });
+      wrap.append(row);
+      wrap.append(`<div class="helper" id="race-tool-helper">${toolChoice} remaining</div>`);
+      $body.append(wrap);
+      const updateToolHelper = ()=>{
+        const selected = $body.find('.cb-race-tool:checked').length;
+        const remaining = Math.max(0, toolChoice - selected);
+        $('#race-tool-helper').text(`${remaining} remaining`);
+        if(selected >= toolChoice){
+          $body.find('.cb-race-tool:not(:checked)').prop('disabled', true);
+        } else {
+          $body.find('.cb-race-tool').prop('disabled', false);
+        }
+      };
+      $body.on('change', '.cb-race-tool', updateToolHelper);
+      updateToolHelper();
+      hasOptions = true;
+    } else if(raceTools.length){
+      appendProficiencyLines($body, 'Racial Tool Proficiencies', raceTools);
+      hasOptions = true;
+    }
+
     if(hasOptions){
       $panel.show();
     } else {
@@ -826,10 +979,10 @@
       rollWrap.append('<label>Campaign Tables</label><div class="btn-group" role="group"></div>');
       const $group = rollWrap.find('.btn-group');
       if(rollTables.includes('harrowing_event')){
-        $group.append('<button type="button" class="btn btn-default btn-sm" id="roll-harrowing-event">Roll Harrowing Event</button>');
+        $group.append('<button type="button" class="btn btn-dice btn-sm" id="roll-harrowing-event" title="Roll Harrowing Event">' + DICE_ICON + '<span>Harrowing Event</span></button>');
       }
       if(rollTables.includes('gothic_trinket')){
-        $group.append('<button type="button" class="btn btn-default btn-sm" id="roll-gothic-trinket">Roll Gothic Trinket</button>');
+        $group.append('<button type="button" class="btn btn-dice btn-sm" id="roll-gothic-trinket" title="Roll Gothic Trinket">' + DICE_ICON + '<span>Gothic Trinket</span></button>');
       }
       $body.append(rollWrap);
       $body.on('click', '#roll-harrowing-event', function(){
@@ -970,6 +1123,14 @@
       }
     }
 
+    const toolChoiceCfg = parseInt(subRaceCfg.tool_proficiencies_choice || baseRace.tool_proficiencies_choice || 0, 10);
+    if(toolChoiceCfg > 0){
+      const chosenTools = $('#race-options-body .cb-race-tool:checked').length;
+      if(chosenTools !== toolChoiceCfg){
+        raceErrors.push(toolChoiceCfg === 1 ? 'Choose 1 racial tool proficiency.' : `Choose ${toolChoiceCfg} racial tool proficiencies.`);
+      }
+    }
+
     if(raceErrors.length){
       $('#builder-msg').html(`<div class="alert alert-danger">${raceErrors.join('<br>')}</div>`);
       return;
@@ -978,6 +1139,14 @@
     const levelNum = parseInt($('#level').val() || '1', 10);
     const klassVal = $('#klass').val();
     const klassData = klassVal ? (CLASSES[klassVal] || {}) : {};
+    if($('#mastery-panel').length){
+      const needed = parseInt($('#mastery-panel').attr('data-mastery-count') || '0', 10);
+      const selectedMasteries = $('#class-options-body .cb-mastery:checked').length;
+      if(needed > 0 && selectedMasteries !== needed){
+        $('#builder-msg').html(`<div class="alert alert-danger">Choose ${needed} weapon master${needed === 1 ? 'y' : 'ies'}.</div>`);
+        return;
+      }
+    }
     const subclassOpts = klassVal ? Object.keys((klassData[SUBCLASS_BLOCKS[String(klassVal).toLowerCase()]] || {})) : [];
     if(levelNum >= 3 && subclassOpts.length){
       const subclassVal = ($('#subclass-select').val() || '').trim();
@@ -1046,9 +1215,15 @@
   const raceLanguages = [];
   $('#race-options-body .cb-race-language:checked').each(function(){ raceLanguages.push($(this).data('name')); });
   if(raceLanguages.length) fd.append('race_languages', JSON.stringify(raceLanguages));
+  const raceTools = [];
+  $('#race-options-body .cb-race-tool:checked').each(function(){ raceTools.push($(this).data('name')); });
+  if(raceTools.length) fd.append('race_tools', JSON.stringify(raceTools));
   const feats = [];
   $('#class-options-body .cb-feat:checked').each(function(){ feats.push($(this).data('name')); });
   if(feats.length) fd.append('feats', JSON.stringify(feats));
+  const masteries = [];
+  $('#class-options-body .cb-mastery:checked').each(function(){ masteries.push($(this).data('name')); });
+  if(masteries.length) fd.append('weapon_masteries', JSON.stringify(masteries));
 
   // Background language and skill choices
   const bgLanguages = [];
@@ -1191,6 +1366,8 @@
       $('#subclass-select').val(ec.subclass);
     }
     markChecked('#class-options-body .cb-feat', ec.feats || []);
+    markChecked('#class-options-body .cb-mastery', ec.known_weapon_masteries || []);
+    markChecked('#race-options-body .cb-race-tool', ec.tool_proficiencies || []);
   }
 
   // Equipment Pack Preview Functionality

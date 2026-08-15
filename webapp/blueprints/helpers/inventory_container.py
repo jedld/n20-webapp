@@ -39,3 +39,47 @@ def can_manage_inventory_entity(entity, username=None) -> bool:
     except Exception:
         battle_map = None
     return entity in entities_controlled_by(username, battle_map)
+
+
+def use_inventory_item(entity, item_name, container_name=None, target=None):
+    """Use a usable inventory item on the owner (or ``target``), including items in containers."""
+    from natural20.actions.use_item_action import UseItemAction
+    from webapp.blueprints.helpers.runtime_state import get_socketio
+
+    if entity is None or not item_name:
+        return False, 'Missing item'
+    if hasattr(entity, 'item_count') and entity.item_count(item_name) <= 0:
+        return False, 'Item not found in inventory'
+
+    current_game = get_current_game()
+    battle = None
+    try:
+        battle = current_game.get_current_battle()
+    except Exception:
+        battle = None
+    if battle is not None and entity not in getattr(battle, 'entities', {}):
+        battle = None
+    if not UseItemAction.can(entity, battle):
+        return False, 'You cannot use an item right now.'
+
+    game_session = getattr(entity, 'session', None)
+    try:
+        action = UseItemAction.build_self_use(
+            game_session,
+            entity,
+            item_name,
+            target=target or entity,
+            container_name=container_name or None,
+        )
+    except Exception as exc:
+        return False, str(exc) or 'This item needs to be used from the action bar.'
+
+    username = session.get('username')
+    current_game.commit_and_update(username, action, [entity])
+    try:
+        get_socketio().emit('message', {'type': 'refresh_map'})
+    except Exception:
+        pass
+    hp = entity.hp() if hasattr(entity, 'hp') else None
+    max_hp = entity.max_hp() if hasattr(entity, 'max_hp') else None
+    return True, {'hp': hp, 'max_hp': max_hp}

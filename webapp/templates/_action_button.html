@@ -35,6 +35,12 @@
         Thrown
       </div>
       {% endif %}
+      {% if action.weapon_mastery_badge is defined %}
+        {% set mastery_badge = action.weapon_mastery_badge() %}
+        {% if mastery_badge %}
+        <div class="weapon-mastery-badge" title="Weapon Mastery: {{ mastery_badge }}">{{ mastery_badge }}</div>
+        {% endif %}
+      {% endif %}
       {% if action.__class__.__name__ == 'UseItemAction' and action.charge_badge_text is defined %}
         {% set charge_badge = action.charge_badge_text() %}
         {% if charge_badge %}

@@ -79,6 +79,34 @@ def _resolve_editor_asset(game_session, name: str) -> tuple[Path | None, Path | 
     return None, templates_root() / 'assets' / 'editor'
 
 
+def _resolve_campaign_first_asset(
+    game_session,
+    category: str,
+    name: str,
+) -> tuple[Path | None, Path | None]:
+    """Campaign / imports / expansion packs, then bundled static, then templates."""
+    from natural20.image_gen.item_asset_paths import iter_campaign_asset_roots
+
+    root = getattr(game_session, 'root_path', None)
+    if root:
+        for asset_root in iter_campaign_asset_roots(root):
+            path = asset_root / 'assets' / category / name
+            if path.is_file():
+                return path, None
+
+    bundled = bundled_asset_path(category, name)
+    if bundled is not None:
+        return bundled, None
+
+    templates = _templates_asset_path(category, name)
+    if templates is not None:
+        return templates, None
+
+    if root:
+        return None, Path(root) / 'assets' / category
+    return None, None
+
+
 def resolve_asset_category_file(
     game_session,
     category: str,
@@ -86,13 +114,17 @@ def resolve_asset_category_file(
     *,
     default_ext: str = '.png',
 ) -> tuple[Path | None, Path | None]:
-    """Resolve a bundled static asset or a campaign override directory.
+    """Resolve a campaign or bundled static asset.
 
     Returns ``(file_path, fallback_directory)`` — when ``file_path`` is set, serve
     that file; otherwise serve from ``fallback_directory`` (campaign assets).
 
-    Editor assets resolve campaign → templates → bundled (other categories keep
-    bundled → campaign).
+    Search order:
+    - ``editor``: campaign → templates → bundled
+    - ``items`` / ``objects``: campaign (then imported campaigns, then expansion
+      packs) → bundled → templates. Campaign-only items must live under
+      ``<campaign>/assets/items/`` and are never required in bundled static.
+    - other categories: bundled → campaign
     """
     name = filename
     if default_ext and not Path(name).suffix:
@@ -100,6 +132,9 @@ def resolve_asset_category_file(
 
     if category == 'editor':
         return _resolve_editor_asset(game_session, name)
+
+    if category in {'items', 'objects'}:
+        return _resolve_campaign_first_asset(game_session, category, name)
 
     bundled = bundled_asset_path(category, name)
     if bundled is not None:

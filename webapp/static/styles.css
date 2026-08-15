@@ -1933,6 +1933,35 @@ input.initiative-input.form-control {
   overflow: hidden;
 }
 
+.weapon-mastery-badge {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 50px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: center;
+  color: #1a1208;
+  background: rgba(212, 175, 55, 0.88);
+  text-transform: uppercase;
+}
+
+.weapon-mastery-chip {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  background: #d4af37;
+  color: #1a1208;
+}
+
+.weapon-mastery-untrained {
+  background: #555;
+  color: #ddd;
+}
+
 .object-container {
   position: absolute;
   top: 0;
@@ -6099,4 +6128,46 @@ body.goal-arrival-active #jrpgDialogPanel .dialog-panel-header {
 
 .edit-tile-coords-tooltip.visible {
   opacity: 1;
+}
+
+.dice-icon {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex: 0 0 auto;
+}
+
+.die-roll-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin-left: 4px;
+  border: 1px solid #4a2f19;
+  border-radius: 4px;
+  background: #fff8dc;
+  color: #4a2f19;
+  cursor: pointer;
+  vertical-align: middle;
+  line-height: 0;
+}
+
+.die-roll-toggle:hover,
+.die-roll-toggle:focus {
+  background: #4a2f19;
+  color: #fff8dc;
+  outline: none;
+}
+
+.rollable-die {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rollable-die .dice-icon {
+  width: 16px;
+  height: 16px;
 }
