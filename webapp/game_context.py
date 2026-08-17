@@ -278,12 +278,19 @@ class GameContextProvider:
             if not battle_map:
                 return {"error": "No current map available"}
             
+            map_name = getattr(battle_map, 'name', None)
+            session = self.game_session
             map_info = {
-                "name": battle_map.name,
+                "name": map_name,
                 "size": battle_map.size if hasattr(battle_map, 'size') else None,
-                "feet_per_grid": battle_map.feet_per_grid if hasattr(battle_map, 'feet_per_grid') else 5
+                "feet_per_grid": battle_map.feet_per_grid if hasattr(battle_map, 'feet_per_grid') else 5,
             }
-            
+            if session is not None and hasattr(session, 'map_set_for'):
+                try:
+                    map_info['map_set'] = session.map_set_for(map_name)
+                    map_info['active_map_set'] = getattr(session, 'active_map_set', None)
+                except Exception:
+                    pass
             return map_info
             
         except Exception as e:
@@ -313,6 +320,11 @@ class GameContextProvider:
                 try:
                     row = self._summarize_pc_row(entity, battle_map)
                     row['map'] = map_name
+                    if self.game_session is not None and hasattr(self.game_session, 'map_set_for'):
+                        try:
+                            row['map_set'] = self.game_session.map_set_for(map_name)
+                        except Exception:
+                            pass
                     player_characters.append(row)
                 except Exception as exc:
                     logger.error('Error processing player character %s: %s', entity, exc)
@@ -598,6 +610,70 @@ class GameContextProvider:
         from webapp.battle_management import list_campaign_groups as _list_groups
 
         return {'success': True, **_list_groups(self.game_session)}
+
+    def list_map_sets(self) -> Dict[str, Any]:
+        """Snapshot of campaign map sets for the DM assistant context."""
+        from webapp.blueprints.helpers.map_sets import map_sets_payload
+
+        try:
+            battle_map = self._primary_battle_map()
+            current_name = getattr(battle_map, 'name', None) if battle_map is not None else None
+            return {'success': True, **map_sets_payload(self.current_game, current_name)}
+        except Exception as exc:
+            return {'success': False, 'error': str(exc)}
+
+    def manage_map_set(
+        self,
+        op: str,
+        map_set: Optional[str] = None,
+        label: Optional[str] = None,
+        map_name: Optional[str] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        set_id: Optional[str] = None,
+        id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """DM map-set ops: list | activate | create | assign_map | place_party."""
+        from webapp.blueprints.helpers.map_sets import (
+            activate_map_set,
+            assign_map_to_set,
+            create_map_set,
+            map_sets_payload,
+            place_party,
+        )
+
+        map_set = map_set or set_id or id
+        try:
+            if op == 'list':
+                return {'success': True, **map_sets_payload(self.current_game)}
+            if op == 'activate':
+                if not map_set:
+                    return {'success': False, 'error': 'map_set is required'}
+                return {'success': True, **activate_map_set(self.current_game, map_set)}
+            if op == 'create':
+                if not map_set:
+                    return {'success': False, 'error': 'map_set is required'}
+                return {'success': True, **create_map_set(self.current_game, map_set, label=label)}
+            if op == 'assign_map':
+                if not map_name or not map_set:
+                    return {'success': False, 'error': 'map_name and map_set are required'}
+                return {'success': True, **assign_map_to_set(self.current_game, map_name, map_set)}
+            if op == 'place_party':
+                if not map_name:
+                    return {'success': False, 'error': 'map_name is required'}
+                return {
+                    'success': True,
+                    **place_party(self.current_game, map_name, x=x, y=y),
+                }
+            return {
+                'success': False,
+                'error': 'op must be one of: list, activate, create, assign_map, place_party',
+            }
+        except ValueError as exc:
+            return {'success': False, 'error': str(exc)}
+        except Exception as exc:
+            logger.error('Error in manage_map_set: %s', exc)
+            return {'success': False, 'error': str(exc)}
     
     def get_available_actions(self, entity_name: str) -> Dict[str, Any]:
         """Get available actions for a specific entity."""

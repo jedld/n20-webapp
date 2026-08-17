@@ -60,6 +60,7 @@ from .helpers.template_globals import (
     visible_log_messages_for_username,
     reaction_template_for,
 )
+from .helpers.npc_stat_block import lookup_info_entity, render_info_page
 from .helpers.action_utils import action_type_to_class, resolve_requested_action_type, resolve_use_item_name
 from .helpers.action_bar import resolve_actions_for_id
 from .helpers.runtime_state import (
@@ -1732,32 +1733,11 @@ def get_items():
 
 @battle_bp.route('/info', methods=['GET'])
 def get_info():
-    battle_map = get_current_game().get_map_for_user(session['username'])
-    battle = get_current_game().get_current_battle()
-    info_id = request.args.get('id')
-    if not info_id:
-        return jsonify(error="Missing required id"), 400
-
-    # Fetch the necessary information based on the info_id
-    entity = battle_map.entity_by_uid(info_id)
-    if entity is None:
-        entity = battle_map.object_by_uid(info_id)
-    if entity is None:
-        return jsonify(error="Entity not found"), 404
-
-    # Filter out None/empty usernames to avoid mixed-type sorting errors.
-    configured_users = [
-        login.get('name')
-        for login in get_logins()
-        if isinstance(login, dict) and isinstance(login.get('name'), str) and login.get('name').strip()
-    ]
-    connected_users = [
-        username
-        for username in (get_current_game().username_to_sid or {}).keys()
-        if isinstance(username, str) and username.strip()
-    ]
-    all_users = sorted(set(configured_users + connected_users))
-    return render_template('info.html.jinja', entity=entity, battle=battle, restricted=False, role=user_role(), all_users=all_users)
+    resolved, error = lookup_info_entity(request.args.get('id'))
+    if error is not None:
+        return error
+    entity, battle = resolved
+    return render_info_page(entity, battle=battle)
 
 @battle_bp.route('/entity_info', methods=['GET'])
 def get_entity_info():

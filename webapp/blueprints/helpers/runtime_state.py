@@ -109,7 +109,7 @@ def get_builder_only_mode():
 
 
 def get_edit_mode():
-    """Return whether campaign edit mode is enabled."""
+    """Return whether campaign edit mode is enabled for the current session."""
     val = _globals.get('edit_mode', False)
     if callable(val):
         return val()

@@ -51,6 +51,14 @@ class TestCharacterBuilderRestrictions(unittest.TestCase):
         self.assertTrue(restrictions.background_allowed('haunted_one'))
         self.assertFalse(restrictions.background_allowed('acolyte'))
 
+    def test_empty_allowed_backgrounds_keeps_all(self):
+        restrictions = CharacterBuilderRestrictions()
+        backgrounds = {
+            'haunted_one': {'label': 'Haunted One'},
+            'acolyte': {'label': 'Acolyte'},
+        }
+        self.assertEqual(set(restrictions.filter_backgrounds(backgrounds).keys()), {'haunted_one', 'acolyte'})
+
     def test_game_yml_overrides_index_json(self):
         session = type('S', (), {
             'game_properties': {'character_builder': {'max_level': 2}},

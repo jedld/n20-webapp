@@ -4,16 +4,9 @@ Extracted from ``webapp.app`` to keep auth logic in a single, testable
 module that blueprints can import without pulling in the Flask app.
 """
 
-from flask import session
+from flask import has_request_context, session
 
-from .runtime_state import get_logins, get_builder_only_mode, get_edit_mode
-
-
-def _edit_mode_username() -> str:
-    for login in get_logins() or []:
-        if "dm" in login.get("role", []):
-            return str(login["name"]).lower()
-    return "dm"
+from .runtime_state import get_logins, get_builder_only_mode
 
 
 def _migrate_stale_username_state(username: str) -> None:
@@ -41,14 +34,10 @@ def _migrate_stale_username_state(username: str) -> None:
 
 
 def session_username():
-    """Return the active session username, assigning edit/builder defaults when needed."""
+    """Return the active session username, assigning builder defaults when needed."""
     if get_builder_only_mode():
         if not session.get("username"):
             session["username"] = "builder"
-        return session["username"]
-    if get_edit_mode():
-        if not session.get("username"):
-            session["username"] = _edit_mode_username()
             _migrate_stale_username_state(session["username"])
         return session["username"]
     return session.get("username")
@@ -59,17 +48,12 @@ def logged_in():
     if get_builder_only_mode():
         session_username()
         return True
-    if get_edit_mode():
-        session_username()
-        return True
     return session.get('username') is not None
 
 
 def roles_for_username(username):
     """Return the role list for ``username`` (e.g. ``['dm']``)."""
     if get_builder_only_mode():
-        return ['dm']
-    if get_edit_mode():
         return ['dm']
     if not username:
         return []
@@ -83,3 +67,12 @@ def roles_for_username(username):
 def user_role():
     """Return the role list for the *current* session user."""
     return roles_for_username(session.get('username'))
+
+
+def session_edit_mode() -> bool:
+    """True when the current DM session has campaign edit mode enabled."""
+    if not has_request_context():
+        return False
+    if "dm" not in user_role():
+        return False
+    return bool(session.get("edit_mode"))

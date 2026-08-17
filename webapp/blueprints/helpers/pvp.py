@@ -40,6 +40,16 @@ def selectable_character_entry(character_name):
             sheet_stem = os.path.splitext(os.path.basename(sheet))[0].lower()
             if sheet_stem == target:
                 return character
+    try:
+        from natural20.sidekick import selectable_sidekick_entries
+        for character in selectable_sidekick_entries(get_game_session()) or []:
+            if str(character.get('name', '')).lower() == target:
+                return character
+            overrides = character.get('overrides') or {}
+            if str(overrides.get('entity_uid') or '').lower() == target:
+                return character
+    except Exception:
+        pass
     return None
 
 
@@ -121,6 +131,11 @@ def ensure_character_entity_loaded(character_name):
     overrides = dict(selectable.get('overrides') or {})
     overrides.setdefault('entity_uid', character_name)
 
+    is_npc_sheet = (
+        str(selectable.get('kind') or '').lower() == 'npc'
+        or str(sheet).startswith('npcs/')
+    )
+
     # Determine candidate maps in order of preference.
     candidate_map_names = []
     explicit_map = selectable.get('map') or index_data.get('player_spawn_map')
@@ -136,7 +151,7 @@ def ensure_character_entity_loaded(character_name):
         map_obj = current_game.maps.get(map_name)
         if map_obj is None or not getattr(map_obj, 'player_spawn_points', None):
             continue
-        slot = map_obj.allocate_player_spawn_point(character_name, group=selectable.get('group'))
+        slot = map_obj.allocate_player_spawn_point(character_name, group=selectable.get('group') or ('a' if is_npc_sheet else None))
         if slot is not None:
             chosen_map_name = map_name
             chosen_slot = slot
@@ -147,7 +162,20 @@ def ensure_character_entity_loaded(character_name):
         return None
 
     try:
-        entity = PlayerCharacter.load(game_session, sheet, override=overrides)
+        if is_npc_sheet:
+            npc_type = str(sheet)
+            if npc_type.startswith('npcs/'):
+                npc_type = npc_type[5:]
+            npc_type = os.path.splitext(os.path.basename(npc_type))[0]
+            entity = game_session.npc(npc_type, {
+                'name': selectable.get('display_name') or character_name,
+                'overrides': overrides,
+            })
+            entity.group = 'a'
+            if isinstance(getattr(entity, 'properties', None), dict):
+                entity.properties['group'] = 'a'
+        else:
+            entity = PlayerCharacter.load(game_session, sheet, override=overrides)
     except Exception:
         # Release slot if PC failed to load so it can be reused.
         current_game.maps[chosen_map_name].release_player_spawn_point(character_name)

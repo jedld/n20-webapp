@@ -336,6 +336,21 @@ def register_game_context_functions(llm_handler, game_context_provider, mcp_regi
     )
 
     llm_handler.register_game_context_function(
+        "list_map_sets",
+        game_context_provider.list_map_sets,
+        "List campaign map sets (party POV worlds), which set is active, and the maps in each set."
+    )
+
+    llm_handler.register_game_context_function(
+        "manage_map_set",
+        game_context_provider.manage_map_set,
+        "Map set op: list | activate | create | assign_map | place_party. "
+        "Args: op, optional map_set, label, map_name, x, y. "
+        "activate jumps player cameras; place_party creates PC instances without activating; "
+        "create and assign_map persist to game.yml. MCP equivalent: dm.map_set."
+    )
+
+    llm_handler.register_game_context_function(
         "get_time_of_day",
         game_context_provider.get_time_of_day,
         "Get current in-game clock, day/night phase, and time_of_day schedule from game.yml."
@@ -436,6 +451,20 @@ def register_game_context_functions(llm_handler, game_context_provider, mcp_regi
         if tool_name == 'dm.rest':
             if 'type' not in arguments and isinstance(arguments.get('rest_type'), str):
                 arguments['type'] = arguments.pop('rest_type')
+
+        if tool_name in ('manage_map_set', 'list_map_sets'):
+            if tool_name == 'list_map_sets' and not arguments.get('op'):
+                arguments['op'] = 'list'
+            tool_name = 'dm.map_set'
+        if tool_name == 'dm.map_set':
+            if not arguments.get('map_set'):
+                for alt in ('id', 'set_id', 'name'):
+                    value = arguments.get(alt)
+                    if isinstance(value, str) and value.strip():
+                        arguments['map_set'] = value.strip()
+                        break
+            if not arguments.get('op'):
+                arguments['op'] = 'list'
 
         envelope = mcp_registry.call(tool_name, arguments, context=mcp_context)
         if envelope.get('isError'):

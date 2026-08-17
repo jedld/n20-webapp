@@ -18,7 +18,25 @@
   let suppressNextEditClick = false;
 
   function isEditMode() {
-    return String($('body').data('edit-mode')).toLowerCase() === 'true';
+    return String($('body').attr('data-edit-mode') || '').toLowerCase() === 'true';
+  }
+
+  function setBodyEditMode(on) {
+    const enabled = !!on;
+    $('body').attr('data-edit-mode', enabled ? 'true' : 'false');
+    $('body').data('edit-mode', enabled);
+  }
+
+  function syncEditModeChrome() {
+    const on = isEditMode();
+    const label = on ? 'Exit Edit Mode' : 'Enter Edit Mode';
+    if (window.Utils && typeof window.Utils.setVttMenuLabel === 'function') {
+      window.Utils.setVttMenuLabel('#toggle-edit-mode', label);
+    } else {
+      $('#toggle-edit-mode').text(label);
+    }
+    $('#toggle-edit-mode').toggleClass('is-active', on);
+    $('#edit-map-graph-item').toggle(on);
   }
 
   function tileSize() {
@@ -61,8 +79,15 @@
       return;
     }
     const $banner = $('<div class="edit-mode-banner" role="status"></div>');
-    $banner.text(
-      'Edit mode — drag NPCs to reposition. Click fixture labels to edit notes and properties. Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures. Changes save to campaign YAML.',
+    $banner.append(
+      $('<span class="edit-mode-banner-text"></span>').text(
+        'Edit mode — drag NPCs to reposition. Click fixture labels to edit notes and properties. Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures. Changes save to campaign YAML.',
+      ),
+    );
+    $banner.append(
+      $('<button type="button" class="btn btn-xs btn-default edit-mode-banner-exit"></button>').text(
+        'Exit edit mode',
+      ),
     );
     $('body').append($banner);
   }
@@ -385,11 +410,18 @@
     overlayState.loaded = true;
   }
 
+  let overlayRequest = null;
+  let overlayReloadTimer = null;
+  let overlayReloadAt = null;
+
   function loadOverlay() {
     if (!isEditMode()) {
-      return;
+      return overlayRequest;
     }
-    $.getJSON('/edit/overlay', function (resp) {
+    if (overlayRequest) {
+      return overlayRequest;
+    }
+    overlayRequest = $.getJSON('/edit/overlay', function (resp) {
       if (!resp || !resp.success) {
         console.warn('Edit overlay failed', resp);
         return;
@@ -397,22 +429,30 @@
       renderOverlay(resp.overlay || {});
     }).fail(function (xhr) {
       console.warn('Edit overlay request failed', xhr.status, xhr.responseText);
+    }).always(function () {
+      overlayRequest = null;
     });
+    return overlayRequest;
   }
-
-  let overlayReloadTimer = null;
 
   function scheduleOverlayReload(delayMs = 400) {
     if (!isEditMode()) {
       return;
     }
+    const delay = Math.max(0, Number(delayMs) || 0);
+    const when = Date.now() + delay;
+    if (overlayReloadTimer && overlayReloadAt != null && overlayReloadAt <= when) {
+      return;
+    }
     if (overlayReloadTimer) {
       clearTimeout(overlayReloadTimer);
     }
+    overlayReloadAt = when;
     overlayReloadTimer = setTimeout(() => {
       overlayReloadTimer = null;
+      overlayReloadAt = null;
       loadOverlay();
-    }, delayMs);
+    }, delay);
   }
 
   function getEditableFixturesAt(x, y) {
@@ -1201,6 +1241,8 @@
 
   window.EditMode = {
     isEditMode,
+    setEnabled,
+    requestEditMode,
     loadOverlay,
     clearOverlay,
     isShiftDraggableItem,
@@ -1221,6 +1263,102 @@
     findEditTile,
     scopedEditTiles,
   };
+
+  let tileRefreshWrapped = false;
+
+  function wrapTileRefresh() {
+    if (tileRefreshWrapped) {
+      return;
+    }
+    const originalRefresh = window.Utils && window.Utils.refreshTileSet;
+    if (!originalRefresh) {
+      return;
+    }
+    tileRefreshWrapped = true;
+    window.Utils.refreshTileSet = function (
+      is_setup,
+      pov,
+      x,
+      y,
+      entity_uid,
+      callback,
+      forceFullRefresh,
+    ) {
+      const wrappedCallback = function () {
+        if (typeof callback === 'function') {
+          callback();
+        }
+        if (isEditMode()) {
+          // Tile refresh replaces tile DOM and wipes edit overlay layers;
+          // always re-fetch overlay data after any refresh (including
+          // forceFullRefresh — that path skips scheduleOverlayReload here
+          // but still needs a follow-up load once tiles are mounted).
+          scheduleOverlayReload(forceFullRefresh ? 0 : 400);
+        }
+      };
+      return originalRefresh.call(
+        this,
+        is_setup,
+        pov,
+        x,
+        y,
+        entity_uid,
+        wrappedCallback,
+        forceFullRefresh,
+      );
+    };
+  }
+
+  function setEnabled(on) {
+    const enabled = !!on;
+    setBodyEditMode(enabled);
+    syncEditModeChrome();
+    wrapTileRefresh();
+    if (enabled) {
+      ensureBanner();
+      if (typeof Utils.syncMapPickerUI === 'function') {
+        Utils.syncMapPickerUI($('body').attr('data-current-map') || '');
+      }
+      loadOverlay();
+      if (window.MapAnnotationsEdit && typeof window.MapAnnotationsEdit.setEnabled === 'function') {
+        window.MapAnnotationsEdit.setEnabled(true);
+      }
+    } else {
+      clearOverlay();
+      $('.edit-mode-banner').remove();
+      hideCoordsTooltip();
+      $('body').removeClass('edit-mode-shift-armed');
+      if (window.MapAnnotationsEdit && typeof window.MapAnnotationsEdit.setEnabled === 'function') {
+        window.MapAnnotationsEdit.setEnabled(false);
+      }
+    }
+  }
+
+  function requestEditMode(enabled) {
+    return $.ajax({
+      url: '/edit/session',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({ enabled: !!enabled }),
+    }).then(
+      function (resp) {
+        if (!resp || !resp.success) {
+          window.alert((resp && resp.error) || 'Failed to update edit mode');
+          return resp;
+        }
+        setEnabled(!!resp.edit_mode);
+        if (window.Utils && typeof window.Utils.refreshTileSet === 'function') {
+          window.Utils.refreshTileSet(false, false, 0, 0, null, null, true);
+        }
+        return resp;
+      },
+      function (xhr) {
+        const msg =
+          (xhr.responseJSON && xhr.responseJSON.error) || 'Failed to update edit mode';
+        window.alert(msg);
+      },
+    );
+  }
 
   // --- Tile coordinate tooltip on hover (edit mode) ---
   let coordsTooltip = null;
@@ -1256,12 +1394,9 @@
   }
 
   $(function () {
-    if (!isEditMode()) {
-      return;
-    }
-    ensureBanner();
+    wrapTileRefresh();
+    syncEditModeChrome();
 
-    // Wire up tile coordinate tooltips
     $(document)
       .on('mouseenter.editCoords', '.tile', function () {
         if (!isEditMode()) return;
@@ -1271,44 +1406,17 @@
         hideCoordsTooltip();
       });
 
-    if (typeof Utils.syncMapPickerUI === 'function') {
-      Utils.syncMapPickerUI($('body').attr('data-current-map') || '');
-    }
-    loadOverlay();
-    const originalRefresh = window.Utils && window.Utils.refreshTileSet;
-    if (originalRefresh) {
-      window.Utils.refreshTileSet = function (
-        is_setup,
-        pov,
-        x,
-        y,
-        entity_uid,
-        callback,
-        forceFullRefresh,
-      ) {
-        const wrappedCallback = function () {
-          if (typeof callback === 'function') {
-            callback();
-          }
-          if (isEditMode()) {
-            // Tile refresh replaces tile DOM and wipes edit overlay layers;
-            // always re-fetch overlay data after any refresh (including
-            // forceFullRefresh — that path skips scheduleOverlayReload here
-            // but still needs a follow-up load once tiles are mounted).
-            scheduleOverlayReload(forceFullRefresh ? 0 : 400);
-          }
-        };
-        return originalRefresh.call(
-          this,
-          is_setup,
-          pov,
-          x,
-          y,
-          entity_uid,
-          wrappedCallback,
-          forceFullRefresh,
-        );
-      };
+    $('#toggle-edit-mode').on('click', function () {
+      requestEditMode(!isEditMode());
+    });
+    $(document).on('click', '.edit-mode-banner-exit', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      requestEditMode(false);
+    });
+
+    if (isEditMode()) {
+      setEnabled(true);
     }
   });
 })(window, jQuery);

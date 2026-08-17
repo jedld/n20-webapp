@@ -11,7 +11,59 @@
   .map-card.new .label { margin-top: 6px; font-weight: 600; font-size: 13px; }
   .upload-overlay { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; }
   .upload-overlay .btn { padding: 2px 6px; font-size: 11px; }
+  .map-set-block { margin-bottom: 16px; }
+  .map-set-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px 0; }
+  .map-set-heading h5 { margin: 0; font-size: 14px; font-weight: 700; }
+  .map-set-heading.is-active h5::after { content: ' (active)'; font-weight: 400; color: #337ab7; font-size: 12px; }
+  .map-card-actions { position: absolute; left: 6px; bottom: 36px; display: flex; gap: 4px; }
+  .map-card-actions .btn { padding: 2px 6px; font-size: 11px; }
 </style>
+<div id="map-set-toolbar" style="margin-bottom:10px;">
+  <button type="button" class="btn btn-xs btn-default" id="create-new-map-set">New Map Set</button>
+</div>
+{% if map_sets and map_sets.sets %}
+  {% for map_set in map_sets.sets %}
+    <div class="map-set-block" data-map-set="{{ map_set.id }}">
+      <div class="map-set-heading{% if map_set.active %} is-active{% endif %}">
+        <h5>{{ map_set.label or map_set.id }}</h5>
+        {% if not map_set.active %}
+          <button type="button" class="btn btn-xs btn-primary activate-map-set" data-map-set="{{ map_set.id }}">Activate</button>
+        {% endif %}
+      </div>
+      <div class="map-grid">
+        {% for map_entry in map_set.maps %}
+          {% set map_name = map_entry.name if map_entry.name is defined else map_entry %}
+          <div class="map-card{% if map_name == current_map %} is-current{% endif %}" data-map-name="{{ map_name }}" data-map-set="{{ map_set.id }}">
+            <div class="upload-overlay">
+              <button class="btn btn-xs btn-default upload-map-bg" title="Upload background" data-map-name="{{ map_name }}">
+                <span class="glyphicon glyphicon-upload"></span>
+              </button>
+              {% if map_name != 'index' %}
+                <button class="btn btn-xs btn-danger delete-map" title="Delete map" data-map-name="{{ map_name }}">
+                  <span class="glyphicon glyphicon-trash"></span>
+                </button>
+              {% endif %}
+              <input type="file" class="map-bg-input" data-map-name="{{ map_name }}" accept="image/*" style="display:none;" />
+            </div>
+            <div class="map-card-actions">
+              <button type="button" class="btn btn-xs btn-info place-party-on-map" data-map-name="{{ map_name }}" title="Place party tokens on this map">Place Party</button>
+            </div>
+            <img class="map-thumb" src="/assets/maps/{{ map_name }}.png" alt="{{ map_name }}" onerror="this.onerror=null;this.src='/static/info.png';">
+            <div class="map-name">{{ map_name }}</div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endfor %}
+  <div class="map-grid">
+    <div class="map-card new" id="create-new-map">
+      <div style="text-align:center;">
+        <span class="plus">+</span>
+        <div class="label">Create New Map</div>
+      </div>
+    </div>
+  </div>
+{% else %}
 <div class="map-grid" id="map-grid">
   {% for map_name in available_maps %}
     <div class="map-card{% if map_name == current_map %} is-current{% endif %}" data-map-name="{{ map_name }}">
@@ -37,3 +89,4 @@
     </div>
   </div>
 </div>
+{% endif %}

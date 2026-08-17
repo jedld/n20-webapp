@@ -6,14 +6,15 @@ Routes: /login, /logout, /character_selection, /select_character
 from flask import Blueprint, request, jsonify, session, redirect, url_for, render_template
 
 from .helpers.runtime_state import (
+    get_app,
     get_logins,
     get_current_game,
-    get_controllers,
     get_index_data,
     get_title,
     get_character_selection_background,
     get_builder_only_mode,
     get_logger,
+    get_game_session,
 )
 from .helpers.auth_utils import logged_in, user_role
 from .helpers.pvp import (
@@ -24,6 +25,13 @@ from .helpers.pvp import (
     assign_character_team_and_spawn,
     ensure_character_entity_loaded,
     restore_player_character_for_user,
+)
+from .helpers.character_selection import (
+    collect_selectable_entries,
+    is_sidekick_selectable,
+    load_character_selection_settings,
+    partition_selectables,
+    taken_selectable_uids,
 )
 from .helpers.template_globals import entities_controlled_by
 from .helpers.login_ui import build_login_page_context
@@ -52,6 +60,8 @@ def login():
                     current_game.switch_map_for_user(username, current_game.get_current_battle_map().name)
                 except Exception:
                     logger.exception(f"Failed to switch DM {username} to the current battle map")
+                if get_app().config.get('EDIT_MODE'):
+                    session['edit_mode'] = True
 
             # Spawn deferred PCs for this user on first login
             current_game = get_current_game()
@@ -83,24 +93,99 @@ def character_selection():
     if user_entities:
         return redirect(url_for('navigation.index'))
 
-    # Get list of selectable characters from index.json
-    index_data = get_index_data()
-    selectable_characters = index_data.get("selectable_characters", [])
-
-    # Find characters that are already taken by other users
-    taken_characters = set()
-    controllers = get_controllers()
-    for controller in controllers:
-        if controller['controllers']:  # If anyone is assigned to this character
-            taken_characters.add(controller['entity_uid'])
+    selectable_characters = collect_selectable_entries(get_index_data(), get_game_session())
+    player_characters, selectable_sidekicks = partition_selectables(selectable_characters)
+    taken_characters = taken_selectable_uids(get_game_session())
+    selection_settings = load_character_selection_settings(
+        get_game_session(), get_index_data()
+    )
 
     return render_template('character_selection.html',
                          title=get_title(),
                          background=get_character_selection_background(),
                          selectable_characters=selectable_characters,
+                         player_characters=player_characters,
+                         selectable_sidekicks=selectable_sidekicks,
                          taken_characters=taken_characters,
+                         character_selection_config=selection_settings,
                          pvp_team_config=pvp_team_config(),
                          pvp_team_counts=pvp_team_counts())
+
+
+def _unclaim_controller(entity_uid, username):
+    entry = ensure_controller_entry(entity_uid)
+    controllers = entry.get('controllers') or []
+    entry['controllers'] = [name for name in controllers if str(name).lower() != str(username).lower()]
+    return entry
+
+
+def _claim_controller(entity_uid, username):
+    entry = ensure_controller_entry(entity_uid)
+    if username not in entry['controllers']:
+        entry['controllers'].append(username)
+    return entry
+
+
+def _register_sidekick_selection(character_name, username, logger):
+    current_game = get_current_game()
+    selectable = selectable_character_entry(character_name) or {}
+    if not is_sidekick_selectable(selectable):
+        return None
+    entity = current_game.get_entity_by_uid(character_name)
+    if entity is None:
+        entity = ensure_character_entity_loaded(character_name)
+    if entity is None:
+        return 'Failed to load sidekick'
+    try:
+        from webapp.blueprints.helpers.sidekick_control import join_party_and_control
+        join_party_and_control(
+            entity,
+            [username],
+            notify=False,
+            sidekick_class=selectable.get('sidekick_class'),
+            sidekick_level=selectable.get('sidekick_level'),
+            role=selectable.get('role'),
+        )
+    except Exception:
+        logger.exception('Failed to register selected sidekick')
+        return 'Failed to register sidekick'
+    return None
+
+
+def _materialize_login_pick(character_name, username, selected_team, logger):
+    """Claim a selectable PC or sidekick for ``username``. Returns an error string or None."""
+    taken = taken_selectable_uids(get_game_session())
+    if character_name in taken:
+        return 'Character is already taken'
+
+    team_config = pvp_team_config()
+    selectable = selectable_character_entry(character_name) or {}
+    as_sidekick = is_sidekick_selectable(selectable)
+
+    _claim_controller(character_name, username)
+    if as_sidekick:
+        error = _register_sidekick_selection(character_name, username, logger)
+        if error:
+            _unclaim_controller(character_name, username)
+        return error
+
+    if team_config:
+        try:
+            assign_character_team_and_spawn(character_name, selected_team)
+        except ValueError as exc:
+            _unclaim_controller(character_name, username)
+            return str(exc)
+        return None
+
+    try:
+        if ensure_character_entity_loaded(character_name) is None:
+            _unclaim_controller(character_name, username)
+            return 'No spawn slot available for this character'
+    except Exception as exc:
+        logger.exception(f"Failed to materialize character {character_name}")
+        _unclaim_controller(character_name, username)
+        return f'Failed to load character: {exc}'
+    return None
 
 
 @auth_bp.route('/select_character', methods=['POST'], endpoint='select_character')
@@ -109,66 +194,60 @@ def select_character():
     if not logged_in():
         return jsonify(error="Not logged in"), 401
 
-    character_name = request.form.get('character')
+    character_name = (request.form.get('character') or '').strip()
+    sidekick_name = (request.form.get('sidekick') or '').strip()
     selected_team = (request.form.get('team') or '').lower()
     username = session['username']
 
     if not character_name:
         return jsonify(error="No character specified")
 
-    # Check if character exists in selectable characters
-    character_exists = selectable_character_entry(character_name) is not None
-
-    if not character_exists:
+    hero_entry = selectable_character_entry(character_name)
+    if hero_entry is None:
         return jsonify(error="Invalid character selection")
 
-    # Check if character is already taken
-    controllers = get_controllers()
-    for controller in controllers:
-        if controller['entity_uid'] == character_name and controller['controllers']:
-            return jsonify(error="Character is already taken")
+    settings = load_character_selection_settings(get_game_session(), get_index_data())
+    sidekick_slots = int(settings.get('sidekick_slots') or 0)
+    taken = taken_selectable_uids(get_game_session())
+    available_sidekicks = [
+        entry for entry in collect_selectable_entries(get_index_data(), get_game_session())
+        if is_sidekick_selectable(entry) and str(entry.get('name') or '') not in taken
+    ]
+
+    if sidekick_slots > 0:
+        if is_sidekick_selectable(hero_entry):
+            return jsonify(error="Choose a player character and a sidekick")
+        if sidekick_name:
+            sidekick_entry = selectable_character_entry(sidekick_name)
+            if sidekick_entry is None or not is_sidekick_selectable(sidekick_entry):
+                return jsonify(error="Invalid sidekick selection")
+            if sidekick_name == character_name:
+                return jsonify(error="Choose two different characters")
+        elif available_sidekicks:
+            return jsonify(error="Choose a sidekick companion")
+    elif sidekick_name:
+        return jsonify(error="This campaign does not use a separate sidekick pick")
 
     team_config = pvp_team_config()
     if team_config and not selected_team:
         return jsonify(error='Choose Team A or Team B before confirming your slot')
 
-    # Assign character to user
-    controller_entry = ensure_controller_entry(character_name)
-    if username not in controller_entry['controllers']:
-        controller_entry['controllers'].append(username)
+    error = _materialize_login_pick(character_name, username, selected_team, logger)
+    if error:
+        return jsonify(error=error)
 
-    if team_config:
-        try:
-            assign_character_team_and_spawn(character_name, selected_team)
-        except ValueError as exc:
-            if controller_entry and username in controller_entry.get('controllers', []):
-                controller_entry['controllers'].remove(username)
-            return jsonify(error=str(exc))
-    else:
-        # Non-PvP flow: materialize the selected character (loads the PC sheet
-        # and reserves a player_spawn_point if needed) so the subsequent
-        # spawn_player_for_user call has something deferred to place.
-        try:
-            if ensure_character_entity_loaded(character_name) is None:
-                if controller_entry and username in controller_entry.get('controllers', []):
-                    controller_entry['controllers'].remove(username)
-                return jsonify(error='No spawn slot available for this character')
-        except Exception as exc:
-            logger.exception(f"Failed to materialize character {character_name}")
-            if controller_entry and username in controller_entry.get('controllers', []):
-                controller_entry['controllers'].remove(username)
-            return jsonify(error=f'Failed to load character: {exc}')
+    if sidekick_name:
+        error = _materialize_login_pick(sidekick_name, username, selected_team, logger)
+        if error:
+            _unclaim_controller(character_name, username)
+            return jsonify(error=error)
 
     session['assigned_character_uid'] = character_name
 
-    # Update the current_game controllers if needed
     current_game = get_current_game()
     current_game._setup_controllers()
-
-    # Spawn deferred PC for this user after character selection
     current_game.spawn_player_for_user(username)
 
-    # Proactively set POV and sync current map to the selected character to avoid stale map on first load
     try:
         entity = current_game.get_entity_by_uid(character_name)
         if entity is not None:
@@ -180,15 +259,18 @@ def select_character():
             except Exception:
                 pass
     except Exception:
-        # Non-fatal; index() will still attempt to correct on first render
         pass
 
-    logger.info(f"User {username} selected character {character_name}")
+    if sidekick_name:
+        logger.info(f"User {username} selected character {character_name} with sidekick {sidekick_name}")
+    else:
+        logger.info(f"User {username} selected character {character_name}")
     return jsonify(status='ok')
 
 
 @auth_bp.route('/logout', methods=['POST', 'GET'], endpoint='logout')
 def logout():
     session.pop('assigned_character_uid', None)
+    session.pop('edit_mode', None)
     session['username'] = None
     return redirect(url_for('auth.login'))

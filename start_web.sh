@@ -11,6 +11,8 @@ fi
 
 EDIT_MODE=0
 if [ -n "$1" ] && [ "$1" = "--edit" ]; then
+    # Optional: after a DM logs in, that session starts in campaign edit mode.
+    # Does not skip login or grant DM to other users.
     EDIT_MODE=1
     shift
 fi

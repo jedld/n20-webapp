@@ -1,9 +1,10 @@
 """MCP (Model Context Protocol) surface for the running game.
 
-This package exposes a tool-oriented HTTP/JSON surface that lets an LLM
-acting as a Dungeon Master inspect, mutate, create, and act on entities
-inside the currently running webapp game. The surface is organised into
-logical modules:
+This package exposes DM-privileged tools over a running Natural20 webapp
+so an LLM (in-process or an external host such as Cursor / Claude) can
+inspect, mutate, and drive entities.
+
+Logical modules:
 
 - :mod:`webapp.mcp.tools_world` — read-only inspection (maps, entities,
   battle state).
@@ -11,13 +12,18 @@ logical modules:
   properties, spawn/remove/teleport).
 - :mod:`webapp.mcp.tools_actions` — turn-based execution (MoveAction,
   attack, spell, generic action dispatch, end_turn, start/end battle).
+- :mod:`webapp.mcp.tools_npc` — NPC spatial awareness (location, areas).
 
-All tools are registered into a shared :class:`ToolRegistry`. The Flask
-blueprint in :mod:`webapp.mcp.routes` exposes the registry under the
-``/mcp/*`` URL prefix and provides three discovery endpoints
-(`/mcp/manifest`, `/mcp/tools/list`, `/mcp/tools/call`) that mirror the
-Anthropic / Model Context Protocol "tools" envelope so a thin MCP server
-bridge can wrap them.
+All tools are registered into a shared :class:`ToolRegistry`.
+:mod:`webapp.mcp.protocol` translates JSON-RPC MCP methods onto that
+registry. The Flask blueprint in :mod:`webapp.mcp.routes` exposes:
+
+- Streamable HTTP JSON-RPC at ``POST /mcp`` (Cursor / Claude Code).
+- Legacy REST ``GET /mcp/manifest``, ``GET /mcp/tools/list``,
+  ``POST /mcp/tools/call`` for the in-app LLM bridge.
+
+:mod:`webapp.mcp.stdio` is a newline-delimited JSON-RPC proxy for hosts
+that only launch local subprocesses (Claude Desktop).
 """
 
 from .context import MCPContext

@@ -5847,8 +5847,18 @@ class EntityRAGHandler:
 
     def goal_execution_prompt(self, entity: Entity, goal_state: Dict[str, Any], requester: Entity = None) -> str:
         requester_label = entity_label(requester) if requester is not None else 'nobody in particular'
+        party_block = ''
+        try:
+            from webapp.npc_situational_context import in_party_sidekick_prompt_block
+            party_block = in_party_sidekick_prompt_block(
+                self.game_session, entity, speaker=requester,
+            )
+        except Exception:
+            party_block = ''
+        party_prefix = (party_block + '\n') if party_block else ''
         return (
             f"You are {entity_label(entity)} acting autonomously in a D&D world.\n"
+            f"{party_prefix}"
             f"Your active short-term goal is: {goal_state.get('goal', '')}\n"
             f"This goal was last requested or influenced by: {requester_label}.\n"
             "Take one 6-second out-of-combat turn. Return only optional control tags plus an optional spoken line.\n"
@@ -5986,6 +5996,47 @@ class EntityRAGHandler:
             # Fallback to common if parsing fails
             return "common", response
 
+    def conversation_keyword_source_text(
+        self,
+        reply_plan: Optional[Dict[str, Any]] = None,
+        *,
+        raw_response: str = '',
+    ) -> str:
+        """Spoken line plus asides — keywords often live in stage direction."""
+        parts: List[str] = []
+        if isinstance(reply_plan, dict):
+            spoken = str(reply_plan.get('message') or '').strip()
+            if spoken:
+                parts.append(spoken)
+            for entry in reply_plan.get('narrative') or []:
+                text = str(entry or '').strip()
+                if text:
+                    parts.append(text)
+        raw = str(raw_response or '').strip()
+        if raw:
+            parts.append(raw)
+        return ' '.join(parts)
+
+    def apply_conversation_keywords_from_plan(
+        self,
+        reply_plan: Optional[Dict[str, Any]],
+        receiver: Entity,
+        speaker: Entity = None,
+        llm_conversation_handler=None,
+        *,
+        raw_response: str = '',
+    ) -> None:
+        text = self.conversation_keyword_source_text(
+            reply_plan,
+            raw_response=raw_response,
+        )
+        self.apply_conversation_keywords(
+            text,
+            receiver,
+            speaker=speaker,
+            llm_conversation_handler=llm_conversation_handler,
+        )
+
     def apply_conversation_keywords(
         self,
         response: str,
@@ -6057,6 +6108,14 @@ class EntityRAGHandler:
         if "[GO_FRIENDLY]" in response:
             self._handle_friendly_state_change(receiver)
             response = re.sub(r'\[GO_FRIENDLY\]', '', response, flags=re.IGNORECASE).strip()
+
+        if "[JOIN_PARTY" in response.upper() or "[JOIN_PARTY]" in response:
+            self._handle_join_party(response, speaker, receiver)
+            response = re.sub(r'\[JOIN_PARTY(?::[^\]]*)?\]', '', response, flags=re.IGNORECASE).strip()
+
+        if "[LEAVE_PARTY]" in response:
+            self._handle_leave_party(receiver)
+            response = re.sub(r'\[LEAVE_PARTY\]', '', response, flags=re.IGNORECASE).strip()
 
         # Handle inventory queries
         if "[INVENTORY" in response or "[LIST_INVENTORY" in response:
@@ -6618,6 +6677,13 @@ class EntityRAGHandler:
             Empty string (response will be handled by caller)
         """
         try:
+            try:
+                from natural20.sidekick import is_sidekick
+                from webapp.blueprints.helpers.sidekick_control import leave_party_and_control
+                if is_sidekick(self.game_session, receiver):
+                    leave_party_and_control(receiver, hostile=True)
+            except Exception:
+                logger.exception('Failed to drop sidekick on GO_HOSTILE')
             receiver.update_state('active')
             self.current_game.update_group(receiver, 'b')
             self._activate_group_allies(receiver)
@@ -6625,6 +6691,49 @@ class EntityRAGHandler:
             return ""
         except Exception as e:
             logger.error(f"Error changing entity to hostile state: {e}")
+            return ""
+
+    def _owner_usernames_for(self, entity) -> list:
+        try:
+            from webapp.blueprints.helpers.template_globals import entity_owners
+            return [str(name).strip().lower() for name in (entity_owners(entity) or []) if str(name).strip()]
+        except Exception:
+            return []
+
+    def _handle_join_party(self, response: str, speaker: Entity, receiver: Entity) -> str:
+        try:
+            from webapp.blueprints.helpers.sidekick_control import join_party_and_control
+            owners = []
+            match = re.search(r'\[JOIN_PARTY(?::([^\]]*))?\]', response or '', flags=re.IGNORECASE)
+            if match and match.group(1):
+                params = self._parse_named_params(match.group(1), positional_keys=('owner',))
+                owner_spec = params.get('owner') or params.get('target')
+                if owner_spec:
+                    subject = self.resolve_named_target(
+                        receiver,
+                        owner_spec,
+                        speaker=speaker,
+                        include_objects=False,
+                    )
+                    if subject is not None:
+                        owners = self._owner_usernames_for(subject)
+            if not owners:
+                owners = self._owner_usernames_for(speaker)
+            join_party_and_control(receiver, owners)
+            logger.info(f"Entity {receiver.label()} joined the party (owners={owners})")
+            return ""
+        except Exception as e:
+            logger.error(f"Error joining party: {e}")
+            return ""
+
+    def _handle_leave_party(self, receiver: Entity) -> str:
+        try:
+            from webapp.blueprints.helpers.sidekick_control import leave_party_and_control
+            leave_party_and_control(receiver, hostile=False)
+            logger.info(f"Entity {receiver.label()} left the party")
+            return ""
+        except Exception as e:
+            logger.error(f"Error leaving party: {e}")
             return ""
 
     def _activate_group_allies(self, receiver: Entity):
@@ -6921,6 +7030,14 @@ class EntityRAGHandler:
             context['is_merchant'] = False
 
         context['is_npc'] = bool(callable(getattr(entity, 'is_npc', None)) and entity.is_npc())
+        try:
+            from webapp.blueprints.helpers.sidekick_control import can_invite_entity
+            context['can_invite_party'] = can_invite_entity(self.game_session, entity)
+            from natural20.sidekick import is_in_party_sidekick
+            context['is_sidekick'] = is_in_party_sidekick(self.game_session, entity)
+        except Exception:
+            context['can_invite_party'] = False
+            context['is_sidekick'] = False
         if context['is_npc'] and viewer_is_dm:
             try:
                 from webapp.npc_conversation_mode import npc_conversation_mode_payload

@@ -225,6 +225,7 @@ window.LocalConversationChatBindings = {
         }
 
         if (window.innerWidth <= 768) {
+            Chat.undockLocalConversationPanel($targetPanel);
             $targetPanel.css({
                 left: '10px',
                 right: '10px',
@@ -238,16 +239,52 @@ window.LocalConversationChatBindings = {
             return;
         }
 
+        if (Chat.dockLocalConversationPanel($targetPanel)) {
+            $targetPanel.css({
+                left: '',
+                top: '',
+                right: '',
+                bottom: '',
+                width: '',
+                height: 'auto',
+                minHeight: '0',
+                maxHeight: 'none',
+            });
+            return;
+        }
+
         $targetPanel.css({
             left: '',
             top: '',
-            right: '240px',
-            bottom: '20px',
+            right: '10px',
+            bottom: '10px',
             width: '260px',
             height: 'auto',
             minHeight: '0',
             maxHeight: 'none',
         });
+    },
+    dockLocalConversationPanel: function ($panel) {
+        const panelEl = $panel && $panel[0];
+        const dock = document.getElementById('map-chrome-right');
+        if (!panelEl || !dock) {
+            return false;
+        }
+        const notes = dock.querySelector('#dm-notes-panel, .dm-notes-panel');
+        if (notes) {
+            dock.insertBefore(panelEl, notes);
+        } else if (panelEl.parentElement !== dock) {
+            dock.insertBefore(panelEl, dock.firstChild);
+        }
+        return true;
+    },
+    undockLocalConversationPanel: function ($panel) {
+        const panelEl = $panel && $panel[0];
+        const dock = document.getElementById('map-chrome-right');
+        if (!panelEl || !dock || !dock.contains(panelEl)) {
+            return;
+        }
+        document.body.appendChild(panelEl);
     },
     restoreLocalConversationPanelPosition: function () {
         let savedPosition = null;
@@ -303,6 +340,7 @@ window.LocalConversationChatBindings = {
             Chat.hideLocalMentionSuggestions();
             $button.attr('title', 'Restore local chat').find('i').removeClass('glyphicon-minus').addClass('glyphicon-plus');
         } else {
+            Chat.undockLocalConversationPanel($panel);
             $panel.css({
                 width: '',
                 height: '',

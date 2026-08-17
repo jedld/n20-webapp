@@ -1,11 +1,213 @@
 #floating-menu {
   position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 1200;
+  background: transparent;
+  border: none;
+  padding: 0;
+  width: auto;
+}
+
+#floating-menu .menu-button {
+  float: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(255, 252, 245, 0.97);
+  border: 1px solid #c9b79c;
+  color: #7a5b43;
+  box-shadow: 0 8px 24px rgba(62, 39, 24, 0.18);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+#floating-menu .menu-button:hover,
+#floating-menu .menu-button:focus {
+  background: #fffdf8;
+  color: #4f3523;
+  outline: none;
+}
+
+#floating-menu .menu-button .glyphicon {
   top: 0;
-  left: 0;
-  background-color: white;
-  padding: 10px;
-  border: 1px solid black;
-  z-index: 3;
+  font-size: 16px;
+}
+
+#expand-menu.has-journal-unread {
+  position: relative;
+}
+
+#expand-menu.has-journal-unread::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid #fffdf8;
+}
+
+#menu.vtt-menu {
+  margin-top: 8px;
+  width: 268px;
+  max-height: calc(100vh - 64px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: rgba(255, 252, 245, 0.97);
+  color: #4f3523;
+  border: 1px solid #c9b79c;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(62, 39, 24, 0.18);
+  backdrop-filter: blur(4px);
+  padding: 0;
+}
+
+.vtt-menu-section {
+  padding: 6px 0 4px;
+}
+
+.vtt-menu-section + .vtt-menu-section {
+  border-top: 1px solid #ead8ba;
+  margin-top: 2px;
+  padding-top: 8px;
+}
+
+.vtt-menu-section-label {
+  margin: 4px 12px 6px;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7a5b43;
+}
+
+#floating-menu ul,
+.vtt-menu ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.vtt-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: #4f3523;
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+a.vtt-menu-item:hover,
+a.vtt-menu-item:focus,
+button.vtt-menu-item:hover,
+button.vtt-menu-item:focus {
+  background: #f3e4c8;
+  color: #4f3523;
+  text-decoration: none;
+  outline: none;
+}
+
+.vtt-menu-item .glyphicon {
+  top: 0;
+  flex: 0 0 16px;
+  width: 16px;
+  text-align: center;
+  color: #8b6f52;
+  font-size: 13px;
+}
+
+.vtt-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#toggle-edit-mode.is-active .vtt-menu-item,
+#toggle-edit-mode.is-active .vtt-menu-item .glyphicon {
+  color: #b45309;
+}
+
+.vtt-menu-item--danger {
+  color: #b91c1c;
+}
+
+.vtt-menu-item--danger .glyphicon {
+  color: #dc2626;
+}
+
+.vtt-menu-item--danger:hover,
+.vtt-menu-item--danger:focus {
+  background: #fde8e8;
+  color: #991b1b;
+}
+
+.vtt-menu-logout {
+  margin: 0;
+}
+
+.vtt-menu-badge,
+#journal-menu-unread-badge {
+  display: inline-block;
+  min-width: 1.25em;
+  padding: 0 6px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.18);
+  color: #92400e;
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  font-size: 0.75em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+#journal-menu-unread-badge:not(.visible) {
+  display: none;
+}
+
+.vtt-menu-status {
+  margin: 4px 8px 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f6efe2;
+  border: 1px solid #ead8ba;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #7a5b43;
+  cursor: default;
+}
+
+.vtt-menu-status strong {
+  display: block;
+  color: #4f3523;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.vtt-menu-status small {
+  display: block;
+  margin-top: 4px;
+  color: #a08063;
+  font-style: italic;
+}
+
+#game-time-text {
+  color: #15803d;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 #coords-box {
@@ -28,10 +230,94 @@
   transition: none;
 }
 
+/* Map chrome docks: left = zoom + landmarks, right = notes + minimized chat */
+.map-chrome-dock {
+  position: fixed;
+  bottom: 10px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  max-height: calc(100vh - 72px);
+}
+
+.map-chrome-dock > * {
+  pointer-events: auto;
+}
+
+.map-chrome-dock--left {
+  left: 10px;
+  align-items: flex-start;
+  flex-direction: column-reverse;
+}
+
+.map-chrome-dock--right {
+  right: 10px;
+  align-items: stretch;
+  width: auto;
+  min-width: 148px;
+  max-width: 260px;
+}
+
+.map-chrome-dock .map-annotations-panel,
+.map-chrome-dock .dm-notes-panel,
+.map-chrome-dock .local-conversation-panel.minimized {
+  position: relative;
+  left: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  z-index: auto;
+  width: 260px;
+  max-width: 100%;
+}
+
+.map-chrome-dock .map-annotations-panel.is-collapsed,
+.map-chrome-dock .dm-notes-panel.is-collapsed {
+  width: auto;
+  min-width: 148px;
+}
+
+.map-chrome-dock .local-conversation-panel.minimized {
+  width: 260px;
+  background: rgba(24, 24, 27, 0.96);
+  border: 1px solid #52525b;
+  color: #fafafa;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.map-chrome-dock .local-conversation-panel.minimized .local-conversation-header {
+  background: transparent;
+  border-bottom: 0;
+  padding: 8px 10px;
+}
+
+.map-chrome-dock .local-conversation-panel.minimized .local-conversation-title {
+  color: #fafafa;
+}
+
+.map-chrome-dock .local-conversation-panel.minimized .local-conversation-subtitle {
+  color: #a1a1aa;
+}
+
+.map-chrome-dock .local-conversation-panel.minimized .local-conversation-drag-handle {
+  display: none;
+}
+
+.map-chrome-dock--left #zoom-controls {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  margin: 0;
+  z-index: auto;
+}
+
 /* Zoom Controls UI */
 #zoom-controls {
   position: fixed;
-  bottom: 20px;
+  bottom: 10px;
+  left: 10px;
   background: rgba(255, 255, 255, 0.95);
   border-radius: 8px;
   padding: 8px 12px;
@@ -91,22 +377,11 @@
 /* Game Time Display Styles */
 #game-time-display {
   font-size: 11px;
-  color: #333;
-  padding: 5px !important;
-  background-color: #f8f9fa;
-  border-radius: 3px;
-  margin: 2px 0 !important;
-}
-
-#game-time-display strong {
-  color: #2c3e50;
-  font-size: 12px;
-}
-
-#game-time-text {
-  color: #27ae60;
-  font-weight: bold;
-  font-family: monospace;
+  color: #d4d4d8;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  margin: 0;
 }
 
 .tiles-container {
@@ -1328,11 +1603,8 @@ input.initiative-text {
   border-radius: 5px;
 }
 
-.menu-button{
-  float: right;
-  width: 100%;
-  background-color: transparent;
-  border: none;
+.menu-button {
+  float: none;
 }
 
 .game-turn-container {
@@ -1374,16 +1646,6 @@ input.initiative-text {
   height: 50px;
 }
 
-#zoom-controls {
-  position: fixed;
-  bottom: 10px;
-  left: 10px;
-  z-index: 1000;
-  background-color: white;
-  padding: 10px;
-  border-radius: 5px;
-  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-}
 #zoom-controls button {
   padding: 5px 10px;
   font-size: 16px;
@@ -1530,12 +1792,113 @@ body.aoe-point-targeting .tile .brightness-overlay {
 
 .npc-item-info {
   flex: 1;
+  min-width: 0;
+}
+
+.npc-item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
 }
 
 .npc-item-name {
   font-weight: bold;
   font-size: 12px;
-  margin-bottom: 2px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.npc-unique-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #7a4e00;
+  background: #ffe7a3;
+  border: 1px solid #e0b84a;
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 14px;
+}
+
+.npc-on-map-badge {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 9px;
+  color: #2b6cb0;
+  background: #ebf4ff;
+  border-radius: 6px;
+  padding: 0 4px;
+  line-height: 13px;
+}
+
+.npc-cr-group {
+  margin-bottom: 6px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+.npc-cr-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  background: #eee;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  color: #333;
+}
+
+.npc-cr-group-header:hover {
+  background: #e4e4e4;
+}
+
+.npc-cr-group-chevron {
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid #666;
+  transition: transform 0.15s ease;
+}
+
+.npc-cr-group:not(.collapsed) .npc-cr-group-chevron {
+  transform: rotate(90deg);
+}
+
+.npc-cr-group-label {
+  flex: 1;
+}
+
+.npc-cr-group-count {
+  font-size: 10px;
+  font-weight: 600;
+  color: #777;
+  background: #fff;
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+
+.npc-cr-group-items {
+  padding: 6px;
+}
+
+.npc-cr-group.collapsed .npc-cr-group-items {
+  display: none;
+}
+
+.npc-cr-group .npc-item {
+  background: #fff;
 }
 
 .npc-item-type {
@@ -2531,7 +2894,12 @@ body[data-edit-mode="true"] .show-note-btn.edit-note-indicator-dragging {
   bottom: 70px; /* position from the bottom as per inline style */
   /* left is set inline dynamically */
   cursor: pointer;
-  z-index: 1000;
+  z-index: 9999;
+}
+
+.floating-entity-portrait:hover,
+.floating-entity-portrait:focus-within {
+  z-index: 10050;
 }
 
 .portrait-image-wrap {
@@ -2542,13 +2910,14 @@ body[data-edit-mode="true"] .show-note-btn.edit-note-indicator-dragging {
 
 .portrait-quick-actions {
   position: absolute;
-  top: 50%;
-  left: 100%;
-  right: auto;
-  transform: translateY(-50%);
+  top: 2px;
+  right: 2px;
+  left: auto;
+  transform: none;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  margin: 0;
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.15s ease, visibility 0.15s ease;
@@ -2562,6 +2931,10 @@ body[data-edit-mode="true"] .show-note-btn.edit-note-indicator-dragging {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
+}
+
+.floating-entity-portrait .portrait-quick-actions {
+  margin: 0;
 }
 
 .portrait-quick-action {
@@ -3257,21 +3630,29 @@ body[data-edit-mode="true"] .show-note-btn.edit-note-indicator-dragging {
 
 #floating-entity-portraits.dm-portrait-dock {
   position: fixed;
-  left: 46px;
-  right: 12px;
-  bottom: 68px;
-  z-index: 1000;
+  left: 50%;
+  right: auto;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 1100;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 6px;
-  max-width: calc(100vw - 58px);
+  width: max-content;
+  max-width: min(640px, calc(100vw - 560px));
   pointer-events: none;
 }
 
 #floating-entity-portraits.dm-portrait-dock .dm-portrait-dock-inner {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-end;
   gap: 6px;
+  width: max-content;
+  max-width: 100%;
   pointer-events: none;
 }
 
@@ -3282,6 +3663,24 @@ body[data-edit-mode="true"] .show-note-btn.edit-note-indicator-dragging {
   border-radius: 8px;
   padding: 4px 8px 6px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  width: max-content;
+  max-width: 100%;
+}
+
+#floating-entity-portraits.dm-portrait-dock .dm-portrait-section.collapsed {
+  padding: 3px 8px;
+}
+
+#floating-entity-portraits.dm-portrait-dock .dm-portrait-section:not(.collapsed) {
+  flex: 1 1 auto;
+  min-width: min(100%, 220px);
+}
+
+@media (max-width: 1100px) {
+  #floating-entity-portraits.dm-portrait-dock {
+    bottom: 62px;
+    max-width: calc(100vw - 24px);
+  }
 }
 
 #floating-entity-portraits.dm-portrait-dock .dm-portrait-section-header {
@@ -3292,18 +3691,22 @@ body[data-edit-mode="true"] .show-note-btn.edit-note-indicator-dragging {
   min-height: 22px;
 }
 
+#floating-entity-portraits.dm-portrait-dock .dm-portrait-section.collapsed .dm-portrait-section-header {
+  margin-bottom: 0;
+}
+
+#floating-entity-portraits.dm-portrait-dock .dm-portrait-section-count {
+  font-size: 10px;
+  color: #9aa4b2;
+  margin-left: 4px;
+}
+
 #floating-entity-portraits.dm-portrait-dock .dm-portrait-section-label {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #d8dee9;
-}
-
-#floating-entity-portraits.dm-portrait-dock .dm-portrait-section-count {
-  font-size: 10px;
-  color: #9aa4b2;
-  margin-left: auto;
 }
 
 #floating-entity-portraits.dm-portrait-dock .dm-portrait-section-toggle {
@@ -3349,14 +3752,15 @@ body[data-edit-mode="true"] .show-note-btn.edit-note-indicator-dragging {
   z-index: auto;
 }
 
+#floating-entity-portraits.dm-portrait-dock .floating-entity-portrait--compact:hover,
+#floating-entity-portraits.dm-portrait-dock .floating-entity-portrait--compact:focus-within {
+  z-index: 4;
+}
+
 #floating-entity-portraits.dm-portrait-dock .floating-entity-portrait--compact .portrait-image {
   width: 48px;
   height: 48px;
   margin: 0 auto;
-}
-
-#floating-entity-portraits.dm-portrait-dock .floating-entity-portrait--compact .portrait-quick-actions {
-  left: 100%;
 }
 
 #floating-entity-portraits.dm-portrait-dock .floating-entity-portrait--compact .portrait-quick-action {
@@ -3444,6 +3848,27 @@ body.dialog-manual-mode-active #jrpgDialogPanel .dialog-panel-header {
 
 body.dialog-manual-mode-active #dialogChatInput::placeholder {
   color: #8a6d1d;
+}
+
+/* Screen-level toasts (party join, errors). Sit above the JRPG dialog. */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  z-index: 11000;
+  pointer-events: none;
+}
+
+.toast-message {
+  background-color: rgba(20, 20, 20, 0.92);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 6px;
+  white-space: nowrap;
+  margin-bottom: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  pointer-events: none;
 }
 
 /* Map Toast (inline toaster near tiles) */
@@ -5635,7 +6060,20 @@ body[data-role*="dm"] .tile.entity-dragging {
   padding: 8px 12px;
   font-size: 14px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  pointer-events: none;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.edit-mode-banner-text {
+  flex: 1 1 auto;
+}
+
+.edit-mode-banner-exit {
+  flex: 0 0 auto;
+  pointer-events: auto;
 }
 
 body[data-edit-mode="true"] #floating-menu {

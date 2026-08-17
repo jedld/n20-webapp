@@ -485,5 +485,7 @@ def register_effect_listeners(record_narration_fn):
 def register_battle_end_hook_handlers(conversation_service, record_narration_fn=None):
     """Register campaign ``battle_end_hooks`` from game.yml (after conversation service exists)."""
     from .battle_end_hooks import attach_battle_end_hooks
+    from webapp.battle_combat_recap import attach_battle_combat_recap
 
     attach_battle_end_hooks(conversation_service, record_narration_fn=record_narration_fn)
+    attach_battle_combat_recap()

@@ -63,12 +63,39 @@ def _edit_map_object(current_game, map_name):
 edit_bp = Blueprint("edit", __name__)
 
 
-def _require_edit_dm():
-    if not get_edit_mode():
-        return jsonify({"success": False, "error": "Edit mode is not enabled"}), 403
+def _require_dm():
     if "dm" not in user_role():
         return jsonify({"success": False, "error": "DM access required"}), 403
     return None
+
+
+def _require_edit_dm():
+    denied = _require_dm()
+    if denied:
+        return denied
+    if not get_edit_mode():
+        return jsonify({"success": False, "error": "Edit mode is not enabled"}), 403
+    return None
+
+
+def _parse_session_enabled(data) -> bool:
+    value = (data or {}).get("enabled")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+@edit_bp.route("/edit/session", methods=["GET", "POST"])
+def edit_session_mode():
+    denied = _require_dm()
+    if denied:
+        return denied
+    if request.method == "GET":
+        return jsonify({"success": True, "edit_mode": bool(get_edit_mode())})
+    data = request.get_json(silent=True) or {}
+    enabled = _parse_session_enabled(data)
+    session["edit_mode"] = enabled
+    return jsonify({"success": True, "edit_mode": enabled})
 
 
 def _binding_from_payload(data: dict) -> dict:
@@ -303,12 +330,6 @@ def edit_catalog_items():
     limit = max(1, min(limit, 100))
     items = list_item_catalog(current_game.game_session, query=query, limit=limit)
     return jsonify({"success": True, "items": items, "query": query})
-
-
-def _require_dm():
-    if "dm" not in user_role():
-        return jsonify({"success": False, "error": "DM access required"}), 403
-    return None
 
 
 @edit_bp.route("/edit/annotations", methods=["GET"])
@@ -726,6 +747,12 @@ def edit_place_entity():
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
 
     current_game.reload_map_by_name(map_name)
+    from_map = (placed or {}).get("from_map")
+    if from_map and from_map != map_name:
+        try:
+            current_game.reload_map_by_name(from_map)
+        except Exception:
+            pass
     get_socketio().emit("message", {"type": "refresh_map"})
     return jsonify({"success": True, "map": map_name, "placement": placed})
 

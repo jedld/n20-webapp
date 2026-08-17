@@ -1371,6 +1371,36 @@
   }
 
   // Equipment Pack Preview Functionality
+  // Packs may list items as a mapping {item_id: qty} or as a list of
+  // single-key objects [{item_id: qty}, ...] (SRD YAML style).
+  function equipmentPackItemEntries(items) {
+    const entries = [];
+    if (!items) return entries;
+    if (Array.isArray(items)) {
+      items.forEach(function(item) {
+        if (item && typeof item === 'object') {
+          if (Object.prototype.hasOwnProperty.call(item, 'item')) {
+            entries.push([String(item.item), item.qty != null ? item.qty : 1]);
+            return;
+          }
+          const keys = Object.keys(item);
+          if (!keys.length) return;
+          const itemName = keys[0];
+          entries.push([itemName, item[itemName]]);
+        } else if (item) {
+          entries.push([String(item), 1]);
+        }
+      });
+      return entries;
+    }
+    if (typeof items === 'object') {
+      Object.keys(items).forEach(function(itemName) {
+        entries.push([itemName, items[itemName]]);
+      });
+    }
+    return entries;
+  }
+
   function setupEquipmentPackPreview() {
     const packSelect = document.getElementById('equipment_pack');
     const previewPanel = document.getElementById('equipment_pack_preview');
@@ -1408,24 +1438,14 @@
       
       // Build items list
       previewItems.innerHTML = '';
-      
-      if (pack.items && Array.isArray(pack.items)) {
-        pack.items.forEach(item => {
-          const li = document.createElement('li');
-          li.className = 'preview-item';
-          
-          // Handle both object format {item_name: qty} and string format
-          if (typeof item === 'object') {
-            const itemName = Object.keys(item)[0];
-            const qty = item[itemName];
-            li.innerHTML = `<span class="item-name">${itemName.replace(/_/g, ' ')}</span> <span class="item-qty">×${qty}</span>`;
-          } else {
-            li.textContent = item.replace(/_/g, ' ');
-          }
-          
-          previewItems.appendChild(li);
-        });
-      }
+      equipmentPackItemEntries(pack.items).forEach(function(pair) {
+        const itemName = pair[0];
+        const qty = pair[1];
+        const li = document.createElement('li');
+        li.className = 'preview-item';
+        li.innerHTML = `<span class="item-name">${String(itemName).replace(/_/g, ' ')}</span> <span class="item-qty">×${qty}</span>`;
+        previewItems.appendChild(li);
+      });
       
       // Show preview panel
       previewPanel.style.display = 'block';

@@ -13,10 +13,21 @@ from typing import Iterator, Optional
 
 from webapp.tts.base import TTSEngine, VoiceConfig
 from webapp.tts.cosyvoice_provider import CosyVoiceProvider, MockCosyVoiceProvider
+from webapp.tts.elevenlabs_bake import ElevenLabsBakeProvider, MockElevenLabsBakeProvider
 from webapp.tts.openvoice_provider import OpenVoiceTTSProvider
 from webapp.tts.qwen3_provider import MockQwen3Provider, Qwen3TTSProvider
 from webapp.tts.qwen3_vllm_provider import MockQwen3VLLMProvider, Qwen3VLLMProvider
 from webapp.tts.voice_profile import VoiceProfile
+
+# YAML ``voice.provider: qwen3`` means the Qwen3 family, not a second GPU engine.
+# When the process is already on a Qwen3 backend (in-process or vLLM sidecar),
+# keep synthesis on that running provider so clone voices stay registered.
+_QWEN3_FAMILY = frozenset({
+    "qwen3",
+    "mock_qwen3",
+    "qwen3_vllm",
+    "mock_qwen3_vllm",
+})
 
 
 class TTSManager:
@@ -41,6 +52,8 @@ class TTSManager:
         "mock_qwen3": MockQwen3Provider,
         "qwen3_vllm": Qwen3VLLMProvider,
         "mock_qwen3_vllm": MockQwen3VLLMProvider,
+        "elevenlabs": ElevenLabsBakeProvider,
+        "mock_elevenlabs": MockElevenLabsBakeProvider,
     }
     
     def __init__(
@@ -66,6 +79,7 @@ class TTSManager:
         self._provider_name: str = os.environ.get("TTS_PROVIDER", "cosyvoice")
         self._auto_create_on_first_speech: bool = True
         self._npc_voice_prompts: dict[str, str] = {}  # npc_uid -> voice_prompt
+        self._npc_voice_metadata: dict[str, dict] = {}
         self._inference_lock = threading.Lock()
         self._line_cache_locks_guard = threading.Lock()
         self._line_cache_locks: dict[str, threading.Lock] = {}
@@ -90,6 +104,14 @@ class TTSManager:
         """
         # Resolve provider: explicit arg > env var > default
         resolved_provider = provider or os.environ.get("TTS_PROVIDER", "cosyvoice")
+        from webapp.tts.voice_baking import BAKE_ONLY_PROVIDERS
+
+        if str(resolved_provider).strip().lower() in BAKE_ONLY_PROVIDERS:
+            raise ValueError(
+                f"'{resolved_provider}' is a bake-only voice modeller, not a realtime "
+                "TTS engine. Set TTS_PROVIDER=qwen3_vllm (or qwen3/cosyvoice) and "
+                f"N20_TTS_BAKE_PROVIDER={resolved_provider}."
+            )
         self._provider_name = resolved_provider
         engine_class = self.PROVIDERS.get(resolved_provider)
         if not engine_class:
@@ -141,9 +163,42 @@ class TTSManager:
         engine.initialize()
         return engine
 
+    def _resolve_runtime_provider(self, provider_name: Optional[str] = None) -> str:
+        """Map NPC YAML provider tags onto the process-wide TTS backend."""
+        from webapp.tts.voice_baking import BAKE_ONLY_PROVIDERS
+
+        requested = (provider_name or "").strip().lower()
+        active = (self._provider_name or "").strip().lower()
+        if requested in BAKE_ONLY_PROVIDERS:
+            return active or "qwen3_vllm"
+        if not requested:
+            return active or "cosyvoice"
+        if requested == active:
+            return active
+        if requested in _QWEN3_FAMILY and active in _QWEN3_FAMILY:
+            return active
+        return requested
+
+    def _resolve_bake_provider(self, provider_override: Optional[str] = None) -> str:
+        """Engine that synthesizes reference clips (may differ from runtime TTS)."""
+        from webapp.tts.voice_baking import BAKE_ONLY_PROVIDERS, bake_provider_name
+
+        requested = (provider_override or bake_provider_name() or "").strip().lower()
+        if requested in ("cosyvoice", "mock_cosyvoice") or requested in BAKE_ONLY_PROVIDERS:
+            return requested
+        if requested:
+            return self._resolve_runtime_provider(requested)
+        return self._resolve_runtime_provider(self._provider_name)
+
     def get_engine_for_provider(self, provider_name: Optional[str] = None) -> TTSEngine:
         """Return the engine for a provider, creating secondary engines on demand."""
-        name = (provider_name or self._provider_name or "").strip().lower()
+        from webapp.tts.voice_baking import BAKE_ONLY_PROVIDERS
+
+        raw = (provider_name or "").strip().lower()
+        if raw in BAKE_ONLY_PROVIDERS or raw in ("cosyvoice", "mock_cosyvoice"):
+            name = raw
+        else:
+            name = self._resolve_runtime_provider(provider_name)
         if not name or name == self._provider_name:
             return self.get_engine()
         if name not in self._extra_engines:
@@ -226,7 +281,9 @@ class TTSManager:
         """
         from webapp.tts.voice_resolver import resolve_voice_plan
 
-        provider = (profile.provider or self._provider_name or "cosyvoice").strip().lower()
+        provider = self._resolve_runtime_provider(
+            profile.provider or self._provider_name or "cosyvoice"
+        )
         engine = self.get_engine_for_provider(provider)
         plan = resolve_voice_plan(profile, provider, engine=engine)
 
@@ -255,35 +312,54 @@ class TTSManager:
         provider_override: Optional[str] = None,
     ) -> Optional[str]:
         """Bake a stable reference WAV for an NPC profile when supported."""
-        from webapp.tts.voice_baking import should_bake_voice_profile, voice_sample_path
+        from webapp.tts.voice_baking import (
+            discover_baked_sample,
+            should_bake_voice_profile,
+            voice_profile_needs_refresh,
+        )
 
+        stale = voice_profile_needs_refresh(profile)
         if not should_bake_voice_profile(profile) and not force:
-            return profile.reference_audio
+            return profile.reference_audio or discover_baked_sample(
+                profile.campaign_root, profile.npc_uid
+            )
         if not profile.campaign_root:
             raise ValueError(f"Cannot bake voice for {profile.npc_uid}: missing campaign_root")
-        sample = voice_sample_path(profile.campaign_root, profile.npc_uid)
-        if sample and sample.is_file() and not force:
-            return str(sample)
-        if force and sample and sample.is_file():
-            sample.unlink()
+        existing = discover_baked_sample(profile.campaign_root, profile.npc_uid)
+        if existing and not force and not stale:
+            return existing
+        if force or stale:
+            from webapp.tts.voice_baking import voice_sample_paths_for_stem
 
-        provider = (
-            provider_override
-            or profile.provider
-            or self._provider_name
-            or "qwen3"
-        ).strip().lower()
+            samples_dir = Path(profile.campaign_root) / "assets" / "voice_samples"
+            for candidate in voice_sample_paths_for_stem(samples_dir, profile.npc_uid):
+                if candidate.is_file():
+                    candidate.unlink()
+
+        provider = self._resolve_bake_provider(provider_override)
         engine = self.get_engine_for_provider(provider)
         baker = getattr(engine, "bake_voice_sample", None)
         if not callable(baker):
             raise RuntimeError(f"TTS provider '{provider}' does not support voice baking")
         language = profile.language or "en"
-        return baker(
-            profile.npc_uid,
-            profile.design_prompt(),
-            language=language,
-            campaign_root=profile.campaign_root,
-        )
+        kwargs = {
+            "language": language,
+            "campaign_root": profile.campaign_root,
+            "gender": profile.gender,
+        }
+        try:
+            return baker(
+                profile.npc_uid,
+                profile.design_prompt(),
+                accent=profile.accent,
+                **kwargs,
+            )
+        except TypeError:
+            return baker(
+                profile.npc_uid,
+                profile.design_prompt(),
+                **kwargs,
+            )
 
     def generate_for_profile(
         self,
@@ -296,7 +372,9 @@ class TTSManager:
         output_path: Optional[str] = None,
     ) -> str:
         """Generate speech using the engine selected by the NPC profile."""
-        provider = (profile.provider or self._provider_name or "cosyvoice").strip().lower()
+        provider = self._resolve_runtime_provider(
+            profile.provider or self._provider_name or "cosyvoice"
+        )
         engine = self.get_engine_for_provider(provider)
         self._ensure_voice_locked_for_engine(engine, profile.npc_uid, profile.prompt)
         return self._call_engine_generate(
@@ -329,12 +407,25 @@ class TTSManager:
             config.extra_metadata["language"] = language
         return True
     
+    def _voice_create_kwargs(self, npc_uid: str, voice_prompt: str) -> dict:
+        meta = dict(self._npc_voice_metadata.get(npc_uid) or {})
+        kwargs: dict = {
+            "npc_uid": npc_uid,
+            "voice_prompt": voice_prompt,
+        }
+        if meta:
+            kwargs["voice_metadata"] = meta
+            ref_audio = meta.get("reference_audio")
+            if ref_audio:
+                kwargs["reference_audio"] = ref_audio
+        return kwargs
+
     def _ensure_voice_locked(self, engine: TTSEngine, npc_uid: str) -> None:
         if npc_uid in engine.list_locked_voices():
             return
         voice_prompt = self._npc_voice_prompts.get(npc_uid)
         if voice_prompt and self._auto_create_on_first_speech:
-            engine.create_voice(npc_uid=npc_uid, voice_prompt=voice_prompt)
+            engine.create_voice(**self._voice_create_kwargs(npc_uid, voice_prompt))
             return
         raise ValueError(
             f"No voice locked for NPC '{npc_uid}' and no voice prompt registered. "
@@ -351,7 +442,7 @@ class TTSManager:
             return
         prompt = voice_prompt or self._npc_voice_prompts.get(npc_uid)
         if prompt and self._auto_create_on_first_speech:
-            engine.create_voice(npc_uid=npc_uid, voice_prompt=prompt)
+            engine.create_voice(**self._voice_create_kwargs(npc_uid, prompt))
             return
         raise ValueError(
             f"No voice locked for NPC '{npc_uid}' on provider engine. "
@@ -856,13 +947,21 @@ class TTSManager:
             concurrent=pipeline_concurrent_enabled(),
         )
     
-    def register_voice_prompt(self, npc_uid: str, voice_prompt: str) -> None:
+    def register_voice_prompt(
+        self,
+        npc_uid: str,
+        voice_prompt: str,
+        *,
+        metadata: Optional[dict] = None,
+    ) -> None:
         """
         Register a voice prompt for an NPC.
         
         This allows auto-creation of voices on first speech.
         """
         self._npc_voice_prompts[npc_uid] = voice_prompt
+        if metadata:
+            self._npc_voice_metadata[npc_uid] = dict(metadata)
     
     def list_locked_voices(self) -> list[str]:
         """Return all NPC UIDs that have locked voices."""

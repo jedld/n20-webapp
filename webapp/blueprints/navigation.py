@@ -48,6 +48,7 @@ from natural20.web.stack_renderer import build_stack_render_layers, stack_for_ma
 
 from .helpers.auth_utils import logged_in, session_username, user_role
 from .helpers.pvp import pvp_team_config
+from .helpers.map_sets import map_sets_payload
 from .helpers.runtime_state import (
     get_current_game,
     get_game_session,
@@ -307,7 +308,9 @@ def index():
         print("not logged in")
         return redirect(url_for('auth.login'))
 
+    _t_index = time.perf_counter()
     current_game.ensure_user_entities_spawned(session['username'])
+    spawn_ms = (time.perf_counter() - _t_index) * 1000.0
 
     if 'dm' not in user_role():
         user_entities = entities_controlled_by(session['username'])
@@ -337,9 +340,13 @@ def index():
         rendered_pov_entities = render_pov_entities()
     _sync_stack_pov_to_view_map(current_game, battle_map, rendered_pov_entities)
 
+    render_metrics = {}
+    _t_render = time.perf_counter()
     stack_layers, my_2d_array = _render_tiles_for_user(
         current_game, battle_map, battle, map_padding, rendered_pov_entities, logger=logger,
+        metrics=render_metrics,
     )
+    render_ms = (time.perf_counter() - _t_render) * 1000.0
     display_map = _stack_display_map(current_game, battle_map)
     stack_underlay_mode = _stack_underlay_mode(stack_layers)
     stack_composite = _stack_composite_mode(stack_layers)
@@ -375,7 +382,8 @@ def index():
         except Exception:
             pass
     portrait_ctx = build_portrait_render_context(current_game, session['username'], user_role())
-    return render_template(
+    _t_tpl = time.perf_counter()
+    response = render_template(
         'index.html',
         tiles=my_2d_array,
         stack_layers=stack_layers,
@@ -402,6 +410,7 @@ def index():
         top_offset_px=top_offset_px,
         left_offset_px=left_offset_px,
         available_maps=available_maps,
+        map_sets=map_sets_payload(current_game, getattr(battle_map, 'name', None)),
         user_entity_ids=[e.entity_uid for e in entities_controlled_by(session['username'])],
         current_pov=current_pov_entity.entity_uid if current_pov_entity else None,
         **portrait_ctx,
@@ -415,6 +424,15 @@ def index():
         special_effects_enabled=special_effects_enabled(),
         edit_mode=get_edit_mode(),
     )
+    template_ms = (time.perf_counter() - _t_tpl) * 1000.0
+    total_ms = (time.perf_counter() - _t_index) * 1000.0
+    _timing_log(
+        f"index:spawn={spawn_ms:.1f}ms render={render_ms:.1f}ms "
+        f"json_render={render_metrics.get('json_render_ms', 0):.1f}ms "
+        f"template={template_ms:.1f}ms total={total_ms:.1f}ms "
+        f"map={getattr(battle_map, 'name', '?')} mode={render_metrics.get('render_mode')}"
+    )
+    return response
 
 
 @navigation_bp.route('/command', methods=['POST'], endpoint='command')
@@ -1442,3 +1460,61 @@ def mark_note_read():
         return jsonify(error="No note_id provided"), 400
     get_current_game().read_notes.add(note_id)
     return jsonify(ok=True)
+
+
+@navigation_bp.route('/party/invite', methods=['POST'], endpoint='party_invite')
+def party_invite():
+    """Invite an adjacent NPC to join the party (LLM accept) or DM-force join."""
+    if not logged_in():
+        return jsonify(error='Not logged in'), 401
+    data = request.get_json(silent=True) or {}
+    entity_uid = data.get('entity_uid') or data.get('entity_id')
+    force = bool(data.get('force'))
+    if not entity_uid:
+        return jsonify(error='entity_uid is required'), 400
+    current_game = get_current_game()
+    game_session = get_game_session()
+    username = session.get('username')
+    entity = current_game.get_entity_by_uid(entity_uid)
+    if entity is None:
+        return jsonify(error='Entity not found'), 404
+    from webapp.blueprints.helpers.sidekick_control import can_invite_entity, join_party_and_control
+    from webapp.blueprints.helpers.template_globals import within_talking_distance
+    if not can_invite_entity(game_session, entity):
+        return jsonify(error='That creature cannot join the party'), 400
+    is_dm = 'dm' in user_role()
+    if not is_dm and not within_talking_distance(entity_uid):
+        return jsonify(error='You must be nearby to invite them'), 400
+    if force and not is_dm:
+        return jsonify(error='Only the DM can force a join'), 403
+    if force:
+        join_party_and_control(entity, [username] if username else [])
+        try:
+            current_game.bump_render_epoch(username=username)
+            get_socketio().emit('message', {'type': 'refresh_map'})
+        except Exception:
+            pass
+        return jsonify(success=True, joined=True, entity_uid=entity_uid)
+    speaker = current_game.get_pov_entity_for_user(username)
+    if speaker is None:
+        return jsonify(error='Select a character first'), 400
+    from .helpers.runtime_state import get_conversation_service
+    svc = get_conversation_service()
+    if svc is None:
+        join_party_and_control(entity, [username] if username else [])
+        return jsonify(success=True, joined=True, entity_uid=entity_uid, note='joined without LLM')
+    payload, status = svc.talk_response(
+        {
+            'entity_id': speaker.entity_uid,
+            'targets': [entity_uid],
+            'message': (
+                '*invites you to join the adventuring party as a companion. '
+                'If you accept, include [JOIN_PARTY] in your reply. '
+                'If you decline, refuse in character without that tag.*'
+            ),
+            'volume': 'normal',
+        },
+        '',
+        requesting_username=username,
+    )
+    return jsonify(payload), status

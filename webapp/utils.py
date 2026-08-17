@@ -2067,6 +2067,11 @@ class GameManagement:
         except Exception:
             pass
 
+        try:
+            self._setup_controllers()
+        except Exception:
+            pass
+
 
     def end_current_battle(self):
         battle = self.get_current_battle()

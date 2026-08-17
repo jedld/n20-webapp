@@ -62,7 +62,15 @@ def iter_dialog_npcs(game) -> List[Entity]:
     seen: Set[str] = set()
     npcs: List[Entity] = []
     maps = getattr(game, 'maps', None) or {}
+    session = getattr(game, 'game_session', None)
+    active = getattr(session, 'active_map_set', None) if session is not None else None
     for battle_map in maps.values():
+        if active and session is not None:
+            try:
+                if session.map_set_for(getattr(battle_map, 'name', None)) != active:
+                    continue
+            except Exception:
+                pass
         try:
             entities = list(battle_map.entities)
         except Exception:
@@ -352,7 +360,9 @@ def build_long_rest_system_context(
             speaker=partner,
         )
     else:
-        system_prompt = conversation_service.build_npc_identity_prompt(entity, prompt_template)
+        system_prompt = conversation_service.build_npc_identity_prompt(
+            entity, prompt_template, speaker=partner,
+        )
     system_prompt += rag_handler.npc_recap_context_block(entity)
     return system_prompt
 

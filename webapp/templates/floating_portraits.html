@@ -2,7 +2,7 @@
 <div class="portrait-quick-actions hover-only" aria-label="Portrait actions">
   <button type="button"
           class="portrait-quick-action"
-          title="Character sheet{% if entity.__class__.__name__ == 'PlayerCharacter' %} &amp; journal{% endif %}"
+          title="{% if entity.is_npc() %}Stat block{% else %}Character sheet{% if entity.__class__.__name__ == 'PlayerCharacter' %} &amp; journal{% endif %}{% endif %}"
           data-portrait-action="character-sheet"
           data-entity-uid="{{ entity.entity_uid }}">
     <img src="{{ url_for('static', filename='info.png') }}"
@@ -88,7 +88,7 @@
 {% else %}
 {% for entity in pov_entities %}
 {% set index = loop.index0 %}
-<div class="floating-entity-portrait {{ 'current-pov' if entity == current_pov_entity else '' }} {{ 'dead' if entity.dead() else '' }}" data-id="{{ entity.entity_uid }}" style="position: fixed; left: {{ 10 + index * 110 }}px; cursor: pointer; z-index: 9999;">
+<div class="floating-entity-portrait {{ 'current-pov' if entity == current_pov_entity else '' }} {{ 'dead' if entity.dead() else '' }}" data-id="{{ entity.entity_uid }}" style="position: fixed; left: {{ 10 + index * 110 }}px; cursor: pointer;">
     <div class="portrait-image-wrap">
     <img src="{{ url_for('static', filename='assets/' ~ entity.profile_image()) }}"
          alt="{{ entity.name }}"

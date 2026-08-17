@@ -390,8 +390,13 @@ class TestCosyVoiceProviderInterface:
 
     def test_create_voice_uses_default_reference_when_available(self, provider, monkeypatch):
         """Without explicit reference, CosyVoice uses the bundled sample clip."""
-        default_ref = Path(__file__).resolve().parents[2] / "third_party" / "CosyVoice" / "asset" / "zero_shot_prompt.wav"
-        if not default_ref.exists():
+        default_ref = None
+        for root in CosyVoiceProvider._cosyvoice_checkout_roots():
+            candidate = root / "asset" / "zero_shot_prompt.wav"
+            if candidate.is_file():
+                default_ref = candidate
+                break
+        if default_ref is None:
             with pytest.raises(ValueError, match="reference audio"):
                 provider.create_voice("npc_test", "Test voice")
             return
@@ -462,6 +467,15 @@ class TestCosyVoiceProviderInterface:
     def test_default_emotion(self):
         """Test DEFAULT_EMOTION is set."""
         assert CosyVoiceProvider.DEFAULT_EMOTION == "calm"
+
+    def test_default_reference_audio_finds_repo_checkout(self, tmp_path):
+        """Prompt WAVs live under the monorepo third_party/, not n20-webapp/."""
+        roots = CosyVoiceProvider._cosyvoice_checkout_roots()
+        assert any(root.name == "CosyVoice" and (root / "asset").is_dir() for root in roots)
+        provider = CosyVoiceProvider(device="cpu", cache_dir=str(tmp_path / "tts"))
+        ref = provider._default_reference_audio("male")
+        assert ref and Path(ref).is_file()
+        assert ref.endswith(".wav")
 
     def test_accent_instruct_british(self, provider):
         """British accent should produce an English instruct clause."""
@@ -540,6 +554,107 @@ class TestCosyVoiceProviderInterface:
         assert config.extra_metadata.get("accent") == "british"
         assert config.extra_metadata.get("language") == "en"
         assert provider._resolve_voice_accent(config) == "british"
+        assert config.extra_metadata.get("prompt_text") == CosyVoiceProvider.DEFAULT_PROMPT_TEXT
+
+    def test_english_cross_lingual_text_keeps_spoken_line_after_endofprompt(self, provider):
+        provider._model_version = "v3"
+        instruct = provider._format_cosyvoice3_instruct(
+            "calm", accent="eastern european", language="en"
+        )
+        spoken = "I speak these words slowly and clearly, just as I always speak."
+        tagged = provider._cross_lingual_tts_text(spoken, instruct)
+        preamble, line = tagged.split("<|endofprompt|>", 1)
+        assert preamble.startswith("You are a helpful assistant.")
+        assert "Eastern European" in preamble
+        assert line == spoken
+
+    def test_english_zero_shot_instruct_is_short(self, provider):
+        text = provider._english_zero_shot_instruct("eastern european", "en")
+        assert text.startswith("You are a helpful assistant.")
+        assert "Eastern European" in text
+        assert "vampire" not in text.lower()
+        assert len(text) < 180
+        instruct = provider._format_cosyvoice3_instruct(
+            "calm", accent="eastern european", language="en"
+        )
+        zs = provider._zero_shot_prompt_text(instruct, CosyVoiceProvider.DEFAULT_PROMPT_TEXT)
+        preamble, transcript = zs.split("<|endofprompt|>", 1)
+        assert "Eastern European" in preamble
+        assert transcript == CosyVoiceProvider.DEFAULT_PROMPT_TEXT
+
+    def test_english_invoke_uses_zero_shot_not_instruct2(self, provider, monkeypatch):
+        provider._model_version = "v3"
+        calls = []
+        monkeypatch.setattr(
+            provider,
+            "_bundled_zero_shot_prompt_wav",
+            lambda: "/tmp/zero_shot_prompt.wav",
+        )
+
+        class FakeCosy:
+            def inference_cross_lingual(self, text, prompt_wav, stream=False):
+                calls.append(("cross_lingual", text, prompt_wav, stream))
+                return iter(())
+
+            def inference_instruct2(self, text, instruct_text, prompt_wav, stream=False):
+                calls.append(("instruct2", text, instruct_text, prompt_wav, stream))
+                return iter(())
+
+            def inference_zero_shot(self, text, prompt_text, prompt_wav, stream=False):
+                calls.append(("zero_shot", text, prompt_text, prompt_wav, stream))
+                return iter(())
+
+        provider._cosyvoice = FakeCosy()
+        instruct = provider._english_zero_shot_instruct("british", "en")
+        spoken = "Good afternoon. Welcome to the garden party."
+        list(
+            provider._invoke_cosyvoice(
+                text=spoken,
+                prompt_wav="/tmp/cross_lingual_prompt.wav",
+                prompt_text=CosyVoiceProvider.DEFAULT_PROMPT_TEXT,
+                instruct_text=instruct,
+                language="en",
+                accent="british",
+                stream=False,
+                use_style_instruct=True,
+            )
+        )
+        assert calls and calls[0][0] == "zero_shot"
+        assert calls[0][1] == spoken
+        assert CosyVoiceProvider.DEFAULT_PROMPT_TEXT in calls[0][2]
+        assert "British English" in calls[0][2]
+        assert "vampire" not in calls[0][2].lower()
+        assert len(calls[0][2]) < 250
+        assert calls[0][3] == "/tmp/zero_shot_prompt.wav"
+        assert not any(name == "instruct2" for name, *_ in calls)
+
+    def test_chinese_invoke_uses_instruct2(self, provider):
+        provider._model_version = "v3"
+        calls = []
+
+        class FakeCosy:
+            def inference_cross_lingual(self, text, prompt_wav, stream=False):
+                calls.append(("cross_lingual", text))
+                return iter(())
+
+            def inference_instruct2(self, text, instruct_text, prompt_wav, stream=False):
+                calls.append(("instruct2", text, instruct_text))
+                return iter(())
+
+        provider._cosyvoice = FakeCosy()
+        list(
+            provider._invoke_cosyvoice(
+                text="你好",
+                prompt_wav="/tmp/zero_shot_prompt.wav",
+                prompt_text=CosyVoiceProvider.DEFAULT_PROMPT_TEXT,
+                instruct_text="You are a helpful assistant. 请用广东话表达。<|endofprompt|>",
+                language="zh",
+                accent="cantonese",
+                stream=False,
+                use_style_instruct=True,
+            )
+        )
+        assert calls and calls[0][0] == "instruct2"
 
 
 class TestCosyVoiceProviderFallback:

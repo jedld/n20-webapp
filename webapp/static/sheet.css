@@ -1463,14 +1463,19 @@ table .tile-item {
 }
 
 .dnd-list-mod.auto-die-roll,
-.dnd-stat-value.auto-die-roll {
+.dnd-stat-value.auto-die-roll,
+.stat-block-mod.auto-die-roll,
+.stat-block-skill.auto-die-roll {
     display: inline-flex;
     align-items: center;
     padding: 0;
+    overflow: visible;
 }
 
 .dnd-list-mod.auto-die-roll .die-roll-toggle,
-.dnd-stat-value.auto-die-roll .die-roll-toggle {
+.dnd-stat-value.auto-die-roll .die-roll-toggle,
+.stat-block-mod.auto-die-roll .die-roll-toggle,
+.stat-block-skill.auto-die-roll .die-roll-toggle {
     width: 16px;
     height: 16px;
     margin-left: 3px;
@@ -1479,7 +1484,11 @@ table .tile-item {
 }
 
 .dnd-list-mod.auto-die-roll .die-roll-toggle:hover,
-.dnd-stat-value.auto-die-roll .die-roll-toggle:hover {
+.dnd-stat-value.auto-die-roll .die-roll-toggle:hover,
+.stat-block-mod.auto-die-roll .die-roll-toggle:hover,
+.stat-block-mod.auto-die-roll .die-roll-toggle:focus,
+.stat-block-skill.auto-die-roll .die-roll-toggle:hover,
+.stat-block-skill.auto-die-roll .die-roll-toggle:focus {
     background: #4a2f19;
     color: #fff8dc;
 }
@@ -1496,6 +1505,60 @@ table .tile-item {
     gap: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     z-index: 5;
+}
+
+/* Compact roll UI is an overlay so it does not stretch table cells or ability boxes. */
+.auto-die-roll[data-compact] .die-roll-component {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 50%;
+    transform: translateX(-50%);
+    margin: 0;
+    padding: 4px 6px;
+    white-space: nowrap;
+    z-index: 40;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+}
+
+.auto-die-roll[data-compact] .die-roll-component.is-open {
+    display: flex;
+}
+
+.auto-die-roll[data-compact]:has(.die-roll-component.is-open) {
+    z-index: 41;
+}
+
+.auto-die-roll[data-compact] .die-roll-component .roll-mode {
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.auto-die-roll[data-compact] .rollable-die {
+    padding: 3px 6px;
+    font-size: 11px;
+}
+
+.dnd-ability-mod.auto-die-roll .die-roll-component {
+    left: 0;
+    transform: none;
+}
+
+.stat-block-abilities,
+.stat-block-abilities th,
+.stat-block-abilities td {
+    overflow: visible;
+}
+
+.stat-block-abilities td:first-child .auto-die-roll .die-roll-component {
+    left: 0;
+    transform: none;
+}
+
+.stat-block-abilities td:last-child .auto-die-roll .die-roll-component {
+    left: auto;
+    right: 0;
+    transform: none;
 }
 
 .rollable-die {
@@ -2490,5 +2553,249 @@ body.item-card-open {
 
     .item-card-badges {
         justify-content: center;
+    }
+}
+
+/* ----- D&D 5e creature stat block (NPC sheets) ----- */
+.sheet.sheet-npc {
+    max-width: 720px;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 8px;
+}
+
+.sheet.sheet-npc-restricted {
+    max-width: 480px;
+}
+
+.stat-block {
+    font-family: 'Noto Serif', 'Palatino Linotype', Palatino, 'Times New Roman', serif;
+    background: #fdf1dc;
+    color: #1a0a00;
+    border: 1px solid #7a200d;
+    box-shadow: 0 0 6px rgba(122, 32, 13, 0.35);
+    padding: 10px 14px 16px;
+}
+
+.stat-block-header {
+    display: grid;
+    grid-template-columns: 88px 1fr;
+    gap: 12px;
+    align-items: start;
+}
+
+.stat-block-portrait img,
+.npc-public-portrait img {
+    width: 88px;
+    height: 88px;
+    object-fit: cover;
+    border: 2px solid #7a200d;
+    background: #efe4c8;
+}
+
+.stat-block-portrait .sheet-image-gallery,
+.npc-public-portrait .sheet-image-gallery {
+    margin-top: 6px;
+    gap: 4px;
+}
+
+.stat-block-portrait .sheet-image-thumb img,
+.npc-public-portrait .sheet-image-thumb img {
+    width: 28px;
+    height: 28px;
+}
+
+.stat-block-name,
+.npc-public-name {
+    font-family: 'Libre Baskerville', 'Palatino Linotype', Palatino, serif;
+    font-size: 26px;
+    font-variant: small-caps;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #7a200d;
+    margin: 0 0 2px;
+    border: 0;
+    text-transform: none;
+    line-height: 1.15;
+}
+
+.stat-block-sub {
+    font-size: 12px;
+    color: #7a200d;
+    font-style: italic;
+    margin-bottom: 2px;
+}
+
+.stat-block-meta {
+    font-size: 14px;
+    font-style: italic;
+    color: #1a0a00;
+    margin: 0;
+}
+
+.stat-block-bar {
+    height: 5px;
+    background: linear-gradient(90deg, #7a200d 0%, #c9ad6a 50%, #7a200d 100%);
+    margin: 8px 0;
+    border-radius: 2px;
+}
+
+.stat-block-prop {
+    margin: 0 0 2px;
+    font-size: 14px;
+    line-height: 1.35;
+}
+
+.stat-block-prop strong {
+    color: #7a200d;
+    font-weight: 700;
+}
+
+.stat-block-challenge {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.stat-block-abilities {
+    width: 100%;
+    margin: 4px 0;
+    border-collapse: separate;
+    border-spacing: 0;
+    table-layout: fixed;
+    overflow: visible;
+}
+
+.stat-block-abilities th,
+.stat-block-abilities td {
+    border: none;
+    background: transparent;
+    text-align: center;
+    padding: 2px 4px;
+    color: #7a200d;
+}
+
+.stat-block-abilities th {
+    font-size: 12px;
+    letter-spacing: 1px;
+    font-weight: 700;
+}
+
+.stat-block-score {
+    display: block;
+    font-size: 16px;
+    font-weight: 700;
+    color: #1a0a00;
+}
+
+.stat-block-mod {
+    font-size: 12px;
+    color: #4a2f19;
+    cursor: pointer;
+}
+
+.stat-block-skill {
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.stat-block-heading {
+    font-family: 'Libre Baskerville', Palatino, serif;
+    font-size: 20px;
+    font-variant: small-caps;
+    color: #7a200d;
+    border-bottom: 1px solid #7a200d;
+    margin: 10px 0 6px;
+    padding: 0;
+    letter-spacing: 0.5px;
+    text-transform: none;
+}
+
+.stat-block-trait {
+    margin: 0 0 6px;
+    font-size: 13.5px;
+    line-height: 1.4;
+}
+
+.stat-block-trait strong em {
+    font-style: italic;
+    font-weight: 700;
+    color: #1a0a00;
+}
+
+.stat-block-spell-list {
+    margin: 0 0 8px 1.1em;
+    padding: 0;
+    font-size: 13.5px;
+    line-height: 1.4;
+}
+
+.stat-block-spell-list li {
+    margin: 0 0 2px;
+}
+
+.stat-block-condition {
+    display: inline-block;
+    margin: 0 4px 2px 0;
+    padding: 1px 6px;
+    border: 1px solid #7a200d;
+    border-radius: 3px;
+    font-size: 12px;
+}
+
+.stat-block-death {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    margin: 6px 0;
+    color: #7a200d;
+}
+
+.stat-block-rest {
+    margin: 8px 0 0;
+}
+
+.stat-block .hp-editable {
+    width: 56px;
+    background: #fff8e8;
+    border-color: #c9ad6a;
+}
+
+.npc-public-card {
+    font-family: 'IM Fell English', Palatino, serif;
+    background: #fdf1dc;
+    border: 1px solid #7a200d;
+    padding: 18px 16px 22px;
+    text-align: center;
+}
+
+.npc-public-portrait img {
+    width: 180px;
+    height: 180px;
+    object-fit: cover;
+}
+
+.npc-public-name {
+    margin-top: 12px;
+}
+
+.npc-public-description {
+    text-align: left;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 2px solid #c9ad6a;
+    color: #2e2e2e;
+    font-size: 15px;
+    line-height: 1.5;
+}
+
+@media (max-width: 560px) {
+    .stat-block-header {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        text-align: center;
     }
 }

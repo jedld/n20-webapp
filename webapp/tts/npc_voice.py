@@ -11,7 +11,8 @@ Voice config format in NPC YAML:
       gender: female      # optional duplicate inside voice for tooling
       age: elderly        # optional: young|mature|adult|elderly
       style: "lazy"
-      accent: "british"   # CosyVoice instruct accent (american, british, romanian, ...)
+      accent: "british"   # british, irish, eastern european, romanian, ...
+                          # CosyVoice Instruct2 (runtime or bake); Qwen3 locks accent into the baked WAV
       language: "en"      # optional language hint (en, zh, ...)
       reference_audio: null  # or path to custom voice sample
       locked: true
@@ -329,15 +330,56 @@ def build_voice_profile_from_entity(
 def ensure_npc_voice_locked(tts_manager, entity, *, npc_yaml_dir: Optional[str] = None) -> Optional[VoiceProfile]:
     """
     Register and lock an NPC voice if needed. Returns the VoiceProfile or None.
+
+    Re-locks (and re-registers with Qwen3/vLLM) when the YAML voice profile or
+    on-disk sample no longer matches the last stamp.
     """
     if tts_manager is None or not getattr(tts_manager, 'is_enabled', lambda: False)():
         return None
     profile = build_voice_profile_from_entity(entity, npc_yaml_dir=npc_yaml_dir)
     if not profile.npc_uid:
         return None
+
+    from webapp.tts.voice_baking import (
+        sample_source_for_profile,
+        save_voice_profile_state,
+        should_bake_voice_profile,
+        voice_profile_fingerprint,
+        voice_profile_needs_refresh,
+    )
+
     locked = set(tts_manager.list_locked_voices() or [])
+    locked_config = None
+    try:
+        engine = tts_manager.get_engine()
+        locked_config = getattr(engine, '_voice_registry', {}).get(profile.npc_uid)
+    except Exception:
+        locked_config = None
+
+    needs_refresh = voice_profile_needs_refresh(profile, locked_config=locked_config)
+    if needs_refresh and profile.npc_uid in locked:
+        try:
+            tts_manager.remove_voice(profile.npc_uid)
+        except Exception:
+            pass
+        locked.discard(profile.npc_uid)
+
+    if needs_refresh and should_bake_voice_profile(profile):
+        baker = getattr(tts_manager, 'bake_voice_for_profile', None)
+        if callable(baker):
+            try:
+                baked = baker(profile, force=True)
+                if baked:
+                    profile.reference_audio = baked
+            except Exception:
+                pass
+
     if profile.npc_uid not in locked:
-        tts_manager.register_voice_prompt(profile.npc_uid, profile.prompt)
+        tts_manager.register_voice_prompt(
+            profile.npc_uid,
+            profile.prompt,
+            metadata=profile.to_metadata(),
+        )
         creator = getattr(tts_manager, 'create_voice_from_profile', None)
         if callable(creator):
             creator(profile)
@@ -350,6 +392,13 @@ def ensure_npc_voice_locked(tts_manager, entity, *, npc_yaml_dir: Optional[str] 
                 language=profile.language,
                 voice_metadata=profile.to_metadata(),
             )
+        save_voice_profile_state(
+            profile.campaign_root,
+            profile.npc_uid,
+            fingerprint=voice_profile_fingerprint(profile),
+            audio_path=profile.reference_audio,
+            source=sample_source_for_profile(profile, profile.reference_audio),
+        )
     else:
         try:
             tts_manager.update_voice_options(
@@ -367,6 +416,7 @@ def ensure_npc_voice_locked(tts_manager, entity, *, npc_yaml_dir: Optional[str] 
                 config.extra_metadata = config.extra_metadata or {}
                 config.extra_metadata['profile'] = profile.to_metadata()
                 config.extra_metadata['design_prompt'] = profile.design_prompt()
+                config.extra_metadata['profile_fingerprint'] = voice_profile_fingerprint(profile)
         except Exception:
             pass
     return profile

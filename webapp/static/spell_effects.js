@@ -4226,6 +4226,66 @@
   });
   register('perception', function(payload){ return play('look', payload); });
 
+  register('blight', function(payload){
+    return new Promise((resolve) => {
+      const tgt = payload && payload.target ? centerOfEntity(payload.target) : null;
+      if (!tgt) return resolve();
+      const { overlay, ctx, destroy } = createOverlay(1106);
+      const t0 = performance.now();
+      const dur = 720;
+      function loop(now){
+        const t = Math.min(1, (now - t0) / dur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        const r = 18 + 42 * t;
+        const alpha = 0.55 * (1 - t);
+        const g = ctx.createRadialGradient(tgt.x, tgt.y, 0, tgt.x, tgt.y, r);
+        g.addColorStop(0, `rgba(40, 80, 30, ${alpha.toFixed(2)})`);
+        g.addColorStop(0.5, `rgba(20, 40, 15, ${(alpha * 0.7).toFixed(2)})`);
+        g.addColorStop(1, 'rgba(10, 20, 8, 0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(tgt.x, tgt.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(loop); else { destroy(); resolve(); }
+      }
+      requestAnimationFrame(loop);
+    });
+  });
+
+  function playInvisibilityCast(payload, color){
+    return new Promise((resolve) => {
+      const tgt = payload && payload.target ? centerOfEntity(payload.target) : (payload && payload.source ? centerOfEntity(payload.source) : null);
+      if (!tgt) return resolve();
+      const { overlay, ctx, destroy } = createOverlay(1107);
+      const t0 = performance.now();
+      const dur = 700;
+      function loop(now){
+        const t = Math.min(1, (now - t0) / dur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const r = 12 + 40 * t;
+        const alpha = 0.65 * (1 - t);
+        const g = ctx.createRadialGradient(tgt.x, tgt.y, 0, tgt.x, tgt.y, r);
+        g.addColorStop(0, `rgba(${color[0]},${color[1]},${color[2]},${alpha.toFixed(2)})`);
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(tgt.x, tgt.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(loop); else { destroy(); resolve(); }
+      }
+      requestAnimationFrame(loop);
+    });
+  }
+  register('invisibility', function(payload){ return playInvisibilityCast(payload, [200, 230, 255]); });
+  register('greater_invisibility', function(payload){ return playInvisibilityCast(payload, [230, 240, 255]); });
+  register('greater invisibility', function(payload){ return play('greater_invisibility', payload); });
+
   // Expose API
   global.SpellEffects = { register, play };
 })(window);

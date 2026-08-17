@@ -589,6 +589,27 @@ class ConversationService:
     def entities_controlled_by(self):
         return self._entities_controlled_by_getter()
 
+    def _party_membership_guidance(self, receiver, speaker) -> str:
+        try:
+            from natural20.sidekick import is_in_party_sidekick
+            from webapp.blueprints.helpers.sidekick_control import can_invite_entity
+            session = self.game_session
+            if is_in_party_sidekick(session, receiver):
+                return (
+                    "- You are already in this adventuring party. Do not use [JOIN_PARTY] again. "
+                    "If you leave them peacefully, include [LEAVE_PARTY] in your response. "
+                    "If you turn on them, use [GO_HOSTILE] instead.\n"
+                )
+            if can_invite_entity(session, receiver, speaker):
+                return (
+                    "- If the speaker invites you to join their adventuring party and you accept "
+                    "(you must genuinely trust them), include [JOIN_PARTY] in your response "
+                    "(optional owner=@handle). If you refuse, stay in character and do not use the tag.\n"
+                )
+            return ""
+        except Exception:
+            return ""
+
     @property
     def logins(self):
         return self._logins_getter() or []
@@ -2346,13 +2367,13 @@ class ConversationService:
             or scheduled is not None
         )
 
-    def build_npc_identity_prompt(self, receiver, conversation_system_prompt) -> str:
+    def build_npc_identity_prompt(self, receiver, conversation_system_prompt, speaker=None) -> str:
         """NPC backstory, gear, and appearance without live conversation response rules."""
         attributes = receiver.ability_scores
         attributes_str = "\n".join([f"{key}: {value}" for key, value in attributes.items()])
         gear_summary = format_entity_gear_for_conversation(receiver, self.game_session)
         appearance_summary = conversation_self_appearance(receiver, session=self.game_session)
-        return conversation_system_prompt.format(
+        prompt = conversation_system_prompt.format(
             backstory=receiver.backstory(),
             name=receiver.label(),
             attributes=attributes_str,
@@ -2361,6 +2382,16 @@ class ConversationService:
             gear=gear_summary,
             appearance=appearance_summary,
         )
+        try:
+            from webapp.npc_situational_context import in_party_sidekick_prompt_block
+            party_block = in_party_sidekick_prompt_block(
+                self.game_session, receiver, speaker=speaker,
+            )
+            if party_block:
+                prompt += "\n" + party_block
+        except Exception:
+            pass
+        return prompt
 
     def build_npc_system_prompt(
         self,
@@ -2377,7 +2408,9 @@ class ConversationService:
         message_spell_private: bool = False,
     ) -> str:
         """Format the standard NPC identity + conversation rules system prompt."""
-        system_prompt = self.build_npc_identity_prompt(receiver, conversation_system_prompt)
+        system_prompt = self.build_npc_identity_prompt(
+            receiver, conversation_system_prompt, speaker=speaker,
+        )
         try:
             from webapp.blueprints.helpers.time_of_day import world_time_prompt_block
             system_prompt += world_time_prompt_block(self.current_game)
@@ -2775,8 +2808,8 @@ class ConversationService:
             segments=reply_plan.get('segments') or [],
         )
         try:
-            self.entity_rag_handler.apply_conversation_keywords(
-                reply_plan['message'],
+            self.entity_rag_handler.apply_conversation_keywords_from_plan(
+                reply_plan,
                 receiver,
                 speaker=speaker,
                 llm_conversation_handler=llm_conversation_handler,
@@ -3066,6 +3099,7 @@ class ConversationService:
             "- You may ask someone to hand you an item with [REQUEST_ITEM: item=<item_slug>, target=speaker|@handle]. Human-controlled targets see the transfer dialog.\n"
             "- When the speaker offers to give you an item, hands something over, or otherwise signals a gift, use [ACCEPT_GIFT: target=speaker|@handle] (optional item=<item_slug> hint) to open their give-item transfer dialog. React in character first if you like.\n"
             "- If you choose violence or to attack player characters, include [GO_HOSTILE] in your response (with or without a spoken line). The server will switch you to a hostile faction and may start combat. Only use this when your character would genuinely fight.\n"
+            f"{self._party_membership_guidance(receiver, speaker)}\n"
             f"{container_serving_block}"
             f"{usable_items_block}"
             f"{inventory_containers_block}"
@@ -5172,8 +5206,8 @@ class ConversationService:
             segments=reply_plan.get('segments') or [],
         )
         try:
-            self.entity_rag_handler.apply_conversation_keywords(
-                reply_plan['message'],
+            self.entity_rag_handler.apply_conversation_keywords_from_plan(
+                reply_plan,
                 receiver,
                 speaker=speaker,
             )
@@ -5974,11 +6008,12 @@ class ConversationService:
             segments=reply_plan.get('segments') or [],
         )
         try:
-            self.entity_rag_handler.apply_conversation_keywords(
-                response,
+            self.entity_rag_handler.apply_conversation_keywords_from_plan(
+                reply_plan,
                 npc,
                 speaker=speaker_pc,
                 llm_conversation_handler=llm_conversation_handler,
+                raw_response=response,
             )
         except Exception as exc:
             self.logger.warning(

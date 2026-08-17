@@ -1,5 +1,6 @@
 """Tests for voice baking helpers and clone resolution."""
 
+import os
 from pathlib import Path
 
 from webapp.tts.voice_baking import (
@@ -59,9 +60,89 @@ def test_should_bake_when_design_and_no_reference(tmp_path):
     )
 
 
-def test_should_not_bake_when_sample_exists(tmp_path):
-    from webapp.tts.voice_profile import VoiceProfile, VoiceStrategy
+def test_discover_baked_sample_finds_mp3(tmp_path):
+    sample = tmp_path / "assets" / "voice_samples" / "mara_bartender.mp3"
+    sample.parent.mkdir(parents=True)
+    sample.write_bytes(b"ID3")
+    assert discover_baked_sample(str(tmp_path), "mara_bartender").endswith("mara_bartender.mp3")
 
+
+def test_discover_baked_sample_prefers_newer_file(tmp_path):
+    samples = tmp_path / "assets" / "voice_samples"
+    samples.mkdir(parents=True)
+    wav = samples / "mara_bartender.wav"
+    mp3 = samples / "mara_bartender.mp3"
+    wav.write_bytes(b"RIFF")
+    mp3.write_bytes(b"ID3")
+    older = wav.stat().st_mtime - 10
+    os.utime(wav, (older, older))
+    found = discover_baked_sample(str(tmp_path), "mara_bartender")
+    assert found.endswith("mara_bartender.mp3")
+
+
+def test_load_ref_text_from_mp3_sidecar(tmp_path):
+    from webapp.tts.voice_baking import load_baked_ref_text, load_ref_text_for_audio
+
+    samples = tmp_path / "assets" / "voice_samples"
+    samples.mkdir(parents=True)
+    mp3 = samples / "mara_bartender.mp3"
+    mp3.write_bytes(b"ID3")
+    (samples / "mara_bartender.ref.txt").write_text("Spoken mp3 line.", encoding="utf-8")
+    assert load_ref_text_for_audio(str(mp3)) == "Spoken mp3 line."
+    assert load_baked_ref_text(str(tmp_path), "mara_bartender") == "Spoken mp3 line."
+
+
+def test_should_not_bake_user_provided_mp3(tmp_path):
+    sample = tmp_path / "assets" / "voice_samples" / "npc-1.mp3"
+    sample.parent.mkdir(parents=True)
+    sample.write_bytes(b"ID3")
+    profile = VoiceProfile(
+        npc_uid="npc-1",
+        prompt="Warm barmaid voice",
+        strategy=VoiceStrategy.DESIGN,
+        campaign_root=str(tmp_path),
+    )
+    assert not should_bake_voice_profile(profile)
+    assert not should_bake_qwen3_design_voice(
+        resolved_strategy="design",
+        reference_audio=str(sample),
+        campaign_root=str(tmp_path),
+        npc_uid="npc-1",
+        profile=profile,
+    )
+
+
+def test_should_bake_when_profile_fingerprint_changes(tmp_path):
+    from webapp.tts.voice_baking import save_voice_profile_state
+
+    sample = tmp_path / voice_sample_relative_path("npc-1")
+    sample.parent.mkdir(parents=True)
+    sample.write_bytes(b"RIFF")
+    profile = VoiceProfile(
+        npc_uid="npc-1",
+        prompt="Warm barmaid voice",
+        strategy=VoiceStrategy.DESIGN,
+        campaign_root=str(tmp_path),
+        locked=True,
+    )
+    save_voice_profile_state(
+        str(tmp_path),
+        "npc-1",
+        fingerprint="deadbeefdeadbeef",
+        audio_path=str(sample),
+        source="baked",
+    )
+    assert should_bake_voice_profile(profile)
+    assert should_bake_qwen3_design_voice(
+        resolved_strategy="design",
+        reference_audio=None,
+        campaign_root=str(tmp_path),
+        npc_uid="npc-1",
+        profile=profile,
+    )
+
+
+def test_should_not_bake_when_sample_exists(tmp_path):
     sample = tmp_path / voice_sample_relative_path("npc-1")
     sample.parent.mkdir(parents=True)
     sample.write_bytes(b"RIFF")

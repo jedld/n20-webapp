@@ -22,7 +22,7 @@ from natural20.actions.escape_grapple_action import EscapeGrappleAction
 from natural20.actions.use_item_action import UseItemAction
 from natural20.actions.interact_action import InteractAction
 from natural20.actions.look_action import LookAction
-from natural20.actions.help_action import HelpAction
+from natural20.actions.help_action import HelpAction, HelpBonusAction
 from natural20.actions.find_familiar_action import FindFamiliarAction
 from natural20.actions.summon_familiar_action import SummonFamiliarAction
 from natural20.actions.mage_hand_action import MageHandAction
@@ -66,6 +66,7 @@ _ACTION_TYPE_MAP = {
     'LookAction': LookAction,
     'LinkedAttackAction': LinkedAttackAction,
     'HelpAction': HelpAction,
+    'HelpBonusAction': HelpBonusAction,
     'FindFamiliarAction': FindFamiliarAction,
     'SummonFamiliarAction': SummonFamiliarAction,
     'MageHandAction': MageHandAction,

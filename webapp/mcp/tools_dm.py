@@ -325,7 +325,9 @@ def register(registry: ToolRegistry) -> None:
     @tool(
         registry,
         name='dm.spawn_npc',
-        description='Spawn an NPC of `npc_type` at (x, y) on the given map. Returns the new entity uid.',
+        description='Spawn an NPC of `npc_type` at (x, y) on the given map. '
+                    'Unique NPCs already on the same map set are moved instead of duplicated. '
+                    'Returns the entity uid and whether the token was moved.',
         input_schema={
             'type': 'object',
             'required': ['npc_type', 'x', 'y'],
@@ -343,29 +345,26 @@ def register(registry: ToolRegistry) -> None:
     def spawn_npc(context: MCPContext, npc_type: str, x: int, y: int,
                   map_name: Optional[str] = None, group: str = 'b',
                   rand_life: bool = True):
+        from natural20.map_set import spawn_or_move_npc
+
         battle_map = context.resolve_map(map_name)
         if battle_map is None:
             raise tool_error(f'Map not found: {map_name}')
-        x, y = int(x), int(y)
-        if x < 0 or y < 0 or x >= battle_map.size[0] or y >= battle_map.size[1]:
-            raise tool_error('Position is outside map bounds')
-        if battle_map.entity_at(x, y):
-            raise tool_error('Position is occupied')
         try:
-            npc = context.game_session.npc(npc_type, {'rand_life': bool(rand_life)})
+            result = spawn_or_move_npc(
+                context.game_session, npc_type, battle_map, int(x), int(y),
+                group=group, rand_life=bool(rand_life),
+            )
         except FileNotFoundError:
             raise tool_error(f'NPC type "{npc_type}" not found')
+        except ValueError as exc:
+            raise tool_error(str(exc))
         except Exception as exc:
             raise tool_error(f'Failed to create NPC: {exc}')
-        battle_map.add(npc, x, y, group=group)
-        context.log_dm(f"DM spawned {npc_type} at ({x},{y}) on {battle_map.name}")
+        verb = 'moved' if result.get('moved') else 'spawned'
+        context.log_dm(f"DM {verb} {npc_type} at ({x},{y}) on {battle_map.name}")
         context.emit_refresh()
-        return {
-            'entity_uid': npc.entity_uid,
-            'npc_type': npc_type,
-            'map': battle_map.name,
-            'position': [x, y],
-        }
+        return result
 
     @tool(
         registry,
@@ -397,20 +396,26 @@ def register(registry: ToolRegistry) -> None:
                        group: str = 'b', rand_life: bool = True,
                        max_distance: int = 1,
                        include_diagonals: bool = True):
+        from natural20.map_set import spawn_or_move_npc, unique_npc_uid_for_type
+
         target, battle_map, target_pos = _resolve_target_on_map(
             context, target_entity_uid=target_entity_uid, target_name=target_name
         )
-        try:
-            npc = context.game_session.npc(npc_type, {'rand_life': bool(rand_life)})
-        except FileNotFoundError:
-            raise tool_error(f'NPC type "{npc_type}" not found')
-        except Exception as exc:
-            raise tool_error(f'Failed to create NPC: {exc}')
+        uid = unique_npc_uid_for_type(context.game_session, npc_type)
+        existing = context.game_session.entity_by_uid(uid) if uid else None
+        probe = existing
+        if probe is None:
+            try:
+                probe = context.game_session.npc(npc_type, {'rand_life': bool(rand_life)})
+            except FileNotFoundError:
+                raise tool_error(f'NPC type "{npc_type}" not found')
+            except Exception as exc:
+                raise tool_error(f'Failed to create NPC: {exc}')
 
         battle = _safe_call(lambda: context.current_game.get_current_battle())
         found = _find_nearby_placeable_position(
             battle_map,
-            npc,
+            probe,
             int(target_pos[0]),
             int(target_pos[1]),
             max_distance=max(1, int(max_distance)),
@@ -421,18 +426,32 @@ def register(registry: ToolRegistry) -> None:
             raise tool_error('No free placeable tile found near target entity')
 
         x, y = found
-        battle_map.add(npc, x, y, group=group)
+        if existing is not None:
+            try:
+                result = spawn_or_move_npc(
+                    context.game_session, npc_type, battle_map, x, y,
+                    group=group, rand_life=bool(rand_life),
+                )
+            except ValueError as exc:
+                raise tool_error(str(exc))
+        else:
+            battle_map.add(probe, x, y, group=group)
+            result = {
+                'entity_uid': probe.entity_uid,
+                'npc_type': npc_type,
+                'map': battle_map.name,
+                'position': [x, y],
+                'unique': bool(uid),
+                'moved': False,
+                'from_map': None,
+            }
+        verb = 'moved' if result.get('moved') else 'spawned'
         context.log_dm(
-            f"DM spawned {npc_type} near {target.label()} at ({x},{y}) on {battle_map.name}"
+            f"DM {verb} {npc_type} near {target.label()} at ({x},{y}) on {battle_map.name}"
         )
         context.emit_refresh()
-        return {
-            'entity_uid': npc.entity_uid,
-            'npc_type': npc_type,
-            'map': battle_map.name,
-            'position': [x, y],
-            'near': {'entity_uid': target.entity_uid, 'name': target.label()},
-        }
+        result['near'] = {'entity_uid': target.entity_uid, 'name': target.label()}
+        return result
 
     @tool(
         registry,
@@ -600,6 +619,11 @@ def register(registry: ToolRegistry) -> None:
         if ent not in (battle_map.entities or {}):
             current_map = context.map_for_entity(ent)
             if current_map is not None and current_map is not battle_map:
+                session = context.game_session
+                if session is not None and not session.same_map_set(current_map.name, battle_map.name):
+                    raise tool_error(
+                        'Cannot teleport across map sets; use Place Party or Activate Map Set'
+                    )
                 try:
                     current_map.remove(ent)
                 except Exception:
@@ -1462,6 +1486,95 @@ def register(registry: ToolRegistry) -> None:
 
     @tool(
         registry,
+        name='dm.note',
+        description='List, add, update, move, or remove DM-only map pins. '
+                    'These notes are invisible to PCs and NPCs (not landmarks). '
+                    'op: list | upsert | delete | move.',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {'type': 'string', 'enum': ['list', 'upsert', 'delete', 'move']},
+                'map_name': {'type': 'string'},
+                'note_id': {'type': 'string'},
+                'x': {'type': 'integer'},
+                'y': {'type': 'integer'},
+                'text': {'type': 'string'},
+                'title': {'type': 'string'},
+            },
+        },
+        category='dm',
+    )
+    def note(
+        context: MCPContext,
+        op: str,
+        map_name: Optional[str] = None,
+        note_id: Optional[str] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        text: Optional[str] = None,
+        title: Optional[str] = None,
+    ):
+        from natural20.dm_notes import delete_note, find_note, list_notes, move_note, upsert_note
+
+        op = (op or '').strip().lower()
+        battle_map = context.resolve_map(map_name) if map_name else context.resolve_map(None)
+        map_key = map_name or (battle_map.name if battle_map is not None else None)
+        if not map_key and op != 'delete':
+            raise tool_error('No map resolved for DM note operation')
+
+        def _notify(changed_map):
+            socketio = context.socketio
+            if socketio is None:
+                return
+            try:
+                socketio.emit('message', {'type': 'dm_notes_changed', 'map': changed_map})
+            except Exception:
+                pass
+
+        if op == 'list':
+            notes = list_notes(context.game_session, map_key)
+            return {'op': op, 'map': map_key, 'notes': notes}
+
+        if op == 'upsert':
+            try:
+                saved = upsert_note(
+                    context.game_session,
+                    map_key,
+                    x=x,
+                    y=y,
+                    text=text,
+                    title=title,
+                    note_id=note_id,
+                )
+            except ValueError as exc:
+                raise tool_error(str(exc)) from exc
+            context.log_dm(f"DM upserted map note on {map_key} at ({saved['x']},{saved['y']})")
+            _notify(map_key)
+            return {'op': op, 'map': map_key, 'note': saved}
+
+        if op == 'move':
+            try:
+                saved = move_note(context.game_session, note_id, x, y, map_name=map_key)
+            except ValueError as exc:
+                raise tool_error(str(exc)) from exc
+            context.log_dm(f"DM moved map note {saved['id']} to ({saved['x']},{saved['y']})")
+            _notify(saved.get('map'))
+            return {'op': op, 'map': saved.get('map'), 'note': saved}
+
+        if op == 'delete':
+            existing = find_note(context.game_session, note_id, map_key)
+            if existing is None:
+                raise tool_error('note_id is required and must match an existing note')
+            delete_note(context.game_session, existing['id'], existing.get('map'))
+            context.log_dm(f"DM deleted map note {existing['id']} on {existing.get('map')}")
+            _notify(existing.get('map'))
+            return {'op': op, 'map': existing.get('map'), 'note_id': existing['id'], 'deleted': True}
+
+        raise tool_error('op must be one of: list, upsert, delete, move')
+
+    @tool(
+        registry,
         name='dm.user_admin',
         description='Manage campaign logins and player-character assignments. '
                     'op: list | create | update | delete | assign_character | unassign_character. '
@@ -1518,6 +1631,165 @@ def register(registry: ToolRegistry) -> None:
         context.log_dm(f"DM user_admin {op} username={username or ''} character={character_uid or ''}")
         context.emit_refresh()
         return result
+
+    @tool(
+        registry,
+        name='dm.map_set',
+        description='Manage campaign map sets (party POV worlds). '
+                    'op: list | activate | create | assign_map | place_party. '
+                    'create and assign_map persist to campaign game.yml. '
+                    'activate jumps player cameras to their tokens in the set. '
+                    'place_party creates PC instances on a map without activating.',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {
+                    'type': 'string',
+                    'enum': ['list', 'activate', 'create', 'assign_map', 'place_party'],
+                },
+                'map_set': {'type': 'string'},
+                'label': {'type': 'string'},
+                'map_name': {'type': 'string'},
+                'x': {'type': 'integer'},
+                'y': {'type': 'integer'},
+            },
+        },
+        category='dm',
+    )
+    def map_set(context: MCPContext, op: str, map_set: Optional[str] = None,
+                label: Optional[str] = None, map_name: Optional[str] = None,
+                x: Optional[int] = None, y: Optional[int] = None):
+        from webapp.blueprints.helpers.map_sets import (
+            activate_map_set,
+            assign_map_to_set,
+            create_map_set,
+            map_sets_payload,
+            place_party,
+        )
+        cg = context.current_game
+        if cg is None:
+            raise tool_error('No game loaded')
+        try:
+            if op == 'list':
+                return map_sets_payload(cg)
+            if op == 'activate':
+                if not map_set:
+                    raise tool_error('map_set is required')
+                result = activate_map_set(cg, map_set)
+                context.log_dm(f"DM activated map set {map_set}")
+                context.emit_refresh()
+                return result
+            if op == 'create':
+                if not map_set:
+                    raise tool_error('map_set is required')
+                result = create_map_set(cg, map_set, label=label)
+                context.log_dm(f"DM created map set {result.get('id')}")
+                return result
+            if op == 'assign_map':
+                if not map_name or not map_set:
+                    raise tool_error('map_name and map_set are required')
+                result = assign_map_to_set(cg, map_name, map_set)
+                context.log_dm(f"DM assigned map {map_name} to set {map_set}")
+                context.emit_refresh()
+                return result
+            if op == 'place_party':
+                if not map_name:
+                    raise tool_error('map_name is required')
+                result = place_party(cg, map_name, x=x, y=y)
+                context.log_dm(f"DM placed party on {map_name}")
+                context.emit_refresh()
+                return result
+        except ValueError as exc:
+            raise tool_error(str(exc)) from exc
+        raise tool_error('op must be one of: list, activate, create, assign_map, place_party')
+
+    @tool(
+        registry,
+        name='dm.sidekick',
+        description='Manage party sidekick NPCs. '
+                    'op: list | join | leave | assign_owner. '
+                    'join converts an NPC into an in-party sidekick (player-controlled). '
+                    'leave drops them back to a regular AI NPC (hostile=true for enemies). '
+                    'assign_owner sets player usernames who control movement/actions.',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {
+                    'type': 'string',
+                    'enum': ['list', 'join', 'leave', 'assign_owner'],
+                },
+                'entity_uid': {'type': 'string'},
+                'owners': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                },
+                'owner': {'type': 'string'},
+                'hostile': {'type': 'boolean'},
+                'sidekick_class': {'type': 'string'},
+                'sidekick_level': {'type': 'integer'},
+                'role': {'type': 'string'},
+                'force': {'type': 'boolean'},
+            },
+        },
+        category='dm',
+    )
+    def sidekick(context: MCPContext, op: str, entity_uid: Optional[str] = None,
+                 owners: Optional[List[str]] = None, owner: Optional[str] = None,
+                 hostile: bool = False, sidekick_class: Optional[str] = None,
+                 sidekick_level: Optional[int] = None, role: Optional[str] = None,
+                 force: bool = False):
+        from natural20.sidekick import iter_in_party_sidekicks, sidekick_records, sidekick_owners
+        from webapp.blueprints.helpers.sidekick_control import (
+            assign_owners_and_control,
+            join_party_and_control,
+            leave_party_and_control,
+        )
+        session = context.game_session
+        if session is None:
+            raise tool_error('No game loaded')
+        if op == 'list':
+            listed = []
+            for entity in iter_in_party_sidekicks(session):
+                listed.append({
+                    'entity_uid': getattr(entity, 'entity_uid', None),
+                    'name': entity.label() if hasattr(entity, 'label') else str(entity),
+                    'owners': sidekick_owners(session, entity),
+                    'group': getattr(entity, 'group', None),
+                })
+            return {'sidekicks': listed, 'records': sidekick_records(session)}
+        if not entity_uid:
+            raise tool_error('entity_uid is required')
+        ent = _resolve(context, entity_uid)
+        owner_list = list(owners or [])
+        if owner and owner not in owner_list:
+            owner_list.append(owner)
+        try:
+            if op == 'join':
+                rec = join_party_and_control(
+                    ent,
+                    owner_list,
+                    sidekick_class=sidekick_class,
+                    sidekick_level=sidekick_level,
+                    role=role,
+                )
+                context.log_dm(f"DM joined {ent.label()} to the party")
+                context.emit_refresh()
+                return {'entity_uid': entity_uid, 'record': rec}
+            if op == 'leave':
+                rec = leave_party_and_control(ent, hostile=bool(hostile))
+                context.log_dm(f"DM removed {ent.label()} from the party")
+                context.emit_refresh()
+                return {'entity_uid': entity_uid, 'record': rec}
+            if op == 'assign_owner':
+                rec = assign_owners_and_control(ent, owner_list)
+                context.log_dm(f"DM assigned owners {owner_list} to {ent.label()}")
+                context.emit_refresh()
+                return {'entity_uid': entity_uid, 'record': rec}
+        except ValueError as exc:
+            raise tool_error(str(exc)) from exc
+        raise tool_error('op must be one of: list, join, leave, assign_owner')
 
 
 def _recalc_lights(context: MCPContext) -> None:

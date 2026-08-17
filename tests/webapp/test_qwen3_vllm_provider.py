@@ -98,7 +98,7 @@ def test_create_voice_skips_register_when_already_on_server(tmp_path):
     mock_http = MagicMock()
     voices_response = MagicMock()
     voices_response.raise_for_status.return_value = None
-    voices_response.json.return_value = {"voices": [{"name": "n20_mara_bartender"}]}
+    voices_response.json.return_value = {"voices": [{"name": "n20_missing_on_disk_xyz"}]}
     mock_http.get.return_value = voices_response
 
     config = VLLMOmniTTSConfig(
@@ -116,7 +116,7 @@ def test_create_voice_skips_register_when_already_on_server(tmp_path):
     client = VLLMOmniTTSClient(config, client=mock_http)
     provider = Qwen3VLLMProvider(cache_dir=str(tmp_path / "cache"), client=client)
     provider.initialize()
-    provider.create_voice("mara_bartender", "Warm tavern keeper")
+    provider.create_voice("missing_on_disk_xyz", "Warm tavern keeper")
     mock_http.post.assert_not_called()
 
 
@@ -126,6 +126,8 @@ def test_generate_posts_speech_request(tmp_path):
     voices_response.raise_for_status.return_value = None
     voices_response.json.return_value = {"voices": [{"name": "n20_npc"}]}
     speech_response = MagicMock()
+    speech_response.status_code = 200
+    speech_response.text = ""
     speech_response.raise_for_status.return_value = None
     speech_response.content = _minimal_wav_bytes()
     mock_http.get.return_value = voices_response
@@ -250,9 +252,14 @@ def test_initialize_marks_unready_when_healthcheck_fails(tmp_path):
         provider.generate("Hello.", "npc")
 
 
-def test_ensure_registered_graceful_fallback_no_ref_audio(tmp_path):
-    """When no reference audio exists, _ensure_registered should log a warning
-    and add the voice to _server_voices (so we don't keep retrying)."""
+def test_ensure_registered_does_not_fake_server_voice_without_ref_audio(tmp_path):
+    """Missing clone samples must not be treated as uploaded ICL voices."""
+    mock_http = MagicMock()
+    voices_response = MagicMock()
+    voices_response.raise_for_status.return_value = None
+    voices_response.json.return_value = {"voices": []}
+    mock_http.get.return_value = voices_response
+
     config = VLLMOmniTTSConfig(
         base_url="http://testserver:8091",
         model="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
@@ -265,22 +272,26 @@ def test_ensure_registered_graceful_fallback_no_ref_audio(tmp_path):
         stream_live=True,
         max_new_tokens=2048,
     )
-    provider = MockQwen3VLLMProvider(cache_dir=str(tmp_path / "cache"))
-    provider._config = config
-    provider._server_voices = set()
+    client = VLLMOmniTTSClient(config, client=mock_http)
+    provider = Qwen3VLLMProvider(cache_dir=str(tmp_path / "cache"), client=client)
+    provider.initialize()
 
-    # Should NOT raise — graceful fallback
-    provider._ensure_registered(
-        "n20_pia_bernal",
+    registered = provider._ensure_registered(
+        "n20_missing_voice_uid_xyz",
         reference_audio=None,
         ref_text="A test voice",
-        npc_uid="pia_bernal",
+        npc_uid="missing_voice_uid_xyz",
         campaign_root=str(tmp_path / "campaign"),
         npc_type=None,
     )
 
-    # Voice should be marked as "known" locally so we don't retry
-    assert "n20_pia_bernal" in provider._server_voices
+    assert registered is False
+    assert "n20_missing_voice_uid_xyz" not in provider._server_voices
+    mock_http.post.assert_not_called()
+
+    provider.create_voice("missing_voice_uid_xyz", "Wry locksmith")
+    with pytest.raises(ValueError, match="not registered"):
+        provider.generate("Hello there.", "missing_voice_uid_xyz")
 
 
 def test_discover_reference_audio_finds_campaign_sample(tmp_path):
@@ -326,33 +337,215 @@ def test_discover_reference_audio_explicit_path_wins(tmp_path):
 
 
 def test_discover_reference_audio_cross_campaign(tmp_path):
-    """_discover_reference_audio should find voice_<uid>.wav in other campaigns."""
-    project_root = tmp_path / "project"
-    campaigns = project_root / "user_levels"
-
-    # Create a voice sample in another campaign
-    other_campaign = campaigns / "other_campaign"
-    assets = other_campaign / "assets"
-    assets.mkdir(parents=True)
-    (assets / "voice_pia_bernal.wav").write_bytes(b"RIFF" + b"\x00" * 40)
-
-    # Mock __file__ so project_root resolves correctly
-    mock_file = project_root / "n20-webapp" / "webapp" / "tts" / "qwen3_vllm_provider.py"
-    mock_file.parent.mkdir(parents=True)
-    mock_file.write_text("# mock", encoding="utf-8")
-
-    from webapp.tts.qwen3_vllm_provider import Qwen3VLLMProvider
-
+    """Without campaign_root, discovery still searches user_levels voice samples."""
     provider = MockQwen3VLLMProvider(cache_dir=str(tmp_path / "cache"))
 
-    # Patch the project_root resolution to use our temp dir
-    result = provider._discover_reference_audio(
-        "pia_bernal", None, None, npc_type=None
+    missing = provider._discover_reference_audio(
+        "missing_voice_uid_xyz", None, None, npc_type=None
     )
-    # Since __file__ points to the real code, cross-campaign won't hit our temp dir
-    # But the logic is tested by the fact that it doesn't crash and returns None
-    # when no campaigns dir exists. The real test is integration.
-    assert result is None  # temp dir won't match real __file__
+    assert missing is None
+
+    found = provider._discover_reference_audio(
+        "npc_lenka_ash", None, None, npc_type=None
+    )
+    if found:
+        assert found.endswith("npc_lenka_ash.wav")
+
+
+def test_generate_retries_with_inline_ref_audio_on_clone_400(tmp_path):
+    """Listed-but-not-ICL speakers must retry Base clone with the local WAV."""
+    ref_wav = tmp_path / "npc_lenka_ash.wav"
+    ref_wav.write_bytes(_minimal_wav_bytes())
+    (tmp_path / "npc_lenka_ash.ref.txt").write_text(
+        "A wry locksmith greeting.", encoding="utf-8"
+    )
+
+    mock_http = MagicMock()
+    voices_response = MagicMock()
+    voices_response.raise_for_status.return_value = None
+    voices_response.json.return_value = {"voices": [{"name": "n20_npc_lenka_ash"}]}
+    mock_http.get.return_value = voices_response
+
+    bad_speech = MagicMock()
+    bad_speech.status_code = 400
+    bad_speech.text = (
+        "Base task with built-in speaker 'n20_npc_lenka_ash' "
+        "requires 'ref_audio' for voice cloning"
+    )
+    register_response = MagicMock()
+    register_response.status_code = 200
+    register_response.raise_for_status.return_value = None
+    good_speech = MagicMock()
+    good_speech.status_code = 200
+    good_speech.text = ""
+    good_speech.content = _minimal_wav_bytes()
+    good_speech.raise_for_status.return_value = None
+
+    def post(url, **kwargs):
+        if url == "/v1/audio/voices":
+            return register_response
+        payload = kwargs.get("json") or {}
+        if payload.get("ref_audio"):
+            return good_speech
+        return bad_speech
+
+    mock_http.post.side_effect = post
+
+    config = VLLMOmniTTSConfig(
+        base_url="http://testserver:8091",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        api_key="none",
+        timeout=30.0,
+        voice_prefix="n20_",
+        consent="test",
+        register_on_create=True,
+        sample_rate=24000,
+        stream_live=True,
+        max_new_tokens=2048,
+    )
+    client = VLLMOmniTTSClient(config, client=mock_http)
+    provider = Qwen3VLLMProvider(cache_dir=str(tmp_path / "cache"), client=client)
+    provider.initialize()
+    provider.create_voice(
+        "npc_lenka_ash",
+        "Wry locksmith",
+        reference_audio=str(ref_wav),
+        voice_metadata={"campaign_root": str(tmp_path)},
+    )
+
+    out = provider.generate("Hello from the tavern.", "npc_lenka_ash")
+    assert Path(out).is_file()
+    speech_payloads = [
+        call.kwargs.get("json")
+        for call in mock_http.post.call_args_list
+        if call.args and call.args[0] == "/v1/audio/speech"
+    ]
+    assert speech_payloads
+    assert any(payload.get("ref_audio") for payload in speech_payloads)
+    assert "n20_npc_lenka_ash" in provider._needs_ref_audio
+
+
+def test_discover_reference_audio_finds_mp3(tmp_path):
+    campaign = tmp_path / "campaign"
+    samples_dir = campaign / "assets" / "voice_samples"
+    samples_dir.mkdir(parents=True)
+    (samples_dir / "pia_bernal.mp3").write_bytes(b"ID3fake")
+
+    provider = MockQwen3VLLMProvider(cache_dir=str(tmp_path / "cache"))
+    result = provider._discover_reference_audio(
+        "pia_bernal", None, str(campaign), npc_type=None
+    )
+    assert result is not None
+    assert result.endswith("pia_bernal.mp3")
+
+
+def test_create_voice_reregisters_when_sample_replaced(tmp_path):
+    campaign = tmp_path / "campaign"
+    samples = campaign / "assets" / "voice_samples"
+    samples.mkdir(parents=True)
+    ref_wav = samples / "mara_bartender.wav"
+    ref_wav.write_bytes(_minimal_wav_bytes())
+
+    mock_http = MagicMock()
+    voices_response = MagicMock()
+    voices_response.raise_for_status.return_value = None
+    voices_response.json.return_value = {"voices": []}
+    register_response = MagicMock()
+    register_response.raise_for_status.return_value = None
+    mock_http.get.return_value = voices_response
+    mock_http.post.return_value = register_response
+
+    config = VLLMOmniTTSConfig(
+        base_url="http://testserver:8091",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        api_key="none",
+        timeout=30.0,
+        voice_prefix="n20_",
+        consent="test",
+        register_on_create=True,
+        sample_rate=24000,
+        stream_live=True,
+        max_new_tokens=2048,
+    )
+    client = VLLMOmniTTSClient(config, client=mock_http)
+    provider = Qwen3VLLMProvider(cache_dir=str(tmp_path / "cache"), client=client)
+    provider.initialize()
+    meta = {"campaign_root": str(campaign), "design_prompt": "Warm tavern keeper"}
+    provider.create_voice(
+        "mara_bartender",
+        "Warm tavern keeper",
+        reference_audio=str(ref_wav),
+        voice_metadata=meta,
+    )
+    assert mock_http.post.call_count == 1
+
+    mock_http.post.reset_mock()
+    provider.create_voice(
+        "mara_bartender",
+        "Warm tavern keeper",
+        reference_audio=str(ref_wav),
+        voice_metadata=meta,
+    )
+    mock_http.post.assert_not_called()
+
+    ref_wav.write_bytes(_minimal_wav_bytes() + b"\x01\x00" * 20)
+    mock_http.post.reset_mock()
+    provider.create_voice(
+        "mara_bartender",
+        "Warm tavern keeper",
+        reference_audio=str(ref_wav),
+        voice_metadata=meta,
+    )
+    assert mock_http.post.call_count == 1
+    assert mock_http.post.call_args.args[0] == "/v1/audio/voices"
+
+
+def test_create_voice_reregisters_when_profile_changes(tmp_path):
+    campaign = tmp_path / "campaign"
+    samples = campaign / "assets" / "voice_samples"
+    samples.mkdir(parents=True)
+    ref_wav = samples / "mara_bartender.wav"
+    ref_wav.write_bytes(_minimal_wav_bytes())
+
+    mock_http = MagicMock()
+    voices_response = MagicMock()
+    voices_response.raise_for_status.return_value = None
+    voices_response.json.return_value = {"voices": []}
+    register_response = MagicMock()
+    register_response.raise_for_status.return_value = None
+    mock_http.get.return_value = voices_response
+    mock_http.post.return_value = register_response
+
+    config = VLLMOmniTTSConfig(
+        base_url="http://testserver:8091",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        api_key="none",
+        timeout=30.0,
+        voice_prefix="n20_",
+        consent="test",
+        register_on_create=True,
+        sample_rate=24000,
+        stream_live=True,
+        max_new_tokens=2048,
+    )
+    client = VLLMOmniTTSClient(config, client=mock_http)
+    provider = Qwen3VLLMProvider(cache_dir=str(tmp_path / "cache"), client=client)
+    provider.initialize()
+    provider.create_voice(
+        "mara_bartender",
+        "Warm tavern keeper",
+        reference_audio=str(ref_wav),
+        voice_metadata={"campaign_root": str(campaign), "design_prompt": "old prompt"},
+    )
+    mock_http.post.reset_mock()
+    provider.create_voice(
+        "mara_bartender",
+        "Warm tavern keeper",
+        reference_audio=str(ref_wav),
+        voice_metadata={"campaign_root": str(campaign), "design_prompt": "new british accent prompt"},
+    )
+    assert mock_http.post.call_count == 1
+    assert mock_http.post.call_args.args[0] == "/v1/audio/voices"
 
 
 def _minimal_wav_bytes() -> bytes:

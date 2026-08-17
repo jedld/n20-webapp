@@ -159,7 +159,9 @@ def builder_only_mode():
 
 
 def edit_mode():
-    return app.config.get('EDIT_MODE', False)
+    """Per-request campaign edit mode (DM session flag)."""
+    from webapp.blueprints.helpers.auth_utils import session_edit_mode
+    return session_edit_mode()
 
 
 _campaign = load_campaign_config()
@@ -249,11 +251,11 @@ logger.info(
 
 @app.before_request
 def _n20_ensure_session_username():
-    """Edit/builder modes must always have a real username for per-user map view."""
+    """Builder-only mode must always have a real username for per-user map view."""
     from webapp.blueprints.helpers.auth_utils import session_username
-    from webapp.blueprints.helpers.runtime_state import get_builder_only_mode, get_edit_mode
+    from webapp.blueprints.helpers.runtime_state import get_builder_only_mode
 
-    if get_edit_mode() or get_builder_only_mode():
+    if get_builder_only_mode():
         session_username()
 
 
@@ -540,111 +542,9 @@ def get_asset(asset_name):
 
 @app.route('/create_map', methods=['POST'])
 def create_map():
-    """Create a new empty map in the current game's maps folder and register it.
-    Expects form data: name (map id). Creates:
-      - assets/maps/<name>.yml (basic empty map)
-      - assets/maps/<name>.png (placeholder image)
-    """
-    try:
-        name = request.form.get('name') or ''
-        name = name.strip().lower()
-        if not name or not re.match(r'^[a-z0-9_\-]+$', name):
-            return jsonify(error='Invalid map name'), 400
-
-        # Dimensions (optional)
-        try:
-            width = int(request.form.get('width') or 16)
-            height = int(request.form.get('height') or 8)
-        except ValueError:
-            return jsonify(error='Invalid dimensions'), 400
-        width = max(2, min(width, 100))
-        height = max(2, min(height, 100))
-
-        # YAML lives in <root>/maps, PNG lives in <root>/assets/maps
-        maps_yml_dir = os.path.join(game_session.root_path, 'maps')
-        maps_png_dir = os.path.join(game_session.root_path, 'assets', 'maps')
-        os.makedirs(maps_yml_dir, exist_ok=True)
-        os.makedirs(maps_png_dir, exist_ok=True)
-
-        yml_path = os.path.join(maps_yml_dir, f'{name}.yml')
-        png_path = os.path.join(maps_png_dir, f'{name}.png')
-
-        if os.path.exists(yml_path) or os.path.exists(png_path):
-            return jsonify(error='Map already exists'), 400
-
-        # Generate a small empty map template
-        empty_map = {
-            'name': name,
-            'description': f'Empty map {name}',
-            'map': {
-                'illumination': 1.0,
-                'base': ['.' * width for _ in range(height)],
-            },
-            'legend': {},
-            'player': [],
-        }
-
-        # Save YAML
-        with open(yml_path, 'w') as f:
-            import yaml as _yaml
-            _yaml.safe_dump(empty_map, f, sort_keys=False)
-
-        # Create a placeholder PNG thumbnail
-        img = Image.new('RGB', (max(160, width * 10), max(100, height * 10)), color=(230, 233, 237))
-        d = ImageDraw.Draw(img)
-        d.text((10, 10), name, fill=(90, 90, 90))
-        img.save(png_path)
-
-        # Register into current session maps if needed
-        map_id = name
-        relative_map_ref = f'maps/{name}'
-        if map_id not in game_session.maps:
-            game_session.register_map(map_id, relative_map_ref)
-            current_game.maps = game_session.maps
-
-        # Ensure available for switching/reloading
-        OTHERMAPS[map_id] = relative_map_ref
-        current_game.other_maps[map_id] = relative_map_ref
-
-        # Persist to game.yml so maps load after restart
-        try:
-            import yaml as _yaml
-            game_yml_path = os.path.join(game_session.root_path, 'game.yml')
-            if os.path.exists(game_yml_path):
-                with open(game_yml_path, 'r') as f:
-                    props = _yaml.safe_load(f) or {}
-            else:
-                props = {}
-            maps_dict = props.get('maps') or {}
-            maps_dict[map_id] = f'maps/{map_id}'
-            props['maps'] = maps_dict
-            with open(game_yml_path, 'w') as f:
-                _yaml.safe_dump(props, f, sort_keys=False)
-            # update in-memory
-            game_session.game_properties = props
-        except Exception:
-            logger.exception('Failed to persist new map to game.yml')
-
-        # Persist to index.json other_maps for auxiliary use
-        try:
-            index_json_path = os.path.join(game_session.root_path, 'index.json')
-            if os.path.exists(index_json_path):
-                with open(index_json_path, 'r') as jf:
-                    idx = json.load(jf)
-            else:
-                idx = {}
-            other_maps = idx.get('other_maps') or {}
-            other_maps[map_id] = f'maps/{map_id}'
-            idx['other_maps'] = other_maps
-            with open(index_json_path, 'w') as jf:
-                json.dump(idx, jf, indent=2)
-        except Exception:
-            logger.exception('Failed to persist new map to index.json')
-
-        return jsonify(status='ok', name=map_id)
-    except Exception as e:
-        logger.exception('Failed to create map')
-        return jsonify(error=str(e)), 500
+    """Delegate to the assets blueprint so map-set membership is persisted."""
+    from webapp.blueprints.assets import create_map as assets_create_map
+    return assets_create_map()
 
 @app.route('/upload_map_background', methods=['POST'])
 def upload_map_background():
@@ -709,122 +609,9 @@ def upload_map_background():
 
 @app.route('/delete_map', methods=['POST'])
 def delete_map():
-    """Delete an existing map safely.
-    Expects form data: name
-    Removes maps/<name>.yml and assets/maps/<name>.png if present,
-    unregisters from session, updates game.yml maps and index.json other_maps.
-    Prevent deleting 'index' or the only remaining map.
-    """
-    try:
-        # Only DMs can delete maps
-        if 'dm' not in user_role():
-            return jsonify(error='Forbidden'), 403
-        map_name = request.form.get('name') or ''
-        map_name = map_name.strip()
-        if not map_name:
-            return jsonify(error='No map specified'), 400
-
-        # Safety checks
-        if map_name == 'index':
-            return jsonify(error='Cannot delete the default index map'), 400
-        if map_name not in game_session.maps:
-            return jsonify(error='Unknown map'), 404
-        if len(game_session.maps) <= 1:
-            return jsonify(error='Cannot delete the only remaining map'), 400
-
-        # File paths
-        # Resolve YAML reference via game.yml maps entry if available
-        maps_ref = game_session.game_properties.get('maps', {})
-        rel_ref = maps_ref.get(map_name, f'maps/{map_name}')
-        if not rel_ref.endswith('.yml'):
-            rel_ref += '.yml'
-        yml_path = os.path.join(game_session.root_path, rel_ref)
-        png_path = os.path.join(game_session.root_path, 'assets', 'maps', f'{map_name}.png')
-
-        # If deleting current map for this user, switch to another map first
-        try:
-            current_for_user = current_game.get_map_for_user(session['username']).name
-        except Exception:
-            current_for_user = None
-        if current_for_user == map_name:
-            # pick any other map (prefer 'index' if exists)
-            fallback = 'index' if 'index' in game_session.maps and map_name != 'index' else None
-            if not fallback:
-                # pick first key that's not the one being deleted
-                fallback = next((k for k in game_session.maps.keys() if k != map_name), None)
-            if fallback:
-                current_game.switch_map_for_user(session['username'], fallback)
-
-        # Remove from in-memory maps and current_game references
-        if map_name in current_game.other_maps:
-            try:
-                del current_game.other_maps[map_name]
-            except Exception:
-                pass
-        try:
-            global OTHERMAPS
-            OTHERMAPS.pop(map_name, None)
-        except Exception:
-            pass
-        if map_name in game_session.maps:
-            try:
-                del game_session.maps[map_name]
-            except Exception:
-                pass
-        # Keep current_game maps reference aligned
-        current_game.maps = game_session.maps
-
-        # Update game.yml: remove from maps
-        try:
-            import yaml as _yaml
-            game_yml_path = os.path.join(game_session.root_path, 'game.yml')
-            if os.path.exists(game_yml_path):
-                with open(game_yml_path, 'r') as f:
-                    props = _yaml.safe_load(f) or {}
-            else:
-                props = {}
-            maps_dict = props.get('maps') or {}
-            if map_name in maps_dict:
-                maps_dict.pop(map_name, None)
-            props['maps'] = maps_dict
-            with open(game_yml_path, 'w') as f:
-                _yaml.safe_dump(props, f, sort_keys=False)
-            game_session.game_properties = props
-        except Exception:
-            logger.exception('Failed to update game.yml while deleting map')
-
-        # Update index.json other_maps
-        try:
-            index_json_path = os.path.join(game_session.root_path, 'index.json')
-            if os.path.exists(index_json_path):
-                with open(index_json_path, 'r') as jf:
-                    idx = json.load(jf)
-            else:
-                idx = {}
-            other_maps = idx.get('other_maps') or {}
-            other_maps.pop(map_name, None)
-            idx['other_maps'] = other_maps
-            with open(index_json_path, 'w') as jf:
-                json.dump(idx, jf, indent=2)
-        except Exception:
-            logger.exception('Failed to update index.json while deleting map')
-
-        # Delete files last
-        try:
-            if os.path.exists(yml_path):
-                os.remove(yml_path)
-        except Exception:
-            logger.exception('Failed to delete map YAML')
-        try:
-            if os.path.exists(png_path):
-                os.remove(png_path)
-        except Exception:
-            logger.exception('Failed to delete map image')
-
-        return jsonify(status='ok', name=map_name)
-    except Exception as e:
-        logger.exception('Failed to delete map')
-        return jsonify(error=str(e)), 500
+    """Delegate to the assets blueprint so map-set membership is updated."""
+    from webapp.blueprints.assets import delete_map as assets_delete_map
+    return assets_delete_map()
 
 
 def _parse_json_list_form(form, key):
@@ -1808,14 +1595,9 @@ def create_character():
             # Apply equipment pack if selected
             equipment_pack_id = (request.form.get('equipment_pack') or '').strip()
             if equipment_pack_id:
+                from natural20.utils.background_validation import apply_equipment_pack_items
                 equipment_packs = game_session.load_equipment_packs() or {}
-                pack = equipment_packs.get(equipment_pack_id)
-                if pack and 'items' in pack:
-                    for item_id, qty in pack['items'].items():
-                        pc.setdefault('inventory', []).append({
-                            'item': item_id,
-                            'qty': int(qty)
-                        })
+                apply_equipment_pack_items(pc, equipment_packs.get(equipment_pack_id))
 
             # Apply custom inventory from character builder
             inventory_json = (request.form.get('inventory') or '').strip()
@@ -4526,32 +4308,13 @@ def get_items():
 
 @app.route('/info', methods=['GET'])
 def get_info():
-    battle_map = current_game.get_map_for_user(session['username'])
-    battle = current_game.get_current_battle()
-    info_id = request.args.get('id')
-    if not info_id:
-        return jsonify(error="Missing required id"), 400
+    from webapp.blueprints.helpers.npc_stat_block import lookup_info_entity, render_info_page
 
-    # Fetch the necessary information based on the info_id
-    entity = battle_map.entity_by_uid(info_id)
-    if entity is None:
-        entity = battle_map.object_by_uid(info_id)
-    if entity is None:
-        return jsonify(error="Entity not found"), 404
-
-    # Filter out None/empty usernames to avoid mixed-type sorting errors.
-    configured_users = [
-        login.get('name')
-        for login in LOGINS
-        if isinstance(login, dict) and isinstance(login.get('name'), str) and login.get('name').strip()
-    ]
-    connected_users = [
-        username
-        for username in (current_game.username_to_sid or {}).keys()
-        if isinstance(username, str) and username.strip()
-    ]
-    all_users = sorted(set(configured_users + connected_users))
-    return render_template('info.html.jinja', entity=entity, battle=battle, restricted=False, role=user_role(), all_users=all_users)
+    resolved, error = lookup_info_entity(request.args.get('id'))
+    if error is not None:
+        return error
+    entity, battle = resolved
+    return render_info_page(entity, battle=battle)
 
 @app.route('/entity_info', methods=['GET'])
 def get_entity_info():

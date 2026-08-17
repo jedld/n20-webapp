@@ -1,26 +1,35 @@
-"""Flask blueprint exposing the MCP tool surface over HTTP/JSON.
+"""Flask blueprint exposing the MCP tool surface.
 
-Three discovery endpoints are provided:
+Legacy REST (in-app LLM / scripts):
 
 - ``GET  /mcp/manifest``       — server metadata + tool count.
 - ``GET  /mcp/tools/list``     — full tool manifest (JSON Schema inputs).
 - ``POST /mcp/tools/call``     — body ``{"name": str, "arguments": object}``;
   returns an MCP-style envelope ``{"isError": bool, "content": [...]}``.
 
+Streamable HTTP (Cursor, Claude Code, and other MCP clients):
+
+- ``POST /mcp``                — JSON-RPC 2.0 (spec 2026-07-28, with
+  2025-era ``initialize`` fallback). See :mod:`webapp.mcp.protocol`.
+
 Authorisation: requests must either come from a logged-in DM session
-(``'dm' in user_role()``), or carry an ``X-MCP-Token`` header that
-matches the ``N20_MCP_DM_TOKEN`` environment variable. If the env var
+(``'dm' in user_role()``), or carry a token matching ``N20_MCP_DM_TOKEN``
+via ``Authorization: Bearer <token>`` or ``X-MCP-Token``. If the env var
 is unset, only DM session callers are accepted.
 """
 
 from __future__ import annotations
 
+import hmac
 import os
 from typing import Callable, Optional
 
 from flask import Blueprint, jsonify, request
 
+from webapp.blueprints.helpers.cors_config import get_allowed_origins, origin_allowed
+
 from .context import MCPContext
+from .protocol import handle_jsonrpc
 from .tool_registry import ToolRegistry
 from . import tools_actions, tools_dm, tools_npc, tools_world
 
@@ -48,11 +57,25 @@ def register_mcp_blueprint(app, context: MCPContext,
 
     bp = Blueprint('mcp', __name__, url_prefix=url_prefix)
 
+    def _expected_token() -> str:
+        return os.environ.get('N20_MCP_DM_TOKEN', '').strip()
+
+    def _token_matches(supplied: str, expected: str) -> bool:
+        if not supplied or not expected:
+            return False
+        if len(supplied) != len(expected):
+            return False
+        return hmac.compare_digest(supplied, expected)
+
     def _authorised() -> bool:
-        token = os.environ.get('N20_MCP_DM_TOKEN', '').strip()
-        if token:
+        expected = _expected_token()
+        if expected:
             header = request.headers.get('X-MCP-Token', '').strip()
-            if header and header == token:
+            if _token_matches(header, expected):
+                return True
+            auth = request.headers.get('Authorization', '').strip()
+            scheme, _, rest = auth.partition(' ')
+            if scheme.lower() == 'bearer' and _token_matches(rest.strip(), expected):
                 return True
         if user_role_fn is not None:
             try:
@@ -63,17 +86,74 @@ def register_mcp_blueprint(app, context: MCPContext,
                 pass
         return False
 
+    def _is_rpc_request() -> bool:
+        path = (request.path or '').rstrip('/')
+        prefix = (url_prefix or '/mcp').rstrip('/') or '/mcp'
+        return path == prefix
+
+    def _jsonrpc_id():
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict) and 'id' in payload:
+            return payload.get('id')
+        return None
+
     @bp.before_request
     def _gate():
         # Allow CORS-style preflight without auth.
         if request.method == 'OPTIONS':
             return None
+
+        origin = request.headers.get('Origin', '').strip()
+        if origin and not origin_allowed(origin, get_allowed_origins()):
+            if _is_rpc_request():
+                return jsonify({
+                    'jsonrpc': '2.0',
+                    'id': _jsonrpc_id(),
+                    'error': {'code': -32000, 'message': 'Forbidden origin'},
+                }), 403
+            return jsonify({
+                'isError': True,
+                'content': [{'type': 'text', 'text': 'Forbidden origin'}],
+            }), 403
+
         if not _authorised():
+            if _is_rpc_request():
+                return jsonify({
+                    'jsonrpc': '2.0',
+                    'id': _jsonrpc_id(),
+                    'error': {'code': -32001, 'message': 'Unauthorized'},
+                }), 401
             return jsonify({
                 'isError': True,
                 'content': [{'type': 'text', 'text': 'Unauthorized'}],
             }), 401
         return None
+
+    def mcp_rpc():
+        payload = request.get_json(silent=True)
+        if payload is None:
+            return jsonify({
+                'jsonrpc': '2.0',
+                'id': None,
+                'error': {'code': -32700, 'message': 'Parse error'},
+            }), 400
+
+        headers = {
+            'mcp-protocol-version': request.headers.get('MCP-Protocol-Version', ''),
+            'mcp-method': request.headers.get('Mcp-Method', ''),
+            'mcp-name': request.headers.get('Mcp-Name', ''),
+        }
+        response = handle_jsonrpc(payload, registry, context=context, headers=headers)
+        if response is None:
+            return ('', 202)
+        return jsonify(response), 200
+
+    # Match both /mcp and /mcp/. MCP clients typically omit the trailing slash
+    # and must not be 308-redirected (POST body would be dropped).
+    bp.add_url_rule('/', endpoint='rpc', view_func=mcp_rpc,
+                    methods=['POST'], strict_slashes=False)
+    bp.add_url_rule('', endpoint='rpc_root', view_func=mcp_rpc,
+                    methods=['POST'], strict_slashes=False)
 
     @bp.route('/manifest', methods=['GET'])
     def manifest():

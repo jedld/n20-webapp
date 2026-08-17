@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from webapp.tts.accent_instruct import COSYVOICE_ACCENT_INSTRUCT, normalize_accent_label
 from webapp.tts.base import TTSEngine, VoiceConfig
 
 
@@ -124,40 +125,14 @@ class CosyVoiceProvider(TTSEngine):
     COSYVOICE_MODEL_ID = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
 
     # Transcript that matches third_party/CosyVoice/asset/zero_shot_prompt.wav
+    # (Chinese). Never pair this WAV with an English fake transcript — that
+    # makes CosyVoice emit Chinese-like gibberish for English lines.
     DEFAULT_PROMPT_TEXT = "希望你以后能够做的比我还好呦。"
     # CosyVoice3 requires an assistant preamble + <|endofprompt|> marker.
     COSYVOICE3_PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
-    ENGLISH_PROMPT_TEXT = "Hello there. How are you doing today?"
 
-    # Map short accent labels -> CosyVoice3 instruct fragments (English fantasy default).
-    ACCENT_INSTRUCT: dict[str, str] = {
-        "american": "speak in clear American English",
-        "us": "speak in clear American English",
-        "usa": "speak in clear American English",
-        "british": "speak in British English",
-        "uk": "speak in British English",
-        "rp": "speak in Received Pronunciation British English",
-        "english": "speak in clear English",
-        "en": "speak in clear English",
-        "irish": "speak in English with an Irish accent",
-        "scottish": "speak in English with a Scottish accent",
-        "australian": "speak in English with an Australian accent",
-        "romanian": "speak in English with a Romanian accent",
-        "eastern european": "speak in English with an Eastern European accent",
-        "eastern_european": "speak in English with an Eastern European accent",
-        "transylvanian": "speak in English with a Transylvanian accent",
-        "slavic": "speak in English with a Slavic accent",
-        "german": "speak in English with a German accent",
-        "french": "speak in English with a French accent",
-        "spanish": "speak in English with a Spanish accent",
-        "italian": "speak in English with an Italian accent",
-        "russian": "speak in English with a Russian accent",
-        "chinese": "speak in Mandarin Chinese",
-        "zh": "speak in Mandarin Chinese",
-        "mandarin": "speak in Mandarin Chinese",
-        "cantonese": "speak Cantonese",
-        "yue": "speak Cantonese",
-    }
+    # Shared with Qwen3 VoiceDesign bake mapping (webapp.tts.accent_instruct).
+    ACCENT_INSTRUCT = COSYVOICE_ACCENT_INSTRUCT
 
     def __init__(
         self,
@@ -245,6 +220,183 @@ class CosyVoiceProvider(TTSEngine):
         if "<|endofprompt|>" in text:
             return text
         return f"{self.COSYVOICE3_PROMPT_PREFIX}{text}"
+
+    @staticmethod
+    def _is_chinese_target(language: Optional[str], accent: Optional[str] = None) -> bool:
+        lang = (language or "").strip().lower()
+        if lang in ("zh", "zh-cn", "zh-tw", "chinese", "mandarin", "yue", "cantonese"):
+            return True
+        acc = normalize_accent_label(accent)
+        return acc in ("zh", "chinese", "mandarin", "cantonese", "yue")
+
+    def _cross_lingual_tts_text(self, text: str, instruct_text: str) -> str:
+        """Format English (or other non-Chinese) text for inference_cross_lingual.
+
+        CosyVoice 1/2: prefix ``<|en|>``. CosyVoice3: assistant preamble plus
+        ``<|endofprompt|>``, then the spoken English (official Japanese/English
+        cross-lingual pattern). Accent/emotion live in the preamble so they do
+        not replace the prompt-WAV transcript the way Instruct2 does.
+        """
+        spoken = (text or "").strip()
+        if self._model_version == "v3":
+            preamble = (instruct_text or "").replace("<|endofprompt|>", "").strip()
+            if not preamble:
+                preamble = "You are a helpful assistant."
+            elif not preamble.lower().startswith("you are a helpful assistant"):
+                preamble = f"You are a helpful assistant. {preamble}"
+            return f"{preamble}<|endofprompt|>{spoken}"
+        if spoken.startswith("<|"):
+            return spoken
+        return f"<|en|>{spoken}"
+
+    def _english_zero_shot_instruct(
+        self,
+        accent: Optional[str],
+        language: Optional[str],
+        volume: Optional[str] = None,
+    ) -> str:
+        """Short CosyVoice3 English prompt preamble.
+
+        Official English zero-shot uses only ``You are a helpful assistant.``
+        plus the Chinese WAV transcript. A long VoiceDesign character dump
+        makes the prompt much longer than the spoken line and yields gibberish.
+        """
+        bits: list[str] = []
+        accent_bit = self._accent_instruct_fragment(accent, language)
+        if accent_bit:
+            bits.append(accent_bit)
+        else:
+            bits.append("speak in clear English")
+        volume_bit = self._volume_instruct_fragment(volume, None)
+        if volume_bit:
+            bits.append(volume_bit)
+        body = "Please " + " and ".join(bits) + "."
+        return f"You are a helpful assistant. {body}<|endofprompt|>"
+
+    def _zero_shot_prompt_text(self, instruct_text: str, prompt_text: str) -> str:
+        """CosyVoice3 zero-shot prompt: instruct preamble + matching WAV transcript."""
+        transcript = (prompt_text or self.DEFAULT_PROMPT_TEXT).strip()
+        if "<|endofprompt|>" in transcript:
+            transcript = transcript.split("<|endofprompt|>")[-1].strip()
+        preamble = (instruct_text or "").replace("<|endofprompt|>", "").strip()
+        if not preamble:
+            preamble = "You are a helpful assistant."
+        elif not preamble.lower().startswith("you are a helpful assistant"):
+            preamble = f"You are a helpful assistant. {preamble}"
+        return f"{preamble}<|endofprompt|>{transcript}"
+
+    def _bundled_zero_shot_prompt_wav(self) -> Optional[str]:
+        """Official CosyVoice3 English prompt WAV (transcript = DEFAULT_PROMPT_TEXT)."""
+        for root in self._cosyvoice_checkout_roots():
+            path = root / "asset" / "zero_shot_prompt.wav"
+            if path.is_file():
+                return str(path)
+        return None
+
+    def _invoke_cosyvoice(
+        self,
+        *,
+        text: str,
+        prompt_wav: str,
+        prompt_text: str,
+        instruct_text: str,
+        language: Optional[str],
+        accent: Optional[str],
+        stream: bool,
+        use_style_instruct: bool,
+        volume: Optional[str] = None,
+    ):
+        """Pick CosyVoice inference so English is not synthesized as Chinese.
+
+        Instruct2 is trained on Chinese dialect/style overlays. Using it with a
+        Chinese prompt WAV and English dialogue produces gibberish.
+
+        CosyVoice3 English (official HF example): ``inference_zero_shot`` with
+        English spoken text and ``You are a helpful assistant.[accent]
+        <|endofprompt|>希望你以后能够做的比我还好呦。`` as the prompt transcript.
+        CosyVoice 1/2 English: ``inference_cross_lingual`` with an ``<|en|>`` tag.
+        """
+        chinese = self._is_chinese_target(language, accent)
+        if (
+            chinese
+            and use_style_instruct
+            and self._model_version in ("v2", "v3")
+            and hasattr(self._cosyvoice, "inference_instruct2")
+        ):
+            print("[TTS] CosyVoice inference=instruct2 (Chinese target)", flush=True)
+            return self._cosyvoice.inference_instruct2(
+                text,
+                instruct_text,
+                prompt_wav,
+                stream=stream,
+            )
+        if (
+            not chinese
+            and self._model_version == "v3"
+            and hasattr(self._cosyvoice, "inference_zero_shot")
+        ):
+            # Official Fun-CosyVoice3 English example: English tts + this WAV +
+            # matching Chinese transcript. A different bundled prompt WAV
+            # (cross_lingual_prompt.wav) must not be paired with that transcript.
+            wav = self._bundled_zero_shot_prompt_wav() or prompt_wav
+            zs_prompt = self._zero_shot_prompt_text(
+                self._english_zero_shot_instruct(accent, language, volume),
+                self.DEFAULT_PROMPT_TEXT,
+            )
+            print(
+                f"[TTS] CosyVoice inference=zero_shot "
+                f"language={language or 'en'} accent={accent or '(none)'} "
+                f"prompt_wav={Path(wav).name}",
+                flush=True,
+            )
+            return self._cosyvoice.inference_zero_shot(
+                text,
+                zs_prompt,
+                wav,
+                stream=stream,
+            )
+        if not chinese and hasattr(self._cosyvoice, "inference_cross_lingual"):
+            tagged = self._cross_lingual_tts_text(text, instruct_text)
+            print(
+                f"[TTS] CosyVoice inference=cross_lingual "
+                f"language={language or 'en'} accent={accent or '(none)'}",
+                flush=True,
+            )
+            return self._cosyvoice.inference_cross_lingual(
+                tagged,
+                prompt_wav,
+                stream=stream,
+            )
+        if self._model_version == "v3" and hasattr(self._cosyvoice, "inference_zero_shot"):
+            print("[TTS] CosyVoice inference=zero_shot", flush=True)
+            return self._cosyvoice.inference_zero_shot(
+                text,
+                prompt_text,
+                prompt_wav,
+                stream=stream,
+            )
+        if self._model_version in ("v2", "v3") and hasattr(self._cosyvoice, "inference_instruct2"):
+            return self._cosyvoice.inference_instruct2(
+                text,
+                instruct_text,
+                prompt_wav,
+                stream=stream,
+            )
+        if hasattr(self._cosyvoice, "inference_zero_shot"):
+            return self._cosyvoice.inference_zero_shot(
+                text,
+                prompt_text,
+                prompt_wav,
+                stream=stream,
+            )
+        if hasattr(self._cosyvoice, "inference_instruct"):
+            return self._cosyvoice.inference_instruct(
+                text,
+                "中文女",
+                instruct_text,
+                stream=stream,
+            )
+        raise RuntimeError("CosyVoice model exposes no supported inference API")
 
     def _format_cosyvoice3_instruct(
         self,
@@ -355,7 +507,7 @@ class CosyVoiceProvider(TTSEngine):
         language: Optional[str] = None,
     ) -> str:
         """Translate accent/language labels into a CosyVoice instruct clause."""
-        accent_key = (accent or "").strip().lower()
+        accent_key = normalize_accent_label(accent)
         language_key = (language or "").strip().lower()
 
         if accent_key in ("", "none", "off", "native", "default"):
@@ -415,19 +567,29 @@ class CosyVoiceProvider(TTSEngine):
         return None
 
     @staticmethod
+    def _cosyvoice_checkout_roots() -> list[Path]:
+        """Locate ``third_party/CosyVoice`` from the webapp submodule or repo root."""
+        roots: list[Path] = []
+        here = Path(__file__).resolve()
+        for parent in here.parents:
+            candidate = parent / "third_party" / "CosyVoice"
+            if candidate.is_dir() and candidate not in roots:
+                roots.append(candidate)
+        return roots
+
+    @staticmethod
     def _ensure_cosyvoice_import_path() -> None:
         """Put local CosyVoice + Matcha-TTS checkouts on sys.path if present."""
         import sys
 
-        repo_root = Path(__file__).resolve().parents[2]
-        candidates = [
-            repo_root / "third_party" / "CosyVoice",
-            repo_root / "third_party" / "CosyVoice" / "third_party" / "Matcha-TTS",
-        ]
-        for path in candidates:
-            path_str = str(path)
-            if path.is_dir() and path_str not in sys.path:
-                sys.path.insert(0, path_str)
+        for root in CosyVoiceProvider._cosyvoice_checkout_roots():
+            for path in (
+                root,
+                root / "third_party" / "Matcha-TTS",
+            ):
+                path_str = str(path)
+                if path.is_dir() and path_str not in sys.path:
+                    sys.path.insert(0, path_str)
 
     @staticmethod
     def _ensure_real_cv2() -> None:
@@ -488,21 +650,17 @@ class CosyVoiceProvider(TTSEngine):
     def _default_reference_audio(self, gender: Optional[str] = None) -> Optional[str]:
         """Bundled CosyVoice sample used when an NPC has no reference clip."""
         gender_key = (gender or '').strip().lower()
-        candidates = []
-        if gender_key == 'male':
-            candidates.extend([
-                Path(__file__).resolve().parents[2] / "third_party" / "CosyVoice" / "asset" / "cross_lingual_prompt.wav",
-                Path(__file__).resolve().parents[2] / "third_party" / "CosyVoice" / "asset" / "zero_shot_prompt.wav",
-            ])
+        asset_dirs = [root / "asset" for root in self._cosyvoice_checkout_roots()]
+        ordered: list[str] = []
+        if gender_key == "male":
+            ordered = ["cross_lingual_prompt.wav", "zero_shot_prompt.wav"]
         else:
-            candidates.extend([
-                Path(__file__).resolve().parents[2] / "third_party" / "CosyVoice" / "asset" / "zero_shot_prompt.wav",
-                Path(__file__).resolve().parents[2] / "third_party" / "CosyVoice" / "asset" / "cross_lingual_prompt.wav",
-            ])
-        candidates.extend([
-            self.cache_dir / "Fun-CosyVoice3-0.5B-2512" / "asset" / "zero_shot_prompt.wav",
-            Path(__file__).resolve().parents[2] / "third_party" / "CosyVoice" / "asset" / "cross_lingual_prompt.wav",
-        ])
+            ordered = ["zero_shot_prompt.wav", "cross_lingual_prompt.wav"]
+        candidates: list[Path] = []
+        for name in ordered:
+            for asset_dir in asset_dirs:
+                candidates.append(asset_dir / name)
+        candidates.append(self.cache_dir / "Fun-CosyVoice3-0.5B-2512" / "asset" / "zero_shot_prompt.wav")
         for path in candidates:
             if path.exists():
                 return str(path)
@@ -766,13 +924,9 @@ class CosyVoiceProvider(TTSEngine):
 
         resolved_language = (language or "").strip() or None
         resolved_accent = accent if accent is not None else None
-        # Prefer English prompt transcript when speaking English accents
-        accent_key = (resolved_accent or self._default_accent_from_env() or "").lower()
+        # Bundled CosyVoice prompt WAVs are Chinese. Pair them with the matching
+        # transcript; English synthesis uses cross_lingual and ignores this.
         prompt_text = self.DEFAULT_PROMPT_TEXT
-        if accent_key and accent_key not in ("zh", "chinese", "mandarin", "cantonese", "yue"):
-            prompt_text = self.ENGLISH_PROMPT_TEXT
-        elif (resolved_language or "").lower() in ("en", "english"):
-            prompt_text = self.ENGLISH_PROMPT_TEXT
 
         config = VoiceConfig(
             npc_uid=npc_uid,
@@ -791,6 +945,64 @@ class CosyVoiceProvider(TTSEngine):
         self._voice_registry[npc_uid] = config
         return config
 
+    def bake_voice_sample(
+        self,
+        npc_uid: str,
+        design_prompt: str,
+        *,
+        language: str = "en",
+        campaign_root: str,
+        accent: Optional[str] = None,
+        gender: Optional[str] = None,
+    ) -> str:
+        """Synthesize a calibration WAV (English via zero-shot + accent preamble).
+
+        Runtime TTS stays on Qwen3 / qwen3_vllm; this clip is the clone reference.
+        """
+        from webapp.tts.npc_voice import infer_voice_profile
+        from webapp.tts.voice_baking import (
+            bake_sample_text,
+            save_baked_ref_text,
+            voice_sample_path,
+        )
+
+        if not self._loaded:
+            self.initialize()
+        out = voice_sample_path(campaign_root, npc_uid)
+        if out is None:
+            raise RuntimeError(f"Cannot bake voice sample without campaign_root for {npc_uid}")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        ref_text = bake_sample_text(accent)
+        print(
+            f"[TTS] CosyVoice bake for {npc_uid}: accent={accent or '(none)'} "
+            f"prompt={design_prompt[:180]}",
+            flush=True,
+        )
+        if out.is_file() and out.stat().st_size > 44:
+            print(f"[TTS] Reusing baked voice sample for {npc_uid}: {out}")
+            return str(out)
+
+        profile = infer_voice_profile(design_prompt)
+        if gender:
+            profile["gender"] = gender
+        profile["campaign_root"] = campaign_root
+        self.create_voice(
+            npc_uid,
+            design_prompt,
+            accent=accent,
+            language=language,
+            voice_metadata=profile,
+        )
+        self.generate(
+            ref_text,
+            npc_uid,
+            emotion="calm",
+            output_path=str(out),
+        )
+        save_baked_ref_text(campaign_root, npc_uid, ref_text)
+        print(f"[TTS] Baked CosyVoice voice sample for {npc_uid} → {out}")
+        return str(out)
+
     def update_voice_options(
         self,
         npc_uid: str,
@@ -805,9 +1017,6 @@ class CosyVoiceProvider(TTSEngine):
             config.extra_metadata["accent"] = accent
         if language is not None:
             config.extra_metadata["language"] = language
-        accent_key = (self._resolve_voice_accent(config) or "").lower()
-        if accent_key and accent_key not in ("zh", "chinese", "mandarin", "cantonese", "yue"):
-            config.extra_metadata["prompt_text"] = self.ENGLISH_PROMPT_TEXT
         return True
 
     def _classify_voice_prompt(self, voice_prompt: str) -> str:
@@ -980,53 +1189,20 @@ class CosyVoiceProvider(TTSEngine):
                 if instruct:
                     instruct_text = f"{instruct_text} {instruct.strip()}"
 
-            # Prefer instruct2 when accent/language/volume/LLM delivery notes are set.
-            results = None
             use_instruct = bool(accent) or bool(instruct) or bool(resolved_volume) or bool(
                 language and str(language).lower() not in ("zh", "chinese", "mandarin")
             )
-            if (
-                use_instruct
-                and self._model_version in ("v2", "v3")
-                and hasattr(self._cosyvoice, "inference_instruct2")
-            ):
-                results = self._cosyvoice.inference_instruct2(
-                    text,
-                    instruct_text,
-                    prompt_wav,
-                    stream=False,
-                )
-            elif self._model_version == "v3" and hasattr(self._cosyvoice, "inference_zero_shot"):
-                results = self._cosyvoice.inference_zero_shot(
-                    text,
-                    prompt_text,
-                    prompt_wav,
-                    stream=False,
-                )
-            elif self._model_version in ("v2", "v3") and hasattr(self._cosyvoice, "inference_instruct2"):
-                results = self._cosyvoice.inference_instruct2(
-                    text,
-                    instruct_text,
-                    prompt_wav,
-                    stream=False,
-                )
-            elif hasattr(self._cosyvoice, "inference_zero_shot"):
-                results = self._cosyvoice.inference_zero_shot(
-                    text,
-                    prompt_text,
-                    prompt_wav,
-                    stream=False,
-                )
-            elif hasattr(self._cosyvoice, "inference_instruct"):
-                spk_id = (voice_config.extra_metadata or {}).get("spk_id") or "中文女"
-                results = self._cosyvoice.inference_instruct(
-                    text,
-                    spk_id,
-                    instruct_text,
-                    stream=False,
-                )
-            else:
-                raise RuntimeError("CosyVoice model exposes no supported inference API")
+            results = self._invoke_cosyvoice(
+                text=text,
+                prompt_wav=prompt_wav,
+                prompt_text=prompt_text,
+                instruct_text=instruct_text,
+                language=language,
+                accent=accent,
+                stream=False,
+                use_style_instruct=use_instruct,
+                volume=resolved_volume,
+            )
 
             sample_rate = getattr(self._cosyvoice, "sample_rate", 22050)
             for result in results:
@@ -1184,28 +1360,17 @@ class CosyVoiceProvider(TTSEngine):
         use_instruct = bool(accent) or bool(instruct) or bool(resolved_volume) or bool(
             language and str(language).lower() not in ("zh", "chinese", "mandarin")
         )
-        if (
-            use_instruct
-            and self._model_version in ("v2", "v3")
-            and hasattr(self._cosyvoice, "inference_instruct2")
-        ):
-            results = self._cosyvoice.inference_instruct2(
-                text, instruct_text, prompt_wav, stream=True,
-            )
-        elif self._model_version == "v3" and hasattr(self._cosyvoice, "inference_zero_shot"):
-            results = self._cosyvoice.inference_zero_shot(
-                text, prompt_text, prompt_wav, stream=True,
-            )
-        elif self._model_version in ("v2", "v3") and hasattr(self._cosyvoice, "inference_instruct2"):
-            results = self._cosyvoice.inference_instruct2(
-                text, instruct_text, prompt_wav, stream=True,
-            )
-        elif hasattr(self._cosyvoice, "inference_zero_shot"):
-            results = self._cosyvoice.inference_zero_shot(
-                text, prompt_text, prompt_wav, stream=True,
-            )
-        else:
-            raise RuntimeError("CosyVoice model exposes no supported streaming inference API")
+        results = self._invoke_cosyvoice(
+            text=text,
+            prompt_wav=prompt_wav,
+            prompt_text=prompt_text,
+            instruct_text=instruct_text,
+            language=language,
+            accent=accent,
+            stream=True,
+            use_style_instruct=use_instruct,
+            volume=resolved_volume,
+        )
 
         sample_rate = getattr(self._cosyvoice, "sample_rate", 22050)
         stored_chunks: list[bytes] = []
@@ -1394,6 +1559,28 @@ class MockCosyVoiceProvider(TTSEngine):
         )
         self._voice_registry[npc_uid] = config
         return config
+
+    def bake_voice_sample(
+        self,
+        npc_uid: str,
+        design_prompt: str,
+        *,
+        language: str = "en",
+        campaign_root: str,
+        accent: Optional[str] = None,
+        gender: Optional[str] = None,
+    ) -> str:
+        del language, gender
+        from webapp.tts.voice_baking import bake_sample_text, save_baked_ref_text, voice_sample_path
+
+        out = voice_sample_path(campaign_root, npc_uid)
+        if out is None:
+            raise RuntimeError("missing campaign_root")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        self.create_voice(npc_uid, design_prompt, accent=accent)
+        self.generate(bake_sample_text(accent), npc_uid, output_path=str(out))
+        save_baked_ref_text(campaign_root, npc_uid, bake_sample_text(accent))
+        return str(out)
 
     def generate(
         self,

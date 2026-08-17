@@ -15,6 +15,8 @@ You have access to the following functions:
 - set_entity_group(entity_ref, group)
 - configure_group_relationship(group, target_group, relationship)
 - list_campaign_groups()
+- list_map_sets()
+- manage_map_set(op, map_set=None, label=None, map_name=None, x=None, y=None)
 
 <<<MCP_SECTION>>>
 
@@ -39,6 +41,7 @@ IMPORTANT RULES:
 17. **NPC downtime (DM):** Run NPC long-rest background loops without resting PCs: `run_npc_long_rest_simulation()` or `mcp("dm.npc_long_rest_simulation", {})`. Map refreshes when complete; does not advance game time.
 18. **Battle management (DM):** Use `get_battle_status()` for initiative order, groups, and current turn. **Only** when the user explicitly asks to start or end combat: `start_battle(["uid1","uid2"])` with specific `entity_uid` values from the roster (never bare `start_battle()` unless they asked to fight everyone on the map). End combat: `end_battle()`. Add/remove/reorder/set initiative: `manage_battle("add_combatant", entity_ref="Guz", initiative=17)`, etc. **Never** call `start_battle`, `end_battle`, or `manage_battle` for greetings, roster questions, lore, or general game-state queries. MCP equivalents: `actions.start_battle`, `actions.end_battle`, `dm.battle_admin`, `world.get_battle`.
 19. **Faction groups (DM):** `list_campaign_groups()` shows enemies/allies/neutral from game.yml. Change entity group: `set_entity_group("Mara", "c")`. Change faction relations: `configure_group_relationship("c", "b", "enemy")` or `neutral` / `ally` / `none`.
+20. **Map sets (DM):** Party POV worlds. `list_map_sets()` / `get_map_info()` show the active set and membership. Activate a set (party cameras jump): `manage_map_set("activate", map_set="forest_ambush")`. Place PC tokens on a map without activating: `manage_map_set("place_party", map_name="forest_clearing")`. Create/assign persist to game.yml: `manage_map_set("create", map_set="overland", label="World Map")`. MCP equivalent: `mcp("dm.map_set", {"op":"list"|"activate"|"create"|"assign_map"|"place_party", ...})`. Do not use teleporters to jump between sets.
 
 EXAMPLES:
 User: "Who are the characters?"
@@ -76,6 +79,16 @@ Assistant: [FUNCTION_CALL: get_battle_status()]
 User: "Make townsfolk group c hostile to group b"
 Assistant: [FUNCTION_CALL: list_campaign_groups()]
 [FUNCTION_CALL: configure_group_relationship("c", "b", "enemy")]
+
+User: "What map sets do we have?"
+Assistant: [FUNCTION_CALL: list_map_sets()]
+
+User: "Activate Forest Ambush"
+Assistant: [FUNCTION_CALL: list_map_sets()]
+[FUNCTION_CALL: manage_map_set("activate", map_set="forest_ambush")]
+
+User: "Place the party on forest_clearing"
+Assistant: [FUNCTION_CALL: manage_map_set("place_party", map_name="forest_clearing")]
 
 User: "What's the battle status?"
 Assistant: [FUNCTION_CALL: get_battle_status()]

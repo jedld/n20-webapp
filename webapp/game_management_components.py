@@ -50,7 +50,15 @@ class GameEntityRegistry:
 
     def defer_all_players(self):
         deferred_ids = set()
+        session = self.manager.game_session
+        active = getattr(session, 'active_map_set', None)
         for entity_map in self.manager.maps.values():
+            if active and session is not None:
+                try:
+                    if session.map_set_for(entity_map.name) != active:
+                        continue
+                except Exception:
+                    pass
             for entity in list(entity_map.entities.keys()):
                 if not isinstance(entity, PlayerCharacter):
                     continue
@@ -262,22 +270,25 @@ class GameEntityRegistry:
     def switch_map_for_user(self, username, map_name):
         self.manager.logger.info(f"Switching map for {username} to {map_name}")
         self.manager.current_map_for_user[username] = (map_name, self.manager.maps[map_name])
-        try:
-            from natural20.companion import sync_companions_on_map_switch
-            game_properties = getattr(self.manager.game_session, 'game_properties', None)
-            if game_properties:
-                sync_companions_on_map_switch(self.manager.game_session, game_properties, username, map_name)
-        except Exception:
-            pass
+
+    def _iter_maps_in_active_set(self):
+        session = getattr(self.manager, 'game_session', None)
+        items = list((self.manager.maps or {}).items())
+        if session is None:
+            return items
+        active = getattr(session, 'active_map_set', None)
+        if not active:
+            return items
+        return [(name, map_obj) for name, map_obj in items if session.map_set_for(name) == active]
 
     def get_map_for_user(self, username):
         _name, battle_map = self._default_map_for_user(username)
         return battle_map
 
     def get_map_for_entity(self, entity):
-        for _name, map_obj in self.manager.maps.items():
+        for _name, map_obj in self._iter_maps_in_active_set():
             if isinstance(entity, str):
-                mapped_entity = map_obj.get_entity_by_uid(entity)
+                mapped_entity = map_obj.entity_by_uid(entity)
             else:
                 mapped_entity = entity
 
@@ -287,14 +298,19 @@ class GameEntityRegistry:
 
     def get_entity_by_uid(self, entity_uid):
         uid = str(entity_uid)
-        # Prefer the live token object stored on the map over a stale registry
-        # copy so heals, inventory changes, and battle commits mutate what the
-        # UI is rendering.
-        for _name, map_obj in self.manager.maps.items():
+        # Prefer the live token object stored on the active map set over a stale
+        # registry copy so heals, inventory changes, and battle commits mutate
+        # what the UI is rendering.
+        search_order = list(self._iter_maps_in_active_set())
+        seen = {id(m) for _, m in search_order}
+        for name, map_obj in (self.manager.maps or {}).items():
+            if id(map_obj) not in seen:
+                search_order.append((name, map_obj))
+        for _name, map_obj in search_order:
             for map_entity in map_obj.entities.keys():
                 if str(getattr(map_entity, 'entity_uid', '')) == uid:
                     return map_entity
-        for _name, map_obj in self.manager.maps.items():
+        for _name, map_obj in search_order:
             entity = map_obj.entity_by_uid(entity_uid)
             if entity:
                 return entity
@@ -334,6 +350,11 @@ class GameControllerRegistry:
 
             for username in controller['controllers']:
                 self.manager.web_controllers[entity].add_user(username)
+        try:
+            from webapp.blueprints.helpers.sidekick_control import restore_sidekick_controllers
+            restore_sidekick_controllers(self.manager)
+        except Exception:
+            pass
 
     def get_controller_for_entity(self, entity):
         if entity is None:
@@ -357,15 +378,28 @@ class GameControllerRegistry:
         return None
 
     def ensure_web_controller_for_entity(self, entity):
-        """Return the manual WebController for a PC, creating one when missing."""
+        """Return the manual WebController for a PC or in-party sidekick."""
         controller = self.get_controller_for_entity(entity)
         if controller is not None:
             return controller
-        if not isinstance(entity, PlayerCharacter):
+        is_sidekick = False
+        try:
+            from natural20.sidekick import is_in_party_sidekick
+            session = self.manager.game_session
+            is_sidekick = is_in_party_sidekick(session, entity)
+        except Exception:
+            is_sidekick = False
+        if not isinstance(entity, PlayerCharacter) and not is_sidekick:
             return None
 
         controller = WebController(self.manager.game_session, None)
         owners = self.entity_owners(entity)
+        if not owners and is_sidekick:
+            try:
+                from natural20.sidekick import sidekick_owners
+                owners = sidekick_owners(self.manager.game_session, entity)
+            except Exception:
+                owners = []
         if owners:
             for username in owners:
                 controller.add_user(username)
@@ -407,6 +441,14 @@ class GameControllerRegistry:
 
         if isinstance(entity, PlayerCharacter):
             return self.ensure_web_controller_for_entity(entity)
+        try:
+            from natural20.sidekick import is_in_party_sidekick, sidekick_owners
+            if is_in_party_sidekick(self.manager.game_session, entity) and sidekick_owners(
+                self.manager.game_session, entity
+            ):
+                return self.ensure_web_controller_for_entity(entity)
+        except Exception:
+            pass
         if entity.familiar():
             return self.ensure_web_controller_for_entity(entity.owner) or self.get_controller_for_entity(entity.owner)
 

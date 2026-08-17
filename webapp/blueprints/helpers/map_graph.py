@@ -103,14 +103,21 @@ def build_campaign_map_graph(
 
     edges: List[Dict[str, Any]] = []
     edge_index = 0
+    session = current_game.game_session
     for src_name, battle_map in maps.items():
         for transition in _iter_map_transitions(battle_map):
+            dest = transition['to_map']
+            try:
+                if session is not None and hasattr(session, 'same_map_set') and not session.same_map_set(src_name, dest):
+                    continue
+            except Exception:
+                pass
             edge_index += 1
             edges.append({
                 'id': f'{src_name}:{edge_index}',
                 'from_map': src_name,
                 'from_pos': transition['from_pos'],
-                'to_map': transition['to_map'],
+                'to_map': dest,
                 'to_pos': transition['to_pos'],
                 'label': transition['label'],
                 'kind': transition['kind'],

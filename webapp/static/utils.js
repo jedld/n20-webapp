@@ -1,5 +1,24 @@
 const Utils = {
   // function definitions go here
+  setVttMenuLabel: function (target, text) {
+    let el = null;
+    if (target && target.jquery && target.length) {
+      el = target[0];
+    } else if (target && target.nodeType === 1) {
+      el = target;
+    } else if (typeof target === 'string') {
+      el = document.querySelector(target);
+    }
+    if (!el) {
+      return;
+    }
+    const label = el.querySelector('.vtt-menu-label');
+    if (label) {
+      label.textContent = text;
+      return;
+    }
+    el.textContent = text;
+  },
   manhattanDistance: function (sourceX, sourceY, destX, destY) {
     return Math.abs(sourceX - destX) + Math.abs(sourceY - destY);
   },
@@ -11,9 +30,15 @@ const Utils = {
     overlay.style.display = (overlay.style.display === "none" || overlay.style.display === "") ? "block" : "none";
   },
   reloadEditOverlayIfNeeded: function () {
-    if (window.EditMode && typeof window.EditMode.loadOverlay === 'function'
-        && String($('body').data('edit-mode')).toLowerCase() === 'true') {
-      window.EditMode.loadOverlay();
+    if (window.EditMode && String($('body').attr('data-edit-mode') || '').toLowerCase() === 'true') {
+      if (typeof window.EditMode.reloadOverlay === 'function') {
+        window.EditMode.reloadOverlay(0);
+      } else if (typeof window.EditMode.loadOverlay === 'function') {
+        window.EditMode.loadOverlay();
+      }
+    }
+    if (window.DmNotes && typeof window.DmNotes.reload === 'function') {
+      window.DmNotes.reload();
     }
   },
   refreshPortraits: function () {
@@ -42,15 +67,20 @@ const Utils = {
       $('body').data('current-map', name);
     }
     Utils.updateStackLayerUI(stackFloors, name);
-    if (String($('body').data('edit-mode')).toLowerCase() === 'true') {
+    if (String($('body').attr('data-edit-mode') || '').toLowerCase() === 'true') {
       const $banner = $('.edit-mode-banner');
       if ($banner.length && name) {
-        $banner.text(
+        const text =
           'Edit mode — map: ' + name
             + ' — drag NPCs to reposition. Click fixture labels to edit notes and properties.'
             + ' Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures.'
-            + ' Changes save to campaign YAML.',
-        );
+            + ' Changes save to campaign YAML.';
+        const $label = $banner.find('.edit-mode-banner-text');
+        if ($label.length) {
+          $label.text(text);
+        } else {
+          $banner.text(text);
+        }
       }
     }
   },
@@ -167,8 +197,12 @@ const Utils = {
           } catch (e) { console.warn('Failed to apply map default effect', e); }
           // Ask server to (re)send effects after map switch in case client missed anything
           try { if (typeof socket !== 'undefined' && socket && socket.emit) socket.emit('request_effects'); } catch (e) { }
-          if (window.EditMode && typeof window.EditMode.loadOverlay === 'function') {
-            window.EditMode.loadOverlay();
+          if (window.EditMode) {
+            if (typeof window.EditMode.reloadOverlay === 'function') {
+              window.EditMode.reloadOverlay(0);
+            } else if (typeof window.EditMode.loadOverlay === 'function') {
+              window.EditMode.loadOverlay();
+            }
           }
           if (window.MapAnnotationsEdit && typeof window.MapAnnotationsEdit.reload === 'function') {
             window.MapAnnotationsEdit.reload();
@@ -709,6 +743,20 @@ const Utils = {
     });
   },
 
+  showToast: function (text, durationMs) {
+    const safeText = (text == null) ? '' : String(text);
+    if (!safeText) {
+      return;
+    }
+    const dur = (typeof durationMs === 'number' && durationMs > 0) ? durationMs : 8000;
+    const $toast = $('<div>').addClass('toast-message').text(safeText);
+    if (!$('.toast-container').length) {
+      $('body').append('<div class="toast-container"></div>');
+    }
+    $('.toast-container').append($toast);
+    setTimeout(() => $toast.fadeOut(() => $toast.remove()), dur);
+  },
+
   ajaxGet: function (url, data, onSuccess, onError) {
     $.ajax({
       url,
@@ -815,10 +863,12 @@ const Utils = {
         if (compact) {
           $container.append(
             '<button type="button" class="die-roll-toggle" title="Roll" aria-label="Roll">' + dice + '</button>' +
-            '<div class="die-roll-component" style="display: none;">' + rollControl + switchHtml + '</div>'
+            '<div class="die-roll-component">' + rollControl + switchHtml + '</div>'
           );
-          $container.find('.die-roll-toggle').click(function () {
-            $container.find('.die-roll-component').toggle();
+          $container.find('.die-roll-toggle').on('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            Utils.toggleDieRollPopover($container);
           });
         } else {
           $container.append('<div class="die-roll-component">' + rollControl + switchHtml + '</div>');
@@ -826,7 +876,39 @@ const Utils = {
       }
     });
   },
+  closeDieRollPopovers: function (except) {
+    var $open = $('.die-roll-component.is-open');
+    if (except) {
+      $open = $open.not(except);
+    }
+    $open.removeClass('is-open');
+  },
+  toggleDieRollPopover: function ($container) {
+    var $panel = $container.find('.die-roll-component').first();
+    var willOpen = !$panel.hasClass('is-open');
+    Utils.closeDieRollPopovers();
+    if (willOpen) {
+      $panel.addClass('is-open');
+    }
+  },
+  bindDieRollPopoverDismiss: function () {
+    if (Utils._dieRollOutsideClickBound) {
+      return;
+    }
+    Utils._dieRollOutsideClickBound = true;
+    $(document).on('click.dieRollPopover', function (e) {
+      if (!$(e.target).closest('.die-roll-component, .die-roll-toggle').length) {
+        Utils.closeDieRollPopovers();
+      }
+    });
+    $(document).on('keydown.dieRollPopover', function (e) {
+      if (e.key === 'Escape') {
+        Utils.closeDieRollPopovers();
+      }
+    });
+  },
   initDieRollComponent: function () {
+    Utils.bindDieRollPopoverDismiss();
     $('.die-roll-component').each(function () {
       var $component = $(this);
       // set the first button as active by default
@@ -1227,8 +1309,12 @@ const Utils = {
     $(".highlighted").removeClass("highlighted");
     $(".target-selection, .active-selection").hide();
 
-    // Hide any visible die roll components that might be open
-    $(".die-roll-component:visible").hide();
+    // Hide any visible compact die-roll popovers
+    if (typeof Utils.closeDieRollPopovers === 'function') {
+      Utils.closeDieRollPopovers();
+    } else {
+      $(".die-roll-component.is-open").removeClass("is-open");
+    }
 
     // Clear any canvas drawings (movement paths, targeting lines, etc.)
     if (typeof globalCanvas !== 'undefined' && globalCanvas && typeof globalCtx !== 'undefined' && globalCtx) {
@@ -1390,6 +1476,122 @@ const Utils = {
     if (data && data.narration) {
       Utils.showNarration(data.narration, data.name);
     }
+  },
+
+  parseNpcCr: function (value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    if (typeof value === 'number' && isFinite(value)) {
+      return value;
+    }
+    let text = String(value).trim().toLowerCase();
+    if (!text || text === 'unknown' || text === 'unrated' || text === 'n/a' || text === '-') {
+      return null;
+    }
+    if (text.indexOf('cr ') === 0) {
+      text = text.slice(3).trim();
+    }
+    const fractions = { '1/8': 0.125, '1/4': 0.25, '1/2': 0.5, '1/16': 0.0625 };
+    if (Object.prototype.hasOwnProperty.call(fractions, text)) {
+      return fractions[text];
+    }
+    const numeric = parseFloat(text);
+    return isNaN(numeric) ? null : numeric;
+  },
+
+  formatNpcCrLabel: function (value) {
+    const numeric = Utils.parseNpcCr(value);
+    if (numeric === null) {
+      return 'Unrated';
+    }
+    const named = { 0: 'CR 0', 0.125: 'CR 1/8', 0.25: 'CR 1/4', 0.5: 'CR 1/2' };
+    if (Object.prototype.hasOwnProperty.call(named, numeric)) {
+      return named[numeric];
+    }
+    if (numeric === Math.floor(numeric)) {
+      return 'CR ' + numeric;
+    }
+    return 'CR ' + numeric;
+  },
+
+  npcCrSortValue: function (value) {
+    const numeric = Utils.parseNpcCr(value);
+    return numeric === null ? 10000 : numeric;
+  },
+
+  npcSpawnerSearchHaystack: function (npc) {
+    const parts = [
+      npc && npc.name,
+      npc && npc.id,
+      npc && npc.type,
+      npc && npc.size,
+      npc && npc.cr,
+      npc && npc.cr_label,
+      npc && npc.unique ? 'unique named' : '',
+      npc && npc.on_map ? ('on ' + npc.on_map) : '',
+    ];
+    return parts.join(' ').toLowerCase();
+  },
+
+  groupNpcsByCr: function (npcs) {
+    const buckets = new Map();
+    (npcs || []).forEach((npc) => {
+      const label = (npc && npc.cr_label) || Utils.formatNpcCrLabel(npc && npc.cr);
+      const sort = (npc && typeof npc.cr_sort === 'number')
+        ? npc.cr_sort
+        : Utils.npcCrSortValue(npc && npc.cr);
+      if (!buckets.has(label)) {
+        buckets.set(label, { label: label, sort: sort, npcs: [] });
+      }
+      buckets.get(label).npcs.push(npc);
+    });
+    return Array.from(buckets.values()).sort((a, b) => {
+      if (a.sort !== b.sort) {
+        return a.sort - b.sort;
+      }
+      return String(a.label).localeCompare(String(b.label));
+    });
+  },
+
+  applyNpcSpawnerSearch: function (searchTerm, root) {
+    const term = String(searchTerm || '').toLowerCase().trim();
+    const searching = term.length > 0;
+    let list = null;
+    if (root && root.jquery && root.length) {
+      list = root[0];
+    } else if (root && root.nodeType === 1) {
+      list = root;
+    } else if (typeof root === 'string' && document && document.querySelector) {
+      list = document.querySelector(root);
+    } else if (document && document.getElementById) {
+      list = document.getElementById('npc-list');
+    }
+    if (!list) {
+      return;
+    }
+    list.querySelectorAll('.npc-cr-group').forEach((group) => {
+      const groupHay = String(group.getAttribute('data-cr-label') || '').toLowerCase();
+      const groupMatch = searching && groupHay.indexOf(term) !== -1;
+      let visible = 0;
+      group.querySelectorAll('.npc-item').forEach((item) => {
+        const hay = String(item.getAttribute('data-search') || item.textContent || '').toLowerCase();
+        const match = !searching || groupMatch || hay.indexOf(term) !== -1;
+        item.style.display = match ? '' : 'none';
+        if (match) {
+          visible += 1;
+        }
+      });
+      group.style.display = visible > 0 ? '' : 'none';
+      if (searching) {
+        if (visible > 0) {
+          group.classList.remove('collapsed');
+        }
+      } else {
+        const userCollapsed = group.getAttribute('data-user-collapsed') === '1';
+        group.classList.toggle('collapsed', userCollapsed);
+      }
+    });
   }
 };
 

@@ -18,21 +18,22 @@ from webapp.app import app
 
 
 @pytest.fixture
-def edit_client(monkeypatch):
-    monkeypatch.setenv("N20_EDIT_MODE", "1")
-    app.config["EDIT_MODE"] = True
+def edit_client():
     app.config["TESTING"] = True
     with app.test_client() as client:
         with client.session_transaction() as sess:
             sess["username"] = "dm"
+            sess["edit_mode"] = True
         yield client
-    app.config["EDIT_MODE"] = False
 
 
-def test_edit_overlay_requires_edit_mode(edit_client):
-    app.config["EDIT_MODE"] = False
-    resp = edit_client.get("/edit/overlay")
-    assert resp.status_code == 403
+def test_edit_overlay_requires_edit_mode():
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        with client.session_transaction() as sess:
+            sess["username"] = "dm"
+        resp = client.get("/edit/overlay")
+        assert resp.status_code == 403
 
 
 def test_edit_overlay_ok_in_edit_mode(edit_client):

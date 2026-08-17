@@ -1,0 +1,233 @@
+{% set block = npc_block %}
+{% set gallery = block.gallery if block else entity.sheet_images() %}
+<div class="stat-block" data-entity-uid="{{ entity.entity_uid }}">
+    <div class="stat-block-header">
+        <div class="stat-block-portrait">
+            {% if gallery %}
+            <img id="sheet-primary-image"
+                 src="/assets/{{ gallery[0].image }}"
+                 alt="{{ gallery[0].label }}">
+            {% if gallery|length > 1 %}
+            <div class="sheet-image-gallery" role="tablist" aria-label="Creature images">
+                {% for item in gallery %}
+                <button type="button"
+                        class="sheet-image-thumb{% if loop.first %} active{% endif %}"
+                        data-image="/assets/{{ item.image }}"
+                        data-label="{{ item.label }}"
+                        aria-label="{{ item.label }}"
+                        aria-selected="{{ 'true' if loop.first else 'false' }}"
+                        {% if item.description %}title="{{ item.description }}"{% endif %}>
+                    <img src="/assets/{{ item.image }}" alt="{{ item.label }}">
+                </button>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% else %}
+            <img id="sheet-primary-image" src="/assets/{{ block.profile_image or entity.profile_image() }}" alt="{{ block.name }}">
+            {% endif %}
+        </div>
+        <div class="stat-block-identity">
+            <h1 class="stat-block-name">{{ block.name }}</h1>
+            {% if block.familiar and block.owner_label %}
+            <div class="stat-block-sub">{{ block.owner_label }}'s Familiar</div>
+            {% endif %}
+            {% if block.sidekick %}
+            <div class="stat-block-sub">
+                {{ block.sidekick.class_label }} Sidekick
+                {% if block.sidekick.level %} (Level {{ block.sidekick.level }}){% endif %}
+                {% if block.sidekick.role %} · {{ block.sidekick.role }}{% endif %}
+            </div>
+            {% endif %}
+            <p class="stat-block-meta">{{ block.size_type_alignment }}</p>
+        </div>
+    </div>
+
+    <div class="stat-block-bar"></div>
+
+    <p class="stat-block-prop"><strong>Armor Class</strong> {{ block.ac }}</p>
+    <p class="stat-block-prop">
+        <strong>Hit Points</strong>
+        {% if 'dm' in role %}
+        <input type="number" class="hp-editable" id="current-hp-input" value="{{ block.hp }}" min="0" max="999">
+        /
+        <input type="number" class="hp-editable" id="max-hp-input" value="{{ block.max_hp }}" min="1" max="999">
+        {% if block.hp_die %} ({{ block.hp_die }}){% endif %}
+        <button class="hp-save-btn" onclick="updateCurrentHP()" id="save-current-hp-btn">HP</button>
+        <button class="hp-save-btn" onclick="updateMaxHP()" id="save-max-hp-btn">Max</button>
+        {% else %}
+        {{ block.hp }}{% if block.max_hp is not none %} / {{ block.max_hp }}{% endif %}{% if block.hp_die %} ({{ block.hp_die }}){% endif %}
+        {% endif %}
+    </p>
+    {% if 'dm' in role %}
+    <p class="stat-block-prop">
+        <strong>Temporary HP</strong>
+        <input type="number" class="hp-editable" id="temp-hp-input" value="{{ block.temp_hp }}" min="0" max="999">
+        <button class="hp-save-btn" onclick="updateTempHP()" id="save-temp-hp-btn">Save</button>
+    </p>
+    {% elif block.temp_hp %}
+    <p class="stat-block-prop"><strong>Temporary HP</strong> {{ block.temp_hp }}</p>
+    {% endif %}
+    <p class="stat-block-prop"><strong>Speed</strong> {{ block.speed }}</p>
+
+    <div class="stat-block-bar"></div>
+
+    <table class="stat-block-abilities">
+        <thead>
+            <tr>
+                {% for ability in block.abilities %}
+                <th>{{ ability.label }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                {% for ability in block.abilities %}
+                <td>
+                    <span class="stat-block-score">{{ ability.score }}</span>
+                    <span class="stat-block-mod auto-die-roll"
+                          data-entity="{{ entity.entity_uid }}"
+                          data-compact="true"
+                          data-roll="1d20{{ ability.mod }}"
+                          data-description="{{ ability.label }} Check"
+                          title="{{ ability.label }} check">({{ ability.mod }})</span>
+                </td>
+                {% endfor %}
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="stat-block-bar"></div>
+
+    {% if block.saves %}<p class="stat-block-prop"><strong>Saving Throws</strong> {{ block.saves }}</p>{% endif %}
+    {% if block.skills %}
+    <p class="stat-block-prop">
+        <strong>Skills</strong>
+        {% for skill in block.skills %}
+        <span class="stat-block-skill auto-die-roll"
+              data-entity="{{ entity.entity_uid }}"
+              data-compact="true"
+              data-roll="1d20{{ skill.mod }}"
+              data-description="{{ skill.label }} Check"
+              title="{{ skill.label }} check">{{ skill.label }} {{ skill.mod }}</span>{% if not loop.last %}, {% endif %}
+        {% endfor %}
+    </p>
+    {% endif %}
+    {% if block.vulnerabilities %}<p class="stat-block-prop"><strong>Damage Vulnerabilities</strong> {{ block.vulnerabilities }}</p>{% endif %}
+    {% if block.resistances %}<p class="stat-block-prop"><strong>Damage Resistances</strong> {{ block.resistances }}</p>{% endif %}
+    {% if block.immunities %}<p class="stat-block-prop"><strong>Damage Immunities</strong> {{ block.immunities }}</p>{% endif %}
+    {% if block.condition_immunities %}<p class="stat-block-prop"><strong>Condition Immunities</strong> {{ block.condition_immunities }}</p>{% endif %}
+    <p class="stat-block-prop"><strong>Senses</strong> {{ block.senses }}</p>
+    <p class="stat-block-prop"><strong>Languages</strong> {{ block.languages }}</p>
+    <p class="stat-block-prop stat-block-challenge">
+        <span><strong>Challenge</strong> {{ block.challenge or '—' }}</span>
+        <span><strong>Proficiency Bonus</strong> {{ block.proficiency_bonus }}</span>
+    </p>
+
+    {% if block.conditions %}
+    <p class="stat-block-prop">
+        <strong>Conditions</strong>
+        {% for condition in block.conditions %}
+        <span class="stat-block-condition">{{ condition }}</span>
+        {% endfor %}
+    </p>
+    {% endif %}
+
+    {% if block.sidekick or (entity.death_saves is defined) %}
+    {% if entity.death_saves or entity.death_fails or (block.sidekick and not entity.dead()) %}
+    <div class="stat-block-death">
+        <span>Death Saves</span>
+        <span class="dnd-death-pips" title="Successes">
+            {% for i in range(3) %}
+            <span class="dnd-death-pip success{% if entity.death_saves > i %} filled{% endif %}"></span>
+            {% endfor %}
+        </span>
+        <span class="dnd-death-pips" title="Failures">
+            {% for i in range(3) %}
+            <span class="dnd-death-pip fail{% if entity.death_fails > i %} filled{% endif %}"></span>
+            {% endfor %}
+        </span>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    {% if not restricted and can_rest_for(entity.entity_uid) %}
+    <div class="rest-controls stat-block-rest">
+        <button type="button" class="hp-save-btn" id="rest-btn-short"
+            data-rest-entity="{{ entity.entity_uid }}" data-rest-type="short"
+            onclick="openRestModal('{{ entity.entity_uid }}', 'short')">Short Rest</button>
+        <button type="button" class="hp-save-btn" id="rest-btn-long"
+            data-rest-entity="{{ entity.entity_uid }}" data-rest-type="long"
+            onclick="openRestModal('{{ entity.entity_uid }}', 'long')">Long Rest</button>
+        <span id="rest-status-indicator" style="font-size: 12px; color: #b00;"></span>
+        <div id="rest-status-detail" style="font-size: 12px; color: #666; margin-top: 4px;"></div>
+    </div>
+    {% endif %}
+
+    <div class="stat-block-bar"></div>
+
+    {% if block.spellcasting %}
+    <div class="stat-block-section">
+        <h2 class="stat-block-heading">Spellcasting</h2>
+        <p class="stat-block-trait">
+            The {{ block.name }} is
+            {%- if block.spellcasting.caster_level_ordinal %} a {{ block.spellcasting.caster_level_ordinal }}-level spellcaster
+            {%- else %} a spellcaster
+            {%- endif %}.
+            Its spellcasting ability is {{ block.spellcasting.ability }}
+            (spell save DC {{ block.spellcasting.save_dc }}, {{ block.spellcasting.attack_bonus_signed }} to hit with spell attacks).
+        </p>
+        {% if block.spellcasting.lists %}
+        <p class="stat-block-trait">The {{ block.name }} has the following spells prepared:</p>
+        <ul class="stat-block-spell-list">
+            {% for group in block.spellcasting.lists %}
+            <li><em>{{ group.label }}:</em> {{ group.spells | join(', ') }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+            {% if block.spellcasting.prepared %}
+            <p class="stat-block-trait"><em>Prepared:</em> {{ block.spellcasting.prepared | join(', ') }}</p>
+            {% endif %}
+            {% if block.spellcasting.known %}
+            <p class="stat-block-trait"><em>Known:</em> {{ block.spellcasting.known | join(', ') }}</p>
+            {% endif %}
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% for trait in block.traits %}
+    <p class="stat-block-trait"><strong><em>{{ trait.name }}.</em></strong> {{ trait.text }}</p>
+    {% endfor %}
+
+    {% if block.actions %}
+    <h2 class="stat-block-heading">Actions</h2>
+    {% for action in block.actions %}
+    <p class="stat-block-trait"><strong><em>{{ action.name }}.</em></strong> {{ action.text }}</p>
+    {% endfor %}
+    {% endif %}
+
+    {% if block.bonus_actions %}
+    <h2 class="stat-block-heading">Bonus Actions</h2>
+    {% for action in block.bonus_actions %}
+    <p class="stat-block-trait"><strong><em>{{ action.name }}.</em></strong> {{ action.text }}</p>
+    {% endfor %}
+    {% endif %}
+
+    {% if block.reactions %}
+    <h2 class="stat-block-heading">Reactions</h2>
+    {% for action in block.reactions %}
+    <p class="stat-block-trait"><strong><em>{{ action.name }}.</em></strong> {{ action.text }}</p>
+    {% endfor %}
+    {% endif %}
+
+    {% if block.legendary_actions %}
+    <h2 class="stat-block-heading">Legendary Actions</h2>
+    <p class="stat-block-trait">
+        The {{ block.name }} can take 3 legendary actions, choosing from the options below.
+        Only one legendary action option can be used at a time and only at the end of another creature's turn.
+        The {{ block.name }} regains spent legendary actions at the start of its turn.
+    </p>
+    {% for action in block.legendary_actions %}
+    <p class="stat-block-trait"><strong><em>{{ action.name }}.</em></strong> {{ action.text }}</p>
+    {% endfor %}
+    {% endif %}
+</div>

@@ -857,7 +857,10 @@ describe('engine.js basic behavior', () => {
 
     global.$ = (sel) => {
       if (sel === 'body' || sel === 'body') {
-        return { data: (key) => (key === 'role' ? 'dm' : undefined) };
+        return {
+          data: (key) => (key === 'role' ? 'dm' : undefined),
+          attr: () => '',
+        };
       }
       if (sel === '.tile') {
         return {
@@ -895,6 +898,70 @@ describe('engine.js basic behavior', () => {
 
     global.$ = orig$;
     global.Utils = origUtils;
+  });
+
+  test('EventQueue party_membership refreshes portraits, toasts, and hides invite', async () => {
+    const q = new Engine.EventQueue();
+    const orig$ = global.$;
+    const origUtils = global.Utils;
+    const origChat = global.Chat;
+    const dialogMessages = [];
+    let inviteHidden = false;
+
+    global.$ = (sel) => {
+      if (sel === '#dialogEntityName') {
+        return { data: (key) => (key === 'entity-id' ? 'npc_sister_anya' : undefined) };
+      }
+      if (sel === '#dialogInviteParty') {
+        return {
+          hide: () => { inviteHidden = true; },
+          show: () => { inviteHidden = false; },
+          toggle: (visible) => { inviteHidden = !visible; },
+        };
+      }
+      return orig$(sel);
+    };
+    global.Utils = {
+      showToast: jest.fn(),
+      refreshPortraits: jest.fn(),
+      refreshTileSet: jest.fn((a, b, c, d, e, callback) => {
+        if (typeof callback === 'function') callback();
+      }),
+    };
+    const chatMock = {
+      ...origChat,
+      addDialogMessage: jest.fn((kind, text, type) => {
+        dialogMessages.push({ kind, text, type });
+      }),
+    };
+    global.Chat = chatMock;
+    global.window.Chat = chatMock;
+
+    q.enqueue({
+      type: 'party_membership',
+      message: {
+        action: 'join',
+        entity_uid: 'npc_sister_anya',
+        name: 'Sister Anya',
+        text: 'Sister Anya joined the party.',
+        owners: ['keo'],
+      },
+    });
+
+    await new Promise((resolve) => {
+      const poll = () => { if (!q.processing && q.queue.length === 0) return resolve(); setTimeout(poll, 5); };
+      setTimeout(poll, 5);
+    });
+
+    expect(global.Utils.showToast).toHaveBeenCalledWith('Sister Anya joined the party.');
+    expect(global.Utils.refreshPortraits).toHaveBeenCalled();
+    expect(inviteHidden).toBe(true);
+    expect(dialogMessages.some((row) => row.text === 'Sister Anya joined the party.')).toBe(true);
+
+    global.$ = orig$;
+    global.Utils = origUtils;
+    global.Chat = origChat;
+    global.window.Chat = origChat;
   });
 
   test('EventQueue prompt shows alert and posts response', async () => {

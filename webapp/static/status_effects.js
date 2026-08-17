@@ -223,6 +223,17 @@
       mix-blend-mode: screen;
       animation: pe-prone-dust 3s ease-in-out infinite alternate;
     }
+    @keyframes pe-invis-shimmer {
+      0% { opacity: 0.22; }
+      100% { opacity: 0.42; }
+    }
+    .pe-invisibility {
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(210, 230, 255, 0.28) 0%, rgba(180, 210, 255, 0.12) 55%, rgba(255,255,255,0) 78%);
+      box-shadow: 0 0 16px rgba(200, 230, 255, 0.35), inset 0 0 12px rgba(255,255,255,0.2);
+      mix-blend-mode: screen;
+      animation: pe-invis-shimmer 1.8s ease-in-out infinite alternate;
+    }
     `;
     const style = document.createElement('style');
     style.id = 'persistent-effects-style';
@@ -247,6 +258,7 @@
   if (k === 'mirror_image' || k === 'mirror-image') k = 'mirror_image';
   if (k === 'absorb_elements' || k === 'absorb-elements') k = 'absorb_elements';
   if (k === 'restrained' || k === 'webbed') k = 'web';
+  if (k === 'invisible' || k === 'greater_invisibility' || k === 'greater-invisibility') k = 'invisibility';
   return k;
   }
 
@@ -266,6 +278,8 @@
     shell_defense: 'pe-shell-defend',
     in_shell: 'pe-shell-defend',
     prone: 'pe-prone',
+    invisibility: 'pe-invisibility',
+    greater_invisibility: 'pe-invisibility',
   };
 
   function createOverlayFor($tile, effKey){
@@ -327,12 +341,18 @@
       const $motes = $('<div class="pe-overlay pe-prone-motes">').attr('data-pe', effKey).css({ width: w, height: h, top: 0, left: 0 });
       $container.append($motes);
     }
+    if ((effKey === 'invisibility' || effKey === 'greater_invisibility') && $img && $img.length) {
+      $img.css('opacity', '0.38');
+    }
 
     return $overlay;
   }
 
   function removeOverlay($tile, effKey){
     $tile.find('.pe-overlay[data-pe="'+effKey+'"]').remove();
+    if (effKey === 'invisibility' || effKey === 'greater_invisibility') {
+      $tile.find('.entity img.npc, .entity img.flying-entity').first().css('opacity', '');
+    }
     // Clean empty container
     const $c = $tile.find('.pe-container');
     if ($c.length && $c.children('.pe-overlay').length === 0) $c.remove();

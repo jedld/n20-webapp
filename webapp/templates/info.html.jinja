@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>D&D Character Sheet</title>
+    <title>{% if is_npc_sheet | default(entity.is_npc()) %}{{ entity.label() }}{% else %}{{ entity.label() }}'s Character Sheet{% endif %}</title>
     <link rel="stylesheet" href="/libs/font-awesome/css/all.min.css">
     <link href="{{ asset_url('styles.css') }}" rel="stylesheet">
     <link href="{{ asset_url('sheet.css') }}" rel="stylesheet">
     <link href="{{ asset_url('journal.css') }}" rel="stylesheet">
     
-    <link href="https://fonts.googleapis.com/css?family=Cinzel|Uncial+Antiqua|IM+Fell+English" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css?family=Cinzel|Uncial+Antiqua|IM+Fell+English|Libre+Baskerville" rel="stylesheet">
     <script src="/libs/jquery/jquery-3.6.0.min.js"></script>
     <style>
         body {
@@ -425,14 +425,23 @@
     </style>
 
 </head>
-<body data-id="{{ entity.entity_uid }}" data-entity-class="{{ entity.__class__.__name__ }}" data-entity-race="{{ entity.race() | default('') | e }}" data-entity-klass="{{ (entity.class_and_level()[0][0] if entity.class_and_level() else '') | e }}">
-    <div class="sheet">
+<body data-id="{{ entity.entity_uid }}" data-entity-class="{{ entity.__class__.__name__ }}" data-entity-race="{{ entity.race() | default('') | e }}" data-entity-klass="{{ (entity.class_and_level()[0][0] if entity.class_and_level() else '') | e }}" data-npc-sheet="{{ '1' if (is_npc_sheet | default(entity.is_npc())) else '0' }}" data-restricted="{{ '1' if restricted else '0' }}">
+    {% set is_npc_sheet = is_npc_sheet if is_npc_sheet is defined else entity.is_npc() %}
+    {% set can_manage_sheet = can_manage_sheet if can_manage_sheet is defined else ('dm' in role) %}
+    <div class="sheet{% if is_npc_sheet %} sheet-npc{% if restricted %} sheet-npc-restricted{% endif %}{% endif %}">
+        {% if not is_npc_sheet %}
         <h1 class="sheet-page-title">{{ entity.label() }}'s Character Sheet</h1>
+        {% endif %}
+        {% if not (is_npc_sheet and restricted) %}
         <div class="tab">
-            <button class="tablinks" onclick="openTab(event, 'BasicInfo')">Basic Info</button>
+            <button class="tablinks" onclick="openTab(event, 'BasicInfo')">{% if is_npc_sheet %}Stat Block{% else %}Basic Info{% endif %}</button>
             {% if not entity.object() %}
+            {% if (not is_npc_sheet) or (npc_has_spells | default(false)) %}
             <button class="tablinks" onclick="openTab(event, 'Spells')">Spells</button>
+            {% endif %}
+            {% if (not is_npc_sheet) or can_manage_sheet %}
             <button class="tablinks" onclick="openTab(event, 'Equipment')">Equipment/Inventory</button>
+            {% endif %}
             {% if entity.__class__.__name__ == 'PlayerCharacter' %}
             <button class="tablinks" onclick="openJournalTab(event)">Journal <span id="journal-tab-unread-badge" class="journal-unread-badge" hidden></span></button>
             {% endif %}
@@ -442,10 +451,17 @@
             {% endif %}
             {% endif %}
         </div>
+        {% endif %}
 
         <!-- Tab content -->
-        <div id="BasicInfo" class="tabcontent">
+        <div id="BasicInfo" class="tabcontent"{% if is_npc_sheet and restricted %} style="display:block; border:0; padding:0;"{% endif %}>
+            {% if is_npc_sheet and restricted %}
+            {% include '_npc_public_card.html' %}
+            {% elif is_npc_sheet %}
+            {% include '_npc_stat_block.html' %}
+            {% else %}
             {% include '_basic_info_sheet.html' %}
+            {% endif %}
 
             {% if entity.__class__.__name__ == 'PlayerCharacter' and (('dm' in role) or (session.get('username') in entity_owners(entity))) %}
             <div class="section">
@@ -584,7 +600,8 @@
 
         </div>
 
-        {% if not entity.object() %}
+        {% if not entity.object() and not (is_npc_sheet and restricted) %}
+        {% if (not is_npc_sheet) or (npc_has_spells | default(false)) %}
         <div id="Spells" class="tabcontent">
             <h2>Spells</h2>
             <!-- Spells section -->
@@ -656,8 +673,10 @@
             </div>
             {% endfor %}
         </div>
+        {% endif %}
 
-        {% if entity.inventory or 'dm' in role %}
+        {% if (not is_npc_sheet) or can_manage_sheet %}
+        {% if entity.inventory or 'dm' in role or can_manage_sheet %}
         <div id="Equipment" class="tabcontent">
             <div class="section">
                 <div class="section-header">
@@ -757,6 +776,7 @@
             </div>
 
         </div>
+        {% endif %}
         {% endif %}
 
         {% if entity.__class__.__name__ == 'PlayerCharacter' %}
@@ -1500,10 +1520,14 @@
                             
                             // Update the page title and main heading if name changed
                             if (name) {
-                                document.title = `${name}'s Character Sheet`;
-                                const heading = document.querySelector('h1');
+                                const isNpcSheet = document.body.getAttribute('data-npc-sheet') === '1';
+                                document.title = name;
+                                const heading = document.querySelector(isNpcSheet ? 'h1.stat-block-name' : 'h1.sheet-page-title');
                                 if (heading) {
-                                    heading.textContent = `${name}'s Character Sheet`;
+                                    heading.textContent = isNpcSheet ? name : `${name}'s Character Sheet`;
+                                }
+                                if (!isNpcSheet) {
+                                    document.title = `${name}'s Character Sheet`;
                                 }
                             }
                         } else {

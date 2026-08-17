@@ -45,7 +45,7 @@ class VoiceProfile:
 
     def to_metadata(self) -> dict[str, Any]:
         """Serialize for VoiceConfig.extra_metadata['profile']."""
-        return {
+        data: dict[str, Any] = {
             "gender": self.gender,
             "age_band": self.age_band,
             "race": self.race,
@@ -55,6 +55,13 @@ class VoiceProfile:
             "traits": list(self.traits),
             "provider": self.provider,
         }
+        if self.accent:
+            data["accent"] = self.accent
+        if self.campaign_root:
+            data["campaign_root"] = self.campaign_root
+        if self.reference_audio:
+            data["reference_audio"] = self.reference_audio
+        return data
 
     @classmethod
     def from_metadata(
@@ -88,6 +95,7 @@ class VoiceProfile:
             provider=meta.get("provider") or kwargs.get("provider"),
             traits=[str(t).strip() for t in traits if str(t).strip()],
             locked=bool(kwargs.get("locked", meta.get("locked", False))),
+            campaign_root=kwargs.get("campaign_root") or meta.get("campaign_root"),
         )
 
     def design_prompt(self) -> str:
@@ -98,6 +106,13 @@ class VoiceProfile:
         stable string used when locking an NPC timbre.
         """
         parts: list[str] = []
+        from webapp.tts.accent_instruct import qwen3_accent_instruct
+
+        accent_instruct = qwen3_accent_instruct(self.accent)
+        if accent_instruct:
+            # Qwen3 VoiceDesign defaults to General American unless accent leads.
+            parts.append(accent_instruct)
+
         prompt = (self.prompt or "").strip()
         if prompt:
             parts.append(prompt)
@@ -125,9 +140,6 @@ class VoiceProfile:
             cleaned = trait.strip()
             if cleaned and cleaned.lower() not in prompt.lower():
                 parts.append(cleaned)
-
-        if self.accent and str(self.accent).lower() not in ("", "none", "american"):
-            parts.append(f"{self.accent} accent")
 
         label = (self.label or "").strip()
         if label and label.lower() not in prompt.lower():

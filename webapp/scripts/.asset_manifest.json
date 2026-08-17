@@ -64,6 +64,331 @@
     "sha1": "357b174ad04f0af7e2735a1bdd8bd35cbbd11e72",
     "size": 14139
   },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/characters/ddb-169286937.png": {
+    "mtime": 1786474718,
+    "sha1": "68b852a55f01d4498a79efcb409f2459174dc89f",
+    "size": 169156
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/characters/ddb-23118445.png": {
+    "mtime": 1785556681,
+    "sha1": "14a1fd38f403de9d2093128d5a7b0a1ab3c1c9fe",
+    "size": 24100
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/cos-cover-4k.jpg": {
+    "mtime": 1785658485,
+    "sha1": "f5e2418bb1becae299e149c7b7132fb46f517b14",
+    "size": 109798
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/attic_secret_door.png": {
+    "mtime": 1786543380,
+    "sha1": "227a7aba4f7b51c1e2848a0dbd6d8a4d618f7234",
+    "size": 206
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/barrier.png": {
+    "mtime": 1786543380,
+    "sha1": "0d4fd28f53ef5a00d382188e28487b3981b44aa3",
+    "size": 164
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/bottom_door.png": {
+    "mtime": 1786543379,
+    "sha1": "7511f79c33ddc8445de1757c3bec59b4452380b4",
+    "size": 193
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/bottom_storage_room.png": {
+    "mtime": 1786543379,
+    "sha1": "98212d47142426e4fcc38d9dc808a7c9cfe99233",
+    "size": 220
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/corner_door_lb.png": {
+    "mtime": 1786543379,
+    "sha1": "e616cfc1910f747853d141efe18ae340d71390f1",
+    "size": 215
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/corner_door_lt.png": {
+    "mtime": 1786543379,
+    "sha1": "2789642f4d57bc0ec88dcb7619af058cf51720fd",
+    "size": 219
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/corner_door_rb.png": {
+    "mtime": 1786543379,
+    "sha1": "627dbcb62618272fb35c4c9e376b99cf9f5f4d9a",
+    "size": 207
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/corner_door_rt.png": {
+    "mtime": 1786543379,
+    "sha1": "72a4bb84b71c5b8dbeddba014b8686df832b5363",
+    "size": 208
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/corner_gate_bl.png": {
+    "mtime": 1786543379,
+    "sha1": "a19e8748622fb03a6c98aa0bb95ec7edc56fa149",
+    "size": 200
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/corner_gate_br.png": {
+    "mtime": 1786543379,
+    "sha1": "5e2644f84eb2c47a2b1d5dd2f76580ab45b599a5",
+    "size": 198
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/door_l.png": {
+    "mtime": 1786543379,
+    "sha1": "db7fcc6ab3c43382b7b5489f12e9dd975f3c57cd",
+    "size": 203
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/dungeon_secret_door1.png": {
+    "mtime": 1786543380,
+    "sha1": "7ee4e0b4028c183fd2f967b6e1552607926f2f59",
+    "size": 199
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/left_door.png": {
+    "mtime": 1786543379,
+    "sha1": "db7fcc6ab3c43382b7b5489f12e9dd975f3c57cd",
+    "size": 203
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/portcullis_b.png": {
+    "mtime": 1786543380,
+    "sha1": "7511f79c33ddc8445de1757c3bec59b4452380b4",
+    "size": 193
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/right_door.png": {
+    "mtime": 1786543379,
+    "sha1": "9384f8bf12e00bc237e37b4e53f476c5ccc4b8d3",
+    "size": 195
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/right_storage_room.png": {
+    "mtime": 1786543379,
+    "sha1": "809dac89001385502fd65e8618b7ba7488994dc5",
+    "size": 220
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/top_bottom_door.png": {
+    "mtime": 1786543379,
+    "sha1": "756924df3d4ddf808bcd8c743613cf7f5dc7ef2a",
+    "size": 205
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/top_door.png": {
+    "mtime": 1786543379,
+    "sha1": "7ee4e0b4028c183fd2f967b6e1552607926f2f59",
+    "size": 199
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/editor/top_storage_room.png": {
+    "mtime": 1786543379,
+    "sha1": "118adc1bb2ddee8773f47144ade72873dc7f1524",
+    "size": 221
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/items/kolyan_letter_forged.jpg": {
+    "mtime": 1786834185,
+    "sha1": "42291d9540340c6df5a0f82113e03aff934393f9",
+    "size": 204762
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/items/kolyan_letter_genuine.jpg": {
+    "mtime": 1786834213,
+    "sha1": "7970942338b940271b4ef7fe4ecd8bda6d38f432",
+    "size": 171809
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/items/strahd_crest.png": {
+    "mtime": 1786829691,
+    "sha1": "bcf5e35bc6c3385b4d165a4a7e95e98090b54a5a",
+    "size": 191348
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/2nd_floor.png": {
+    "mtime": 1785255886,
+    "sha1": "5862af93cfaf64e8abc38df637b3508e5883636e",
+    "size": 1165601
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/3rd_floor.png": {
+    "mtime": 1785255886,
+    "sha1": "f1b8e145624c7dc00b3bd26724b60832c17d4e70",
+    "size": 1040722
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/attic.png": {
+    "mtime": 1785255886,
+    "sha1": "ea57db2de27aa09fe0df870ef7a98ad36fe2bed7",
+    "size": 1075487
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/basement_2.png": {
+    "mtime": 1785255886,
+    "sha1": "b8c35fc4dbaafa6647d152a93745d6eef3be302d",
+    "size": 1439364
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/deathhouseplayer (copy).jpg": {
+    "mtime": 1785255886,
+    "sha1": "84c5520f445d7e5da6f9af37af93dad82ba508e0",
+    "size": 258509
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/gates_of_barovia.png": {
+    "mtime": 1786850082,
+    "sha1": "729e9fb0994de4f6ddf2bceda09971db31488366",
+    "size": 741831
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/index.png": {
+    "mtime": 1785255886,
+    "sha1": "72df81c88d2fbfc764ed429fd59093f9e2c23773",
+    "size": 1231220
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/old_svalich_road.png": {
+    "mtime": 1786850211,
+    "sha1": "512b3dfd7a36bfb4be223043fea6eff52d79ea98",
+    "size": 564631
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/road.png": {
+    "mtime": 1786850475,
+    "sha1": "ed1406a02bdfbbf6ebcaf231c621b3e9385a6209",
+    "size": 665366
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/svalich_mist.png": {
+    "mtime": 1786835453,
+    "sha1": "dc624653d58c5fd169ce1ec21271f04aa2c33d8a",
+    "size": 817173
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/svalich_woods_c.png": {
+    "mtime": 1786850346,
+    "sha1": "eb1e4f8fffdc53e3434324672ca92cb73e8c5f44",
+    "size": 1117236
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/maps/tavern_night.png": {
+    "mtime": 1786842747,
+    "sha1": "b21158ca084afffe1f20f6ca76f1de37de2787c8",
+    "size": 1490645
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/mysterious_statue.png": {
+    "mtime": 1785255886,
+    "sha1": "b4542473242502656c7890070a21a9a8ff817bb2",
+    "size": 539453
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/dalvan_olensky_corpse.png": {
+    "mtime": 1786849083,
+    "sha1": "1c7c2d87203d603964b79308a711ca24f87021bc",
+    "size": 1545020
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/dining_room.png": {
+    "mtime": 1785255886,
+    "sha1": "760a9c272ba787ae02311f77f5e94cb07412bf19",
+    "size": 993515
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/durst_family_portrait.png": {
+    "mtime": 1785255886,
+    "sha1": "0290d28c6c58cee9511e67da9db94f135ac6c112",
+    "size": 1020095
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/fallen_statue_head.png": {
+    "mtime": 1786848951,
+    "sha1": "123f2d0b3d21a9c0051bc30eb6272e8686d2bb3b",
+    "size": 1439529
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/headless_guardian_statue.png": {
+    "mtime": 1786848820,
+    "sha1": "43be2526478b0ef4db8b79d4c1bc6553df4cf1d8",
+    "size": 1183774
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/mysterious_statue.png": {
+    "mtime": 1785255886,
+    "sha1": "b4542473242502656c7890070a21a9a8ff817bb2",
+    "size": 539453
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/rose_remains.png": {
+    "mtime": 1785689127,
+    "sha1": "faf177675c0ce03163c8c9c5d9e803deea9ae437",
+    "size": 1008917
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/secret_stairs_loc.png": {
+    "mtime": 1785255886,
+    "sha1": "e58395326ea0e2e9f7af4423e8650705ca991854",
+    "size": 1060618
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/objects/thorn_remains.png": {
+    "mtime": 1785689127,
+    "sha1": "44c671e69ab5f6586bd23082d5f31200c309fcc0",
+    "size": 1028447
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/portraits/portrait_strahd_von_zarovich.jpg": {
+    "mtime": 1786838434,
+    "sha1": "bffbc4aea5ad73a2e98099d7904ec9dfbc6cf6e0",
+    "size": 125880
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_arrigal.png": {
+    "mtime": 1786835820,
+    "sha1": "90488e97e8444e6e3d6a6f282a56bba0c54a0035",
+    "size": 93321
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_branna_cole.png": {
+    "mtime": 1786835950,
+    "sha1": "32318514013cb94c33ed75a7b19ff5ecdec06e52",
+    "size": 84045
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_ddb-169286937.png": {
+    "mtime": 1786474718,
+    "sha1": "abd2bca3e30f0cc12d75c2c06eb823de3aac7113",
+    "size": 116238
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_dire_wolf.png": {
+    "mtime": 1786848656,
+    "sha1": "89098c979717070aec1665a285db4d14bb878bde",
+    "size": 80366
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_durn.png": {
+    "mtime": 1786836080,
+    "sha1": "31e9f4f32f2b9c6500da5830dd8ea8cce4610ee2",
+    "size": 83676
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_finn_whistle.png": {
+    "mtime": 1786836210,
+    "sha1": "70999a44deac9622c6402f1153eb565142210160",
+    "size": 84684
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_hob_cask.png": {
+    "mtime": 1786836341,
+    "sha1": "19637b268f51ccee2788337bba12b6830645541b",
+    "size": 90821
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_lina_reed.png": {
+    "mtime": 1786836471,
+    "sha1": "3a33a2abfbf8d687fa9a1fc152acddd391a02eaf",
+    "size": 89137
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_marta_venn.png": {
+    "mtime": 1786836602,
+    "sha1": "203436b55387b162654bb5b6b3f5205dca18afc4",
+    "size": 98415
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_mimic.png": {
+    "mtime": 1785687807,
+    "sha1": "619f09a7cc282e59f2636f8a5b5e494d40591e7a",
+    "size": 122599
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_old_tam.png": {
+    "mtime": 1786836733,
+    "sha1": "d3a6969cb494a9905f2cddc0214ef6a498546490",
+    "size": 87116
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_oogway.png": {
+    "mtime": 1786161088,
+    "sha1": "33eadb84fa892f455ce5775e693fc1d3939710be",
+    "size": 99452
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_pell_watch.png": {
+    "mtime": 1786836863,
+    "sha1": "b067619792de0b164f4dc8cdb0f31a38797347ab",
+    "size": 89747
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_sister_cala.png": {
+    "mtime": 1786836994,
+    "sha1": "02bbf0a8f10af15d71b8a83e662bc060ef541b57",
+    "size": 80382
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_strahd_von_zarovich.png": {
+    "mtime": 1786838434,
+    "sha1": "b2c1a8d24d52ce42abca8a2541fc5730c641a5b5",
+    "size": 12973
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_swarm_of_centipedes.png": {
+    "mtime": 1785658357,
+    "sha1": "62e243d58b261b80496ca1a77c8f17890c8ce01c",
+    "size": 89297
+  },
+  "/home/jedld/workspace/natural_20.py/user_levels/death_house/assets/token_tortle.png": {
+    "mtime": 1786160990,
+    "sha1": "20c457db6f5f05ee25962f85dd57b49a951184e9",
+    "size": 94368
+  },
   "/home/jedld/workspace/natural_20.py/user_levels/outcasts_path/assets/maps/cathedral.png": {
     "mtime": 1784645145,
     "sha1": "4b70b3acf6b7563c5eeaf280ad3daea678712389",

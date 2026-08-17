@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from webapp.tts.capabilities import get_provider_capabilities
 from webapp.tts.npc_voice import build_voice_profile_from_entity
 from webapp.tts.voice_profile import VoiceProfile, VoiceStrategy
+from webapp.tts.voice_baking import bake_sample_text, should_bake_qwen3_design_voice
 from webapp.tts.voice_resolver import resolve_voice_plan
 
 
@@ -25,6 +26,80 @@ class TestVoiceProfileDesignPrompt:
         assert "male" in design.lower()
         assert "dry humor" in design.lower()
         assert "irish" in design.lower()
+        assert design.lower().index("irish") < design.lower().index("barkeeper")
+        assert "not american" in design.lower()
+
+    def test_design_prompt_leads_with_british_accent(self):
+        profile = VoiceProfile(
+            npc_uid="npc-2",
+            prompt="Brisk wool merchant",
+            gender="female",
+            accent="british",
+        )
+        design = profile.design_prompt()
+        assert design.lower().startswith("british english accent")
+        assert "not american" in design.lower()
+        assert "non-rhotic" in design.lower()
+
+    def test_design_prompt_eastern_european_is_specific(self):
+        profile = VoiceProfile(
+            npc_uid="npc_strahd",
+            prompt="Ancient aristocratic vampire lord",
+            gender="male",
+            accent="eastern european",
+        )
+        design = profile.design_prompt()
+        assert "eastern european" in design.lower()
+        assert "romanian" in design.lower() or "transylvanian" in design.lower()
+        assert "not american" in design.lower()
+        assert design.lower().index("eastern european") < design.lower().index("vampire")
+
+    def test_design_prompt_skips_american_accent_clause(self):
+        profile = VoiceProfile(
+            npc_uid="npc-3",
+            prompt="Sunny farmhand",
+            accent="american",
+        )
+        design = profile.design_prompt()
+        assert "american accent" not in design.lower()
+
+
+class TestBakeSampleText:
+    def test_british_bake_line_is_not_gravelly_american(self):
+        text = bake_sample_text("british")
+        assert "good afternoon" in text.lower()
+        assert "gravelly" not in text.lower()
+
+    def test_eastern_european_bake_line(self):
+        text = bake_sample_text("eastern european")
+        assert "slowly and clearly" in text.lower()
+
+
+class TestExternalBakeProvider:
+    def test_cosyvoice_bake_provider_skips_qwen3_voicedesign(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("N20_TTS_BAKE_PROVIDER", "cosyvoice")
+        assert should_bake_qwen3_design_voice(
+            resolved_strategy="design",
+            reference_audio=None,
+            campaign_root=str(tmp_path),
+            npc_uid="npc_strahd_von_zarovich",
+        ) is False
+
+    def test_elevenlabs_bake_provider_skips_qwen3_voicedesign(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("N20_TTS_BAKE_PROVIDER", "elevenlabs")
+        assert should_bake_qwen3_design_voice(
+            resolved_strategy="design",
+            reference_audio=None,
+            campaign_root=str(tmp_path),
+            npc_uid="npc_strahd_von_zarovich",
+        ) is False
+        monkeypatch.delenv("N20_TTS_BAKE_PROVIDER", raising=False)
+        assert should_bake_qwen3_design_voice(
+            resolved_strategy="design",
+            reference_audio=None,
+            campaign_root=str(tmp_path),
+            npc_uid="npc_strahd_von_zarovich",
+        ) is True
 
 
 class TestVoiceResolver:
@@ -106,6 +181,25 @@ class TestBuildVoiceProfileFromEntity:
         assert profile.provider == "qwen3"
         assert profile.traits == ["gravelly", "booming"]
         assert "gruff orc" in profile.design_prompt().lower()
+
+    def test_eastern_european_accent_leads_entity_design_prompt(self):
+        entity = SimpleNamespace(
+            entity_uid="npc_strahd_von_zarovich",
+            properties={
+                "label": "Strahd",
+                "gender": "male",
+                "voice": {
+                    "prompt": "Ancient aristocratic vampire lord",
+                    "accent": "eastern european",
+                    "language": "en",
+                },
+            },
+        )
+        profile = build_voice_profile_from_entity(entity)
+        design = profile.design_prompt().lower()
+        assert design.startswith("english with a clear eastern european")
+        assert "romanian" in design or "transylvanian" in design
+        assert "not american" in design
 
 
 class TestProviderCapabilities:

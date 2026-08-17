@@ -2864,6 +2864,16 @@ class LLMHandler:
                 or 'Unknown'
             )
             prompt += f"\n\nCurrent Map: {current_map}"
+            active_set = (
+                context.get('active_map_set')
+                or map_info_ctx.get('active_map_set')
+                or (context.get('list_map_sets') or {}).get('active')
+            )
+            if active_set:
+                prompt += f"\nActive Map Set: {active_set}"
+            map_set_name = map_info_ctx.get('map_set')
+            if map_set_name:
+                prompt += f"\nCurrent Map Set: {map_set_name}"
 
             battle_ctx = context.get('battle')
             battle_status_ctx = context.get('get_battle_status') if isinstance(context.get('get_battle_status'), dict) else {}

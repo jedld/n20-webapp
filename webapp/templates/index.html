@@ -20,10 +20,11 @@
     <script src="{{ asset_url('js/chat.js') }}"></script>
     <script src="{{ asset_url('path_compute.js') }}"></script>
     <script src="{{ asset_url('engine.js') }}"></script>
-    {% if edit_mode %}
+    {% if 'dm' in role %}
     <script src="{{ url_for('static', filename='edit_properties.js') }}?v={{ salt }}"></script>
     <script src="{{ url_for('static', filename='edit_mode.js') }}?v={{ salt }}"></script>
     <script src="{{ url_for('static', filename='map_annotations_edit.js') }}?v={{ salt }}"></script>
+    <script src="{{ url_for('static', filename='dm_notes.js') }}?v={{ salt }}"></script>
     {% endif %}
   <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32x32.png') }}">
@@ -206,10 +207,6 @@
         }
 
         .local-conversation-panel.minimized {
-          top: auto !important;
-          left: auto !important;
-          right: 17px !important;
-          bottom: 185px !important;
           width: 260px;
           height: auto;
           min-height: 0;
@@ -225,9 +222,8 @@
           display: none;
         }
 
-        .local-conversation-panel.minimized .local-conversation-header {
-          cursor: default;
-          border-bottom: 0;
+        .local-conversation-panel.minimized .local-conversation-subtitle {
+          display: none;
         }
 
         .local-conversation-panel.dragging {
@@ -689,13 +685,17 @@
           padding: 0 6px;
           margin-left: 6px;
           border-radius: 999px;
-          background: rgba(111, 98, 84, 0.2);
-          color: #4a4034;
-          border: 1px solid #8a7a66;
+          background: rgba(245, 158, 11, 0.2);
+          color: #fde68a;
+          border: 1px solid rgba(245, 158, 11, 0.45);
           font-size: 0.8em;
           font-weight: 600;
           line-height: 1.4;
           vertical-align: middle;
+        }
+
+        #journal-menu-unread-badge:not(.visible) {
+          display: none;
         }
 
         #expand-menu.has-journal-unread {
@@ -710,8 +710,8 @@
           width: 10px;
           height: 10px;
           border-radius: 50%;
-          background: #8a7a66;
-          border: 2px solid #fff;
+          background: #f59e0b;
+          border: 2px solid #18181b;
           box-shadow: none;
         }
 
@@ -803,57 +803,178 @@
     </div>
 
     <div id="floating-menu">
-        <button id="expand-menu" class="menu-button">
+        <button id="expand-menu" class="menu-button" type="button" title="Open menu" aria-label="Open menu" aria-expanded="false" aria-controls="menu">
             <span class="glyphicon glyphicon-menu-hamburger"></span>
         </button>
-        <button id="collapse-menu" class="menu-button" style="display: none;">
-            <span class="glyphicon glyphicon-menu-left"></span>
+        <button id="collapse-menu" class="menu-button" type="button" title="Close menu" aria-label="Close menu" aria-expanded="true" aria-controls="menu" style="display: none;">
+            <span class="glyphicon glyphicon-remove"></span>
         </button>
-        <div id="menu" style="display: none;">
-            <ul>
-                {% if 'dm' in role %}
-                    <li id="select-soundtrack">Sound Manager</li>
-                    <li id="open-effects" data-toggle="modal" data-target="#effectsModal">Effects</li>
-                    <li><a href="/admin/manage_saves" target="_blank">Manage Saves</a></li>
+        <nav id="menu" class="vtt-menu" style="display: none;" aria-label="Game menu">
+            {% if 'dm' in role %}
+            <div class="vtt-menu-section">
+                <h2 class="vtt-menu-section-label">Combat</h2>
+                <ul>
                   {% if pvp_enabled %}
                   <li style="{{ 'display: none;' if battle}}">
-                    <button id="start-match" class="btn btn-danger btn-sm" style="width: 100%;">Start Match</button>
+                    <button type="button" id="start-match" class="vtt-menu-item vtt-menu-item--danger">
+                      <span class="glyphicon glyphicon-fire" aria-hidden="true"></span>
+                      <span class="vtt-menu-label">Start Match</span>
+                    </button>
                   </li>
                   {% else %}
-                  <li id="start-battle" style="{{ 'display: none;' if battle}}">Start Battle</li>
-                  {% endif %}
-                    <li id="end-battle" style="{{ 'display: none;' if not battle}}">End Battle</li>
-                    <li id="switch-map" data-toggle="modal" data-target="#mapModal">Switch Map</li>
-                    <li id="reload-map" data-toggle="modal" data-target="#reloadModal">Reload Map</li>
-                    <li id="send-command" data-toggle="modal" data-target="#commandModal">Send Command</li>
-                    <li id="run-npc-long-rest-sim" title="Run NPC long-rest background simulation (conversations, routines, memories)">NPC Long Rest Sim</li>
-                    <li id="toggle-npc-spawner">NPC Spawner</li>
-                    <li id="toggle-pc-spawner">PC Spawner</li>
-                    <li id="toggle-object-spawner">Object Spawner</li>
-                    <li id="character-builder">Character Builder</li>
-                    {% if edit_mode %}
-                    <li><a href="/edit/map_graph" target="_blank" rel="noopener">Map Connections</a></li>
-                    {% endif %}
-                {% endif %}
-                <li id="journal-notification-item" style="display: none;">
-                    <button type="button" id="open-journal-btn" class="btn btn-link" style="width: 100%; text-align: left; padding: 0;">
-                        Journal <span id="journal-menu-unread-badge" class="journal-unread-badge">0</span>
+                  <li id="start-battle" style="{{ 'display: none;' if battle}}">
+                    <button type="button" class="vtt-menu-item">
+                      <span class="glyphicon glyphicon-play" aria-hidden="true"></span>
+                      <span class="vtt-menu-label">Start Battle</span>
                     </button>
-                </li>
-                <li id="game-time-display" style="border-top: 1px solid #ccc; padding-top: 5px; margin-top: 5px;" title="Game world time that advances based on player and NPC actions (not real time)">
-                    <strong>Game World Time:</strong><br>
-                    <span id="game-time-text" data-seconds="{{ game_session.game_time | default(0) | int }}">{{ game_session.game_time | default(0) | format_game_time }}</span>
-                    <br><small style="color: #666; font-style: italic;">Advances with actions</small>
-                </li>
-                <li id="open-console">Open Console</li>
-                <li id="reset-narrations" title="Re-show narration popups that were already dismissed">Reset Narrations</li>
-                <li>
-                    <form action="/logout" method="post">
-                        <input type="submit" value="Logout">
-                    </form>
-                </li>
-            </ul>
-        </div>
+                  </li>
+                  {% endif %}
+                  <li id="end-battle" style="{{ 'display: none;' if not battle}}">
+                    <button type="button" class="vtt-menu-item vtt-menu-item--danger">
+                      <span class="glyphicon glyphicon-stop" aria-hidden="true"></span>
+                      <span class="vtt-menu-label">End Battle</span>
+                    </button>
+                  </li>
+                </ul>
+            </div>
+            <div class="vtt-menu-section">
+                <h2 class="vtt-menu-section-label">Table</h2>
+                <ul>
+                    <li>
+                      <button type="button" id="switch-map" class="vtt-menu-item" data-toggle="modal" data-target="#mapModal">
+                        <span class="glyphicon glyphicon-map-marker" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Maps &amp; Map Sets</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="reload-map" class="vtt-menu-item" data-toggle="modal" data-target="#reloadModal">
+                        <span class="glyphicon glyphicon-refresh" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Reload Map</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="select-soundtrack" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-music" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Sound</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="open-effects" class="vtt-menu-item" data-toggle="modal" data-target="#effectsModal">
+                        <span class="glyphicon glyphicon-cloud" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Effects</span>
+                      </button>
+                    </li>
+                    <li>
+                      <a class="vtt-menu-item" href="/admin/manage_saves" target="_blank" rel="noopener">
+                        <span class="glyphicon glyphicon-floppy-disk" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Manage Saves</span>
+                      </a>
+                    </li>
+                </ul>
+            </div>
+            <div class="vtt-menu-section">
+                <h2 class="vtt-menu-section-label">Spawn</h2>
+                <ul>
+                    <li>
+                      <button type="button" id="toggle-npc-spawner" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-user" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">NPC Spawner</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="toggle-pc-spawner" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-star" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">PC Spawner</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="toggle-object-spawner" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-th-large" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Object Spawner</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="character-builder" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-pencil" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Character Builder</span>
+                      </button>
+                    </li>
+                </ul>
+            </div>
+            <div class="vtt-menu-section">
+                <h2 class="vtt-menu-section-label">Authoring</h2>
+                <ul>
+                    <li id="toggle-edit-mode">
+                      <button type="button" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-edit" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">{{ 'Exit Edit Mode' if edit_mode else 'Enter Edit Mode' }}</span>
+                      </button>
+                    </li>
+                    <li id="edit-map-graph-item"{% if not edit_mode %} style="display: none;"{% endif %}>
+                      <a class="vtt-menu-item" href="/edit/map_graph" target="_blank" rel="noopener">
+                        <span class="glyphicon glyphicon-random" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Map Connections</span>
+                      </a>
+                    </li>
+                    <li id="toggle-dm-notes">
+                      <button type="button" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-flag" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Hide DM Notes</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="send-command" class="vtt-menu-item" data-toggle="modal" data-target="#commandModal">
+                        <span class="glyphicon glyphicon-console" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">DM Console</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="run-npc-long-rest-sim" class="vtt-menu-item" title="Run NPC long-rest background simulation (conversations, routines, memories)">
+                        <span class="glyphicon glyphicon-time" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">NPC Downtime Sim</span>
+                      </button>
+                    </li>
+                </ul>
+            </div>
+            {% endif %}
+            <div class="vtt-menu-section">
+                <h2 class="vtt-menu-section-label">Session</h2>
+                <ul>
+                    <li id="journal-notification-item">
+                      <button type="button" id="open-journal-btn" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-book" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Journal</span>
+                        <span id="journal-menu-unread-badge" class="journal-unread-badge">0</span>
+                      </button>
+                    </li>
+                    <li id="open-console">
+                      <button type="button" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-list-alt" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Combat Log</span>
+                      </button>
+                    </li>
+                    <li id="reset-narrations">
+                      <button type="button" class="vtt-menu-item" title="Re-show narration popups that were already dismissed">
+                        <span class="glyphicon glyphicon-repeat" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Reset Narrations</span>
+                      </button>
+                    </li>
+                    <li id="game-time-display" class="vtt-menu-status" title="Game world time that advances based on player and NPC actions (not real time)">
+                        <strong>World time</strong>
+                        <span id="game-time-text" data-seconds="{{ game_session.game_time | default(0) | int }}">{{ game_session.game_time | default(0) | format_game_time }}</span>
+                        <small>Advances with actions</small>
+                    </li>
+                    <li>
+                      <form action="/logout" method="post" class="vtt-menu-logout">
+                        <button type="submit" class="vtt-menu-item vtt-menu-item--danger">
+                          <span class="glyphicon glyphicon-log-out" aria-hidden="true"></span>
+                          <span class="vtt-menu-label">Log out</span>
+                        </button>
+                      </form>
+                    </li>
+                </ul>
+            </div>
+        </nav>
     </div>
     {% if 'dm' in role %}
   <!-- Effects Modal -->
@@ -1005,7 +1126,7 @@
                     <h4 class="modal-title" id="mapModalLabel">Select a Map</h4>
                 </div>
                 <div class="modal-body">
-                    <p class="text-muted" style="margin-top:-6px; margin-bottom:8px;">Click a map to switch, or create a new one.</p>
+                    <p class="text-muted" style="margin-top:-6px; margin-bottom:8px;">View a map (camera only), activate a map set to move the party POV, or place party tokens on a map.</p>
                     {% include 'partials/map_tiles.html' %}
                 </div>
             </div>
@@ -1189,13 +1310,16 @@
     </div>
     {% endif %}
     
-    <!-- Zoom Controls (Roll20-style) -->
-    <div id="zoom-controls">
-        <button id="zoom-out" title="Zoom Out (Scroll Down)">−</button>
-        <span id="zoom-level">100%</span>
-        <button id="zoom-in" title="Zoom In (Scroll Up)">+</button>
-        <button id="zoom-reset" title="Reset View">Reset</button>
+    <!-- Map chrome: zoom + landmarks (left), notes + minimized chat (right) -->
+    <div id="map-chrome-left" class="map-chrome-dock map-chrome-dock--left">
+      <div id="zoom-controls">
+          <button id="zoom-out" title="Zoom Out (Scroll Down)">−</button>
+          <span id="zoom-level">100%</span>
+          <button id="zoom-in" title="Zoom In (Scroll Up)">+</button>
+          <button id="zoom-reset" title="Reset View">Reset</button>
+      </div>
     </div>
+    <div id="map-chrome-right" class="map-chrome-dock map-chrome-dock--right"></div>
     
     <div id="main-map-area" style="background-color: {{ background_color }}; position: relative; width: 100%; height: 100vh; display: flex; justify-content: center; align-items: center; overflow: hidden;">
         <div class="image-container" style="position: relative; height: {{ background_height }}px;">
@@ -1342,7 +1466,7 @@
         </div>
         <div class="npc-spawner-content" style="padding: 10px; height: calc(100% - 35px); overflow-y: auto;">
             <div class="npc-search" style="margin-bottom: 10px;">
-                <input type="text" id="npc-search-input" class="form-control" placeholder="Search NPCs..." style="font-size: 12px;">
+                <input type="text" id="npc-search-input" class="form-control" placeholder="Search by name, CR, or unique..." style="font-size: 12px;">
             </div>
             <div id="npc-list">
                 <!-- NPCs will be loaded here -->
@@ -1434,7 +1558,7 @@
         // Toggle portraits visibility
         toggleButton.addEventListener('click', function() {
           if (portraitsContainer.style.display === 'none') {
-            portraitsContainer.style.display = 'block';
+            portraitsContainer.style.display = '';
           } else {
             portraitsContainer.style.display = 'none';
           }
@@ -1660,6 +1784,9 @@
         <div class="entity-actions-bar">
           <button class="btn btn-success btn-block" id="dialogBrowseShop" title="Browse wares" style="display: none;">
             <i class="glyphicon glyphicon-shopping-cart"></i> Shop
+          </button>
+          <button class="btn btn-info btn-block" id="dialogInviteParty" title="Invite to party" style="display: none;">
+            <i class="glyphicon glyphicon-plus"></i> Invite to party
           </button>
           <div id="dialogDmNpcControls" class="dialog-dm-npc-controls" style="display: none;">
             <label class="dialog-manual-mode-toggle" for="dialogManualModeToggle" title="When enabled, this NPC will not use the LLM. You speak for them via this dialog or Speak as NPC in local chat.">

@@ -204,12 +204,27 @@ def create_map():
         d.text((10, 10), name, fill=(90, 90, 90))
         img.save(png_path)
 
+        # Optional map set membership (existing set id, or new id to create)
+        map_set_id = (request.form.get('map_set') or '').strip().lower()
+        new_set_label = (request.form.get('map_set_label') or '').strip()
+
         # Register into current session maps if needed
         map_id = name
         relative_map_ref = f'maps/{name}'
+        target_set = map_set_id or None
         if map_id not in game_session.maps:
-            game_session.register_map(map_id, relative_map_ref)
+            game_session.register_map(map_id, relative_map_ref, map_set=target_set)
             current_game.maps = game_session.maps
+        elif target_set:
+            try:
+                from natural20.map_set import slug_map_set_id
+                from webapp.blueprints.helpers.map_sets import assign_map_to_set, create_map_set
+                sid = slug_map_set_id(target_set)
+                if game_session.map_sets.get(sid) is None:
+                    create_map_set(current_game, sid, label=new_set_label or None)
+                assign_map_to_set(current_game, map_id, sid)
+            except ValueError:
+                pass
 
         # Ensure available for switching/reloading
         othermaps[map_id] = relative_map_ref
@@ -218,6 +233,7 @@ def create_map():
         # Persist to game.yml so maps load after restart
         try:
             import yaml as _yaml
+            from natural20.map_set import persist_map_sets_to_game_yml, slug_map_set_id
             game_yml_path = os.path.join(game_session.root_path, 'game.yml')
             if os.path.exists(game_yml_path):
                 with open(game_yml_path, 'r') as f:
@@ -227,10 +243,17 @@ def create_map():
             maps_dict = props.get('maps') or {}
             maps_dict[map_id] = f'maps/{map_id}'
             props['maps'] = maps_dict
-            with open(game_yml_path, 'w') as f:
-                _yaml.safe_dump(props, f, sort_keys=False)
-            # update in-memory
             game_session.game_properties = props
+            if map_set_id:
+                sid = slug_map_set_id(map_set_id)
+                if sid:
+                    if game_session.map_sets.get(sid) is None:
+                        game_session.map_sets.ensure_set(
+                            sid, label=new_set_label or sid.replace('_', ' ').title()
+                        )
+                    game_session.map_sets.assign_map(map_id, sid)
+                    game_session._link_maps_within_sets()
+            persist_map_sets_to_game_yml(game_session)
         except Exception:
             logger.exception('Failed to persist new map to game.yml')
 
@@ -406,6 +429,12 @@ def delete_map():
             with open(game_yml_path, 'w') as f:
                 _yaml.safe_dump(props, f, sort_keys=False)
             game_session.game_properties = props
+            try:
+                game_session.map_sets.remove_map(map_name)
+                from natural20.map_set import persist_map_sets_to_game_yml
+                persist_map_sets_to_game_yml(game_session)
+            except Exception:
+                pass
         except Exception:
             logger.exception('Failed to update game.yml while deleting map')
 

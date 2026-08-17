@@ -278,12 +278,29 @@ describe('chat.js local conversation minimize behavior', () => {
     Chat.applyLocalConversationPanelPosition({ left: 111, top: 222 });
 
     const panel = dom.window.document.getElementById('localConversationPanel');
-    expect(panel.style.right).toBe('240px');
-    expect(panel.style.bottom).toBe('20px');
+    expect(panel.style.right).toBe('10px');
+    expect(panel.style.bottom).toBe('10px');
     expect(panel.style.width).toBe('260px');
     expect(panel.style.height).toBe('auto');
     expect(panel.style.left === '' || panel.style.left === 'auto').toBe(true);
     expect(panel.style.top === '' || panel.style.top === 'auto').toBe(true);
+  });
+
+  test('setLocalConversationMinimized docks into map chrome when present', () => {
+    const dock = dom.window.document.createElement('div');
+    dock.id = 'map-chrome-right';
+    const notes = dom.window.document.createElement('div');
+    notes.className = 'dm-notes-panel';
+    dock.appendChild(notes);
+    dom.window.document.body.appendChild(dock);
+
+    Chat.setLocalConversationMinimized(true);
+
+    const panel = dom.window.document.getElementById('localConversationPanel');
+    expect(panel.parentElement).toBe(dock);
+    expect(panel.nextElementSibling).toBe(notes);
+    expect(panel.style.right).toBe('');
+    expect(panel.style.bottom).toBe('');
   });
 
   test('setLocalConversationMinimized reapplies compact layout after stale dimensions linger', () => {
@@ -292,8 +309,8 @@ describe('chat.js local conversation minimize behavior', () => {
 
     Chat.setLocalConversationMinimized(true);
 
-    expect(panel[0].style.right).toBe('240px');
-    expect(panel[0].style.bottom).toBe('20px');
+    expect(panel[0].style.right).toBe('10px');
+    expect(panel[0].style.bottom).toBe('10px');
     expect(panel[0].style.width).toBe('260px');
     expect(panel[0].style.height).toBe('auto');
     expect(panel[0].style.left === '' || panel[0].style.left === 'auto').toBe(true);

@@ -24,6 +24,10 @@ from natural20.web.web_controller import WebController
 
 from .ai import DM_AI_CHAT_SESSION_KEY
 from .helpers.auth_utils import user_role
+from .helpers.npc_spawner_utils import (
+    build_available_npc_entry,
+    enrich_npc_spawner_entries,
+)
 from .helpers.object_spawner_utils import SPAWNER_CATEGORIES, build_available_objects_list
 from .helpers.special_effects import special_effects_enabled, is_heavy_special_effect
 from .helpers.template_globals import controller_of
@@ -57,6 +61,18 @@ def _all_player_characters():
                 seen.add(entity.entity_uid)
                 players.append(entity)
     return players
+
+
+def _party_size_for_encounter():
+    """Count PCs plus in-party sidekicks (each sidekick counts as a character)."""
+    try:
+        from natural20.sidekick import iter_party_members
+        members = iter_party_members(get_game_session())
+        if members:
+            return len(members)
+    except Exception:
+        pass
+    return len(_all_player_characters())
 
 
 def _resolve_player_characters(entity_uids=None):
@@ -435,24 +451,18 @@ def get_available_npcs():
             # Use session.load_npcs() to get actual NPC instances with full data
             npcs = get_game_session().load_npcs()
 
-            npc_list = []
-            for npc in npcs:
-                npc_list.append({
-                    'id': npc.npc_type if hasattr(npc, 'npc_type') else npc.properties.get('id', 'unknown'),
-                    'name': npc.label() if hasattr(npc, 'label') else npc.properties.get('label', npc.name),
-                    'type': npc.properties.get('type', 'Unknown'),
-                    'image': npc.token_image() if hasattr(npc, 'token_image') else npc.properties.get('token', f'{npc.name}.png'),
-                    'cr': npc.properties.get('cr', 'Unknown'),
-                    'size': npc.properties.get('size', 'Medium'),
-                    'ac': npc.armor_class() if hasattr(npc, 'armor_class') else npc.properties.get('ac', 'Unknown'),
-                    'hp': npc.max_hp() if hasattr(npc, 'max_hp') else npc.properties.get('hp', 'Unknown')
-                })
-
+            npc_list = [build_available_npc_entry(npc) for npc in npcs]
             npc_list.sort(key=lambda x: x['name'].lower())
             get_app()._available_npcs_cache = npc_list
             cached = npc_list
 
-        return jsonify(npcs=cached)
+        battle_map = None
+        try:
+            battle_map = get_current_game().get_map_for_user(session['username'])
+        except Exception:
+            battle_map = None
+        npc_list = enrich_npc_spawner_entries(get_game_session(), cached, battle_map)
+        return jsonify(npcs=npc_list)
 
     except Exception as e:
         get_logger().error(f"Error getting available NPCs: {str(e)}")
@@ -500,41 +510,28 @@ def spawn_npc():
         return jsonify(error='Missing required parameters'), 400
     
     try:
+        from natural20.map_set import spawn_or_move_npc
+
         battle_map = get_current_game().get_map_for_user(session['username'])
-        
-        # Check if the position is within map bounds
-        if (x < 0 or y < 0 or x >= battle_map.size[1] or y >= battle_map.size[0]):
-            return jsonify(error='Position is outside map bounds'), 400
-        
-        # Check if the position is occupied by an entity
-        if battle_map.entity_at(x, y):
-            return jsonify(error='Position is occupied'), 400
-        
-        # Create the NPC
+
         try:
-            npc = get_game_session().npc(npc_type, {"rand_life": True})
+            result = spawn_or_move_npc(
+                get_game_session(), npc_type, battle_map, int(x), int(y), group='b'
+            )
         except FileNotFoundError:
             return jsonify(error=f'NPC type "{npc_type}" not found'), 400
-        except Exception as e:
-            return jsonify(error=f'Failed to create NPC: {str(e)}'), 400
-        
-        # Add to map using the add method (which handles placement and group assignment)
-        battle_map.add(npc, x, y, group='b')
-        
-        # If there's an active battle, optionally add to initiative
-        battle = get_current_game().get_current_battle()
-        if battle:
-            # For now, don't automatically add to initiative
-            # The DM can manually add them if needed
-            pass
-        
-        get_logger().info(f"DM {session['username']} spawned {npc_type} at ({x}, {y})")
-        
-        # Notify all clients of the map update
+        except ValueError as e:
+            return jsonify(error=str(e)), 400
+
+        get_logger().info(
+            f"DM {session['username']} {'moved' if result.get('moved') else 'spawned'} "
+            f"{npc_type} at ({x}, {y})"
+        )
+
         get_socketio().emit('message', {'type': 'refresh_map'})
-        
-        return jsonify(status='ok', entity_uid=npc.entity_uid)
-        
+
+        return jsonify(status='ok', **result)
+
     except Exception as e:
         get_logger().error(f"Error spawning NPC: {str(e)}")
         return jsonify(error=f'Failed to spawn NPC: {str(e)}'), 500
@@ -616,12 +613,13 @@ def delete_entity():
         if not entity:
             return jsonify(error='Entity not found'), 404
         
-        # Find which map contains the entity
+        # Prefer the instance on the DM's viewed map, then the active set.
+        view_map = get_current_game().get_map_for_user(session['username'])
         battle_map = None
-        for map_obj in get_current_game().maps.values():
-            if map_obj.entity_by_uid(entity_uid):
-                battle_map = map_obj
-                break
+        if view_map is not None and entity in getattr(view_map, 'entities', {}):
+            battle_map = view_map
+        else:
+            battle_map = get_current_game().get_map_for_entity(entity)
         
         if not battle_map:
             return jsonify(error='Entity not found on any map'), 404
@@ -679,15 +677,22 @@ def move_entity():
         if target_map.entity_at(x, y):
             return jsonify(error='Position is occupied'), 400
         
-        # Find current map containing the entity
+        # Operate on the instance in the destination map's set, never a twin elsewhere.
+        session_obj = get_game_session()
         current_map = None
-        for map_obj in get_current_game().maps.values():
-            if map_obj.entity_by_uid(entity_uid):
-                current_map = map_obj
-                break
+        if session_obj is not None:
+            current_map = session_obj.map_for_entity(
+                entity, map_set=session_obj.map_set_for(getattr(target_map, 'name', None))
+            )
+        if current_map is None and entity in getattr(target_map, 'entities', {}):
+            current_map = target_map
+        if current_map is None:
+            return jsonify(error='Entity has no token on this map set; use Place Party'), 400
         
-        # Remove from current map if it's on a different map
+        # Remove from current map if it's on a different map in the same set
         if current_map and current_map != target_map:
+            if session_obj is not None and not session_obj.same_map_set(current_map.name, target_map.name):
+                return jsonify(error='Cannot move tokens across map sets; use Place Party or Activate Map Set'), 400
             current_map.remove(entity)
         elif current_map == target_map:
             # Just move within the same map
@@ -1452,8 +1457,14 @@ def xp_summary():
     battle = get_current_game().get_current_battle()
     monsters = []
     if battle:
-        monsters = [entity for entity in getattr(battle, 'entities', []) if not isinstance(entity, PlayerCharacter)]
-    adjusted = adjusted_encounter_xp(monsters, party_size=len(players)) if monsters else 0
+        from natural20.sidekick import is_in_party_sidekick
+        session = get_game_session()
+        monsters = [
+            entity for entity in getattr(battle, 'entities', [])
+            if not isinstance(entity, PlayerCharacter) and not is_in_party_sidekick(session, entity)
+        ]
+    party_size = _party_size_for_encounter()
+    adjusted = adjusted_encounter_xp(monsters, party_size=party_size) if monsters else 0
     return jsonify({
         'success': True,
         'players': [
@@ -1524,15 +1535,20 @@ def award_encounter_xp():
     data = request.get_json(silent=True) or {}
     monster_uids = data.get('monster_uids') or data.get('entity_uids')
     monsters = []
+    from natural20.sidekick import is_in_party_sidekick
+    session = get_game_session()
     if monster_uids:
         for entity_uid in monster_uids:
             entity = get_current_game().get_entity_by_uid(entity_uid)
-            if entity and not isinstance(entity, PlayerCharacter):
+            if entity and not isinstance(entity, PlayerCharacter) and not is_in_party_sidekick(session, entity):
                 monsters.append(entity)
     else:
         battle = get_current_game().get_current_battle()
         if battle:
-            monsters = [entity for entity in getattr(battle, 'entities', []) if not isinstance(entity, PlayerCharacter)]
+            monsters = [
+                entity for entity in getattr(battle, 'entities', [])
+                if not isinstance(entity, PlayerCharacter) and not is_in_party_sidekick(session, entity)
+            ]
     if not monsters:
         return jsonify({'success': False, 'error': 'No encounter NPCs found'}), 404
 
@@ -1555,7 +1571,7 @@ def award_encounter_xp():
         payloads = _emit_xp_events(awards)
         get_current_game().save_game_async()
 
-    adjusted = adjusted_encounter_xp(monsters, party_size=len(players))
+    adjusted = adjusted_encounter_xp(monsters, party_size=_party_size_for_encounter())
     return jsonify({
         'success': True,
         'base_xp': total_xp,
@@ -2853,3 +2869,287 @@ def admin_npc_conversation_mode():
         entity_uid=entity_id,
         **npc_conversation_mode_payload(current_game, game_session, entity),
     )
+
+
+def _require_dm():
+    if not session.get('username'):
+        return jsonify(error='Unauthorized'), 401
+    if 'dm' not in user_role():
+        return jsonify(error='Forbidden'), 403
+    return None
+
+
+@dm_bp.route('/admin/map_sets', methods=['GET'])
+def admin_list_map_sets():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers.map_sets import map_sets_payload
+    current_game = get_current_game()
+    try:
+        current_map = current_game.get_map_for_user(session['username']).name
+    except Exception:
+        current_map = None
+    return jsonify(success=True, **map_sets_payload(current_game, current_map))
+
+
+@dm_bp.route('/admin/map_set/activate', methods=['POST'])
+def admin_activate_map_set():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers.map_sets import activate_map_set
+    payload = request.get_json(silent=True) or request.form or {}
+    set_id = payload.get('map_set') or payload.get('id')
+    if not set_id:
+        return jsonify(error='map_set is required'), 400
+    try:
+        result = activate_map_set(get_current_game(), set_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    try:
+        get_socketio().emit('message', {'type': 'refresh_map'})
+    except Exception:
+        pass
+    return jsonify(success=True, **result)
+
+
+@dm_bp.route('/admin/map_set/create', methods=['POST'])
+def admin_create_map_set():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers.map_sets import create_map_set, map_sets_payload
+    payload = request.get_json(silent=True) or request.form or {}
+    set_id = payload.get('id') or payload.get('map_set')
+    label = payload.get('label')
+    if not set_id:
+        return jsonify(error='id is required'), 400
+    try:
+        created = create_map_set(get_current_game(), set_id, label=label)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(success=True, **created, **map_sets_payload(get_current_game()))
+
+
+@dm_bp.route('/admin/map_set/assign_map', methods=['POST'])
+def admin_assign_map_set():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers.map_sets import assign_map_to_set, map_sets_payload
+    payload = request.get_json(silent=True) or request.form or {}
+    map_name = payload.get('map_name') or payload.get('map')
+    set_id = payload.get('map_set')
+    if not map_name or not set_id:
+        return jsonify(error='map_name and map_set are required'), 400
+    try:
+        result = assign_map_to_set(get_current_game(), map_name, set_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(success=True, **result, **map_sets_payload(get_current_game()))
+
+
+@dm_bp.route('/admin/map_set/place_party', methods=['POST'])
+def admin_place_party():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers.map_sets import place_party
+    payload = request.get_json(silent=True) or request.form or {}
+    map_name = payload.get('map_name') or payload.get('map')
+    x = payload.get('x')
+    y = payload.get('y')
+    if not map_name:
+        return jsonify(error='map_name is required'), 400
+    try:
+        result = place_party(
+            get_current_game(),
+            map_name,
+            x=int(x) if x is not None and x != '' else None,
+            y=int(y) if y is not None and y != '' else None,
+        )
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    try:
+        get_socketio().emit('message', {'type': 'refresh_map'})
+    except Exception:
+        pass
+    return jsonify(success=True, **result)
+
+
+@dm_bp.route('/admin/sidekick', methods=['POST'])
+def admin_sidekick():
+    denied = _require_dm()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or request.form or {}
+    op = str(payload.get('op') or '').strip().lower()
+    entity_uid = payload.get('entity_uid') or payload.get('entity_id')
+    from natural20.sidekick import iter_in_party_sidekicks, sidekick_owners, sidekick_records
+    from webapp.blueprints.helpers.sidekick_control import (
+        assign_owners_and_control,
+        join_party_and_control,
+        leave_party_and_control,
+    )
+    session = get_game_session()
+    if op == 'list':
+        listed = []
+        for entity in iter_in_party_sidekicks(session):
+            listed.append({
+                'entity_uid': getattr(entity, 'entity_uid', None),
+                'name': entity.label() if hasattr(entity, 'label') else str(entity),
+                'owners': sidekick_owners(session, entity),
+            })
+        return jsonify(success=True, sidekicks=listed, records=sidekick_records(session))
+    entity = get_current_game().get_entity_by_uid(entity_uid) if entity_uid else None
+    if entity is None:
+        return jsonify(error='entity_uid is required'), 400
+    owners = payload.get('owners') or []
+    if isinstance(owners, str):
+        owners = [owners]
+    owner = payload.get('owner')
+    if owner and owner not in owners:
+        owners.append(owner)
+    try:
+        if op == 'join':
+            rec = join_party_and_control(
+                entity,
+                owners,
+                sidekick_class=payload.get('sidekick_class'),
+                sidekick_level=payload.get('sidekick_level'),
+                role=payload.get('role'),
+            )
+        elif op == 'leave':
+            rec = leave_party_and_control(entity, hostile=bool(payload.get('hostile')))
+        elif op == 'assign_owner':
+            rec = assign_owners_and_control(entity, owners)
+        else:
+            return jsonify(error='op must be list, join, leave, or assign_owner'), 400
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    try:
+        get_socketio().emit('message', {'type': 'refresh_map'})
+    except Exception:
+        pass
+    return jsonify(success=True, entity_uid=entity_uid, record=rec)
+
+
+def _emit_dm_notes_changed(map_name):
+    """Notify DM clients to refetch notes. Payload has no note text."""
+    try:
+        get_socketio().emit('message', {'type': 'dm_notes_changed', 'map': map_name})
+    except Exception:
+        pass
+
+
+def _resolve_notes_map(current_game, map_name):
+    requested = str(map_name or '').strip()
+    maps = getattr(current_game, 'maps', None) or {}
+    session_maps = getattr(getattr(current_game, 'game_session', None), 'maps', None) or {}
+    known = set(maps) | set(session_maps)
+    if requested:
+        if known and requested not in known:
+            raise ValueError(f'Unknown map: {requested}')
+        return requested
+    username = session.get('username')
+    getter = getattr(current_game, 'get_map_for_user', None)
+    if callable(getter) and username:
+        battle_map = getter(username)
+        if battle_map is not None:
+            return battle_map.name
+    if maps:
+        return next(iter(maps))
+    raise ValueError('map_name is required')
+
+
+@dm_bp.route('/dm/notes', methods=['GET'])
+def dm_notes_list():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from natural20.dm_notes import list_notes
+
+    current_game = get_current_game()
+    try:
+        map_name = _resolve_notes_map(current_game, request.args.get('map_name'))
+    except ValueError as exc:
+        return jsonify(success=False, error=str(exc)), 400
+    notes = list_notes(current_game.game_session, map_name)
+    return jsonify(success=True, map=map_name, notes=notes)
+
+
+@dm_bp.route('/dm/notes', methods=['POST'])
+def dm_notes_upsert():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from natural20.dm_notes import upsert_note
+
+    payload = request.get_json(silent=True) or {}
+    current_game = get_current_game()
+    try:
+        map_name = _resolve_notes_map(
+            current_game,
+            payload.get('map_name') or payload.get('map'),
+        )
+        saved = upsert_note(
+            current_game.game_session,
+            map_name,
+            x=payload.get('x'),
+            y=payload.get('y'),
+            text=payload.get('text'),
+            title=payload.get('title'),
+            note_id=payload.get('id') or payload.get('note_id'),
+        )
+    except ValueError as exc:
+        return jsonify(success=False, error=str(exc)), 400
+    _emit_dm_notes_changed(map_name)
+    return jsonify(success=True, map=map_name, note=saved)
+
+
+@dm_bp.route('/dm/notes/move', methods=['POST'])
+def dm_notes_move():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from natural20.dm_notes import move_note
+
+    payload = request.get_json(silent=True) or {}
+    note_id = payload.get('id') or payload.get('note_id')
+    current_game = get_current_game()
+    try:
+        map_name = payload.get('map_name') or payload.get('map')
+        if map_name:
+            map_name = _resolve_notes_map(current_game, map_name)
+        saved = move_note(
+            current_game.game_session,
+            note_id,
+            payload.get('x'),
+            payload.get('y'),
+            map_name=map_name,
+        )
+    except ValueError as exc:
+        return jsonify(success=False, error=str(exc)), 400
+    _emit_dm_notes_changed(saved.get('map'))
+    return jsonify(success=True, map=saved.get('map'), note=saved)
+
+
+@dm_bp.route('/dm/notes/<note_id>', methods=['DELETE'])
+def dm_notes_delete(note_id):
+    denied = _require_dm()
+    if denied:
+        return denied
+    from natural20.dm_notes import delete_note, find_note
+
+    current_game = get_current_game()
+    map_name = request.args.get('map_name') or request.args.get('map')
+    payload = request.get_json(silent=True) or {}
+    if not map_name:
+        map_name = payload.get('map_name') or payload.get('map')
+    existing = find_note(current_game.game_session, note_id, map_name)
+    if existing is None:
+        return jsonify(success=False, error='Note not found'), 404
+    delete_note(current_game.game_session, note_id, existing.get('map'))
+    _emit_dm_notes_changed(existing.get('map'))
+    return jsonify(success=True, map=existing.get('map'), id=note_id)

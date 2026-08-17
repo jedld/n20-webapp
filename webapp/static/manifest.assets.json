@@ -1,6 +1,7 @@
 {
   "files": {
     "combat-log.js": "combat-log.min.js",
+    "dm_notes.js": "dm_notes.min.js",
     "edit_mode.js": "edit_mode.min.js",
     "edit_properties.js": "edit_properties.min.js",
     "effects.js": "effects.min.js",
@@ -27,30 +28,31 @@
   },
   "versions": {
     "combat-log.min.js": "a8e282849c",
-    "edit_mode.min.js": "a377fcfc4d",
+    "dm_notes.min.js": "595d2e9bd8",
+    "edit_mode.min.js": "fd31e250f7",
     "edit_properties.min.js": "fcfb3a5758",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "9693845d75",
+    "engine.min.js": "81bb37a0b9",
     "inert-polyfill.min.js": "fcce9c44c6",
-    "map_annotations_edit.min.js": "f201903d9c",
+    "map_annotations_edit.min.js": "b181edf205",
     "map_graph.min.js": "a43f001b87",
     "path_compute.min.js": "ccc22663d8",
     "perf.min.js": "7305880b63",
     "sfx.min.js": "d5a1167d46",
-    "sheet.min.js": "d8a1cdf1b7",
-    "spell_effects.min.js": "878ec51a52",
-    "status_effects.min.js": "d04155b53a",
-    "utils.min.js": "98d7a065c0",
-    "utils_optimized.min.js": "19c018aa85",
-    "js/character_builder.min.js": "9295b398de",
+    "sheet.min.js": "cb1dc9159d",
+    "spell_effects.min.js": "0528bd918f",
+    "status_effects.min.js": "985115ab42",
+    "utils.min.js": "c1e31838d5",
+    "utils_optimized.min.js": "d64c929e7e",
+    "js/character_builder.min.js": "424a168ab6",
     "js/character_builder_images.min.js": "cb752ad32e",
     "js/chat.min.js": "595f509632",
-    "js/local_conversation.min.js": "5aafcd34d0",
+    "js/local_conversation.min.js": "d47a766b54",
     "js/tts_player.min.js": "ad1f664ee2",
     "journal.min.css": "51ba4e37df",
-    "sheet.min.css": "ee15fe841e",
-    "styles.min.css": "5a9a85287e"
+    "sheet.min.css": "780b514172",
+    "styles.min.css": "8298ef5ca9"
   },
-  "generatedAt": "2026-08-13T02:17:51.280Z",
-  "buildVersion": "062fc88bff07"
+  "generatedAt": "2026-08-16T16:02:04.159Z",
+  "buildVersion": "e80214ba9268"
 }

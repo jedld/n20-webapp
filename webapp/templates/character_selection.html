@@ -147,6 +147,38 @@
             gap: 18px;
             margin-bottom: 30px;
         }
+
+        .selection-section {
+            margin-bottom: 36px;
+        }
+
+        .selection-section-header h2 {
+            margin: 0 0 8px 0;
+            color: #FFD700;
+            font-family: 'Uncial Antiqua', cursive;
+            font-size: 1.55rem;
+        }
+
+        .selection-section-header p {
+            margin: 0 0 16px 0;
+            color: #D8C4A0;
+            font-size: 0.98rem;
+        }
+
+        .character-card[data-kind="sidekick"] {
+            border-color: #7a9e6a;
+        }
+
+        .character-card[data-kind="sidekick"].selected {
+            border-color: #b8e0a8;
+            box-shadow: 0 10px 20px rgba(122, 158, 106, 0.35);
+        }
+
+        .role-label.sidekick-role {
+            background: rgba(122, 158, 106, 0.22);
+            border-color: rgba(184, 224, 168, 0.55);
+            color: #d7efc8;
+        }
         
         /* Character card styling */
         .character-card {
@@ -802,8 +834,11 @@
     <script>
     $(document).ready(function() {
         let selectedCharacter = null;
+        let selectedSidekick = null;
         let selectedTeam = $('input[name="teamChoice"]:checked').val() || null;
         const teamSelectionEnabled = {{ 'true' if pvp_team_config else 'false' }};
+        const sidekickSlots = {{ (character_selection_config.sidekick_slots if character_selection_config is defined else 0) | int }};
+        const dualSelect = sidekickSlots > 0;
 
         function updateTeamVisuals() {
             $('.content-overlay').removeClass('team-a-selected team-b-selected');
@@ -814,27 +849,69 @@
             }
         }
 
+        function availableSidekickCount() {
+            return $('.character-card-selectable[data-kind="sidekick"]:not(.unavailable)').length;
+        }
+
+        function selectedPlayerCharacter() {
+            if (dualSelect) return selectedCharacter;
+            const $card = $('.character-card.selected[data-kind="pc"]').first();
+            return $card.length ? ($card.data('character-name') || null) : null;
+        }
+
         function updateConfirmState() {
-            const ready = selectedCharacter !== null && (!teamSelectionEnabled || selectedTeam !== null);
+            const hasHero = selectedCharacter !== null;
+            const needsSidekick = dualSelect && availableSidekickCount() > 0;
+            const hasSidekick = !needsSidekick || selectedSidekick !== null;
+            const ready = hasHero && hasSidekick && (!teamSelectionEnabled || selectedTeam !== null);
             $('#confirmButton').prop('disabled', !ready);
-            $('#editButton').prop('disabled', !selectedCharacter);
+            const editTarget = dualSelect ? selectedCharacter : selectedPlayerCharacter();
+            $('#editButton').prop('disabled', !editTarget);
+        }
+
+        function markCardSelected($card, selected) {
+            const $status = $card.find('.character-status');
+            if (selected) {
+                $card.addClass('selected');
+                if (!$card.hasClass('unavailable')) {
+                    $status.removeClass('status-available').addClass('status-selected').text('Selected');
+                }
+            } else {
+                $card.removeClass('selected');
+                if (!$card.hasClass('unavailable') && $status.hasClass('status-selected')) {
+                    $status.removeClass('status-selected').addClass('status-available').text('Available');
+                }
+            }
         }
         
         // Handle character card selection (exclude the create-new tile)
         $('.character-card-selectable').on('click', function() {
-            if ($(this).hasClass('unavailable')) {
+            const $card = $(this);
+            if ($card.hasClass('unavailable')) {
                 return;
             }
-            
-            // Remove previous selection
-            $('.character-card').removeClass('selected');
-            $('.status-selected').removeClass('status-selected').addClass('status-available').text('Available');
-            
-            // Select this character
-            $(this).addClass('selected');
-            $(this).find('.character-status').removeClass('status-available').addClass('status-selected').text('Selected');
-            
-            selectedCharacter = $(this).data('character-name');
+            const kind = $card.attr('data-kind') || 'pc';
+            const name = $card.data('character-name');
+
+            if (dualSelect) {
+                if (kind === 'sidekick') {
+                    $('.character-card[data-kind="sidekick"]').each(function() {
+                        markCardSelected($(this), this === $card[0]);
+                    });
+                    selectedSidekick = name;
+                } else {
+                    $('.character-card[data-kind="pc"]').each(function() {
+                        markCardSelected($(this), this === $card[0]);
+                    });
+                    selectedCharacter = name;
+                }
+            } else {
+                $('.character-card-selectable').each(function() {
+                    markCardSelected($(this), this === $card[0]);
+                });
+                selectedCharacter = name;
+                selectedSidekick = null;
+            }
             updateConfirmState();
         });
 
@@ -849,7 +926,11 @@
         // Handle character selection confirmation
         $('#confirmButton').on('click', function() {
             if (!selectedCharacter) {
-                showMessage('Please select a character first.', 'danger');
+                showMessage(dualSelect ? 'Please select a player character first.' : 'Please select a character first.', 'danger');
+                return;
+            }
+            if (dualSelect && availableSidekickCount() > 0 && !selectedSidekick) {
+                showMessage('Please select a sidekick companion.', 'danger');
                 return;
             }
 
@@ -863,7 +944,11 @@
             $.ajax({
                 type: 'POST',
                 url: '/select_character',
-                data: { character: selectedCharacter, team: selectedTeam },
+                data: {
+                    character: selectedCharacter,
+                    sidekick: dualSelect ? (selectedSidekick || '') : '',
+                    team: selectedTeam
+                },
                 dataType: 'json',
                 success: function(data) {
                     showLoading(false);
@@ -889,12 +974,13 @@
         });
 
         $('#editButton').on('click', function() {
-            if (!selectedCharacter) {
-                showMessage('Select a character first to edit it.', 'danger');
+            const editTarget = dualSelect ? selectedCharacter : selectedPlayerCharacter();
+            if (!editTarget) {
+                showMessage('Select a player character first to edit it.', 'danger');
                 return;
             }
             const next = encodeURIComponent('/character_selection');
-            window.location.href = '/character_editor/' + encodeURIComponent(selectedCharacter) + '?next=' + next;
+            window.location.href = '/character_editor/' + encodeURIComponent(editTarget) + '?next=' + next;
         });
         
         // Handle view character details
@@ -941,9 +1027,7 @@
             $('#characterDetailsPanel').addClass('open');
             $('.content-overlay').addClass('panel-open');
             
-            // Update title
-            const capitalizedName = characterName.charAt(0).toUpperCase() + characterName.slice(1);
-            $('#characterDetailsTitle').text(capitalizedName + ' - Character Details');
+            $('#characterDetailsTitle').text('Character Details');
             
             // Show loading state
             $('#characterDetailsBody').html(`
@@ -955,7 +1039,7 @@
             
             $.ajax({
                 type: 'GET',
-                url: '/character_details/' + characterName,
+                url: '/character_details/' + encodeURIComponent(characterName),
                 dataType: 'json',
                 success: function(data) {
                     displayCharacterDetails(data);
@@ -973,17 +1057,36 @@
         function displayCharacterDetails(data) {
             const modifierStr = (mod) => mod >= 0 ? `+${mod}` : `${mod}`;
             
-            // Pre-process complex data to avoid eval-like operations in template literals
-            const raceDisplay = data.race + (data.subrace !== 'None' ? ` (${data.subrace})` : '');
-            const classDisplay = Object.entries(data.classes)
+            const raceDisplay = data.race + (data.subrace && data.subrace !== 'None' ? ` (${data.subrace})` : '');
+            const classes = (data.classes && typeof data.classes === 'object' && !Array.isArray(data.classes))
+                ? data.classes
+                : {};
+            let classDisplay = Object.entries(classes)
                 .map(([cls, lvl]) => {
-                    const capitalizedClass = cls.charAt(0).toUpperCase() + cls.slice(1);
+                    const capitalizedClass = String(cls).charAt(0).toUpperCase() + String(cls).slice(1);
                     return `${capitalizedClass} ${lvl}`;
                 })
                 .join(', ');
+            if (!classDisplay && data.sidekick_class) {
+                const sk = String(data.sidekick_class).replace(/^sidekick_/, '').replace(/_/g, ' ');
+                classDisplay = sk.charAt(0).toUpperCase() + sk.slice(1) + (data.level != null ? ` ${data.level}` : '');
+            }
+            if (data.sidekick_role) {
+                classDisplay = (classDisplay ? classDisplay + ' · ' : '') + String(data.sidekick_role).replace(/_/g, ' ');
+            }
             
             // Build the HTML string step by step to avoid CSP issues
-            let html = `
+            const panelTitle = data.display_name || data.name || 'Character';
+            $('#characterDetailsTitle').text(panelTitle + (data.is_sidekick ? ' — Sidekick' : ' — Character Details'));
+
+            let html = '';
+            if (data.description) {
+                html += `
+                <div class="details-section">
+                    <p style="color:#F5DEB3; font-style:italic; margin-top:0;">${escapeHtml(data.description)}</p>
+                </div>`;
+            }
+            html += `
                 <div class="details-section basic-info">
                     <h3>Basic Information</h3>
                     <div class="basic-info-grid">
@@ -1222,31 +1325,35 @@
                     </div>`;
             }
 
-            // Journal section — quest log + auto-captured narrations.
-            const journalUid = data.name ? data.name.toLowerCase() : '';
-            html += `
-                <div class="details-section journal-section" data-character-uid="${journalUid}">
-                    <h3>Journal</h3>
-                    <div class="journal-controls">
-                        <input type="search" class="journal-search-input" placeholder="Search journal entries..." aria-label="Search journal" />
-                        <select class="journal-kind-filter" aria-label="Filter by entry kind">
-                            <option value="">All entries</option>
-                            <option value="narration">Narration</option>
-                            <option value="note">My notes</option>
-                            <option value="quest">Quest hooks</option>
-                            <option value="dm">From DM</option>
-                            <option value="chat">Chat</option>
-                        </select>
-                    </div>
-                    <div class="journal-entries" aria-live="polite"><p class="journal-empty">Loading journal...</p></div>
-                    <form class="journal-add-form" autocomplete="off">
-                        <textarea class="journal-add-text" rows="2" placeholder="Add a personal note..." maxlength="2000"></textarea>
-                        <button type="submit" class="journal-add-btn">Add Entry</button>
-                    </form>
-                </div>`;
+            // Journal section — player characters only (NPC sidekicks have no PC journal).
+            const journalUid = data.entity_uid || '';
+            if (!data.is_sidekick && journalUid) {
+                html += `
+                    <div class="details-section journal-section" data-character-uid="${journalUid}">
+                        <h3>Journal</h3>
+                        <div class="journal-controls">
+                            <input type="search" class="journal-search-input" placeholder="Search journal entries..." aria-label="Search journal" />
+                            <select class="journal-kind-filter" aria-label="Filter by entry kind">
+                                <option value="">All entries</option>
+                                <option value="narration">Narration</option>
+                                <option value="note">My notes</option>
+                                <option value="quest">Quest hooks</option>
+                                <option value="dm">From DM</option>
+                                <option value="chat">Chat</option>
+                            </select>
+                        </div>
+                        <div class="journal-entries" aria-live="polite"><p class="journal-empty">Loading journal...</p></div>
+                        <form class="journal-add-form" autocomplete="off">
+                            <textarea class="journal-add-text" rows="2" placeholder="Add a personal note..." maxlength="2000"></textarea>
+                            <button type="submit" class="journal-add-btn">Add Entry</button>
+                        </form>
+                    </div>`;
+            }
 
             $('#characterDetailsBody').html(html);
-            initCharacterJournal(journalUid);
+            if (!data.is_sidekick && journalUid) {
+                initCharacterJournal(journalUid);
+            }
         }
 
         // ── Journal helpers ────────────────────────────────────────────
@@ -1447,7 +1554,14 @@
     <div class="content-overlay">
         <div class="container-fluid">
             <h1 class="main-title">{{ title }}</h1>
+            {% set selection_config = character_selection_config if character_selection_config is defined else {'player_slots': 1, 'sidekick_slots': 0} %}
+            {% set pcs = player_characters if player_characters is defined else selectable_characters %}
+            {% set sidekicks = selectable_sidekicks if selectable_sidekicks is defined else [] %}
+            {% if selection_config.sidekick_slots|int > 0 and sidekicks %}
+            <p class="subtitle">Choose one player character and one sidekick</p>
+            {% else %}
             <p class="subtitle">Choose Your Hero for the Adventure</p>
+            {% endif %}
             
             <div class="character-selection">
                 <div id="messageArea"></div>
@@ -1469,8 +1583,13 @@
 
                 <div class="selection-toolbar">
                     <div class="selection-toolbar-copy">
+                        {% if selection_config.sidekick_slots|int > 0 and sidekicks %}
+                        <h2>Your Party</h2>
+                        <p>Pick a player character and a sidekick companion, or build a new hero and return here to confirm.</p>
+                        {% else %}
                         <h2>Select a Hero</h2>
                         <p>Pick an existing character below, or build your own and return here to confirm.</p>
+                        {% endif %}
                     </div>
                     <a href="{{ url_for('character.character_builder') }}"
                        id="createCharacterBtn"
@@ -1480,10 +1599,10 @@
                     </a>
                 </div>
 
-                <div class="character-grid">
-                {% for character in selectable_characters %}
-                <div class="character-card character-card-selectable {% if character.name in taken_characters %}unavailable{% endif %}" 
-                     data-character-name="{{ character.name }}">
+                {% macro character_card(character, kind) %}
+                <div class="character-card character-card-selectable {% if character.name in taken_characters %}unavailable{% endif %}"
+                     data-character-name="{{ character.name }}"
+                     data-kind="{{ kind }}">
                     <div class="character-status {% if character.name in taken_characters %}status-taken{% else %}status-available{% endif %}">
                         {% if character.name in taken_characters %}Taken{% else %}Available{% endif %}
                     </div>
@@ -1501,7 +1620,10 @@
                                 <span class="slot-label">{{ character.slot_label }}</span>
                                 {% endif %}
                                 {% if character.role_label %}
-                                <span class="role-label">{{ character.role_label }}</span>
+                                <span class="role-label{% if kind == 'sidekick' %} sidekick-role{% endif %}">{{ character.role_label }}</span>
+                                {% endif %}
+                                {% if kind == 'sidekick' and character.role %}
+                                <span class="slot-label">{{ character.role.replace('_', ' ') }}</span>
                                 {% endif %}
                             </div>
                             <p class="character-description">{{ character.description }}</p>
@@ -1513,15 +1635,40 @@
                         </div>
                     </div>
                 </div>
-                {% endfor %}
-                </div>
+                {% endmacro %}
+
+                <section class="selection-section" id="player-character-section">
+                    <div class="selection-section-header">
+                        <h2>Player Characters</h2>
+                        <p>{% if selection_config.sidekick_slots|int > 0 and sidekicks %}Choose the hero you will play.{% else %}Available adventurers for this campaign.{% endif %}</p>
+                    </div>
+                    <div class="character-grid">
+                    {% for character in pcs %}
+                    {{ character_card(character, 'pc') }}
+                    {% endfor %}
+                    </div>
+                </section>
+
+                {% if sidekicks %}
+                <section class="selection-section" id="sidekick-section">
+                    <div class="selection-section-header">
+                        <h2>Sidekicks</h2>
+                        <p>{% if selection_config.sidekick_slots|int > 0 %}Choose one companion. They stay an NPC in conversation; you control their movement and actions.{% else %}Optional companions — pick one of these instead of a player character.{% endif %}</p>
+                    </div>
+                    <div class="character-grid">
+                    {% for character in sidekicks %}
+                    {{ character_card(character, 'sidekick') }}
+                    {% endfor %}
+                    </div>
+                </section>
+                {% endif %}
                 
                 <div class="action-buttons">
                     <button type="button" id="editButton" class="btn-dnd" disabled>
                         Edit Character
                     </button>
                     <button type="button" id="confirmButton" class="btn-dnd" disabled>
-                        Confirm Selection
+                        {% if selection_config.sidekick_slots|int > 0 and sidekicks %}Confirm Hero &amp; Sidekick{% else %}Confirm Selection{% endif %}
                     </button>
                     <button type="button" id="logoutButton" class="btn-dnd">
                         Logout

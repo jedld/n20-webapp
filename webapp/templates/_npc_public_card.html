@@ -1,0 +1,33 @@
+{% set gallery = entity.sheet_images() %}
+<div class="npc-public-card">
+    <div class="npc-public-portrait">
+        {% if gallery %}
+        <img id="sheet-primary-image"
+             src="/assets/{{ gallery[0].image }}"
+             alt="{{ gallery[0].label }}">
+        {% if gallery|length > 1 %}
+        <div class="sheet-image-gallery" role="tablist" aria-label="Creature images">
+            {% for item in gallery %}
+            <button type="button"
+                    class="sheet-image-thumb{% if loop.first %} active{% endif %}"
+                    data-image="/assets/{{ item.image }}"
+                    data-label="{{ item.label }}"
+                    aria-label="{{ item.label }}"
+                    aria-selected="{{ 'true' if loop.first else 'false' }}"
+                    {% if item.description %}title="{{ item.description }}"{% endif %}>
+                <img src="/assets/{{ item.image }}" alt="{{ item.label }}">
+            </button>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% else %}
+        <img id="sheet-primary-image" src="/assets/{{ entity.profile_image() }}" alt="{{ entity.label() }}">
+        {% endif %}
+    </div>
+    <h1 class="npc-public-name">{{ entity.label() }}</h1>
+    {% if not character_description_suppressed_for(entity, viewer_is_dm=('dm' in role)) %}
+    <div class="npc-public-description">
+        <p>{{ entity.description() }}</p>
+    </div>
+    {% endif %}
+</div>

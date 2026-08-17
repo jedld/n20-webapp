@@ -2814,6 +2814,36 @@ class EventQueue {
           resolve();
           break;
         }
+        case "party_membership": {
+          try {
+            const msg = (data && data.message) || data || {};
+            const text = msg.text || msg.message || '';
+            const entityUid = msg.entity_uid || msg.entity_id || data.entity_uid;
+            const action = msg.action || data.action || 'join';
+            if (text && typeof Utils !== 'undefined' && Utils.showToast) {
+              Utils.showToast(text);
+            }
+            if (text && entityUid) {
+              showMapToast(text, null, entityUid, 10000);
+            }
+            if (typeof Utils !== 'undefined' && Utils.refreshPortraits) {
+              Utils.refreshPortraits();
+            }
+            const dialogUid = $('#dialogEntityName').data('entity-id');
+            if (entityUid && dialogUid && String(dialogUid) === String(entityUid)) {
+              if (action === 'join' || msg.hostile) {
+                $('#dialogInviteParty').hide();
+              } else if (action === 'leave') {
+                $('#dialogInviteParty').show();
+              }
+              if (text && window.Chat && typeof window.Chat.addDialogMessage === 'function') {
+                window.Chat.addDialogMessage('system', text, 'system');
+              }
+            }
+          } catch (e) { console.warn('Failed to handle party_membership', e, data); }
+          resolve();
+          break;
+        }
         case "journal_update": {
           try {
             if (window.JournalNotifications) {
@@ -3292,6 +3322,17 @@ class EventQueue {
             }
           } catch (e) {
             console.warn('Failed to update prone exit visual', e, data);
+          }
+          resolve();
+          break;
+        }
+        case "dm_notes_changed": {
+          try {
+            if (window.DmNotes && typeof window.DmNotes.reload === 'function') {
+              window.DmNotes.reload(data && data.map);
+            }
+          } catch (e) {
+            console.warn('dm_notes_changed failed', e);
           }
           resolve();
           break;
@@ -3989,14 +4030,13 @@ const JournalNotifications = {
     const $menuItem = $('#journal-notification-item');
     const $badge = $('#journal-menu-unread-badge');
     const $menuBtn = $('#expand-menu');
+    $menuItem.show();
 
     if (total > 0) {
-      $menuItem.show();
-      $badge.text(String(total));
+      $badge.text(String(total)).addClass('visible');
       $menuBtn.addClass('has-journal-unread');
     } else {
-      $menuItem.hide();
-      $badge.text('0');
+      $badge.text('0').removeClass('visible');
       $menuBtn.removeClass('has-journal-unread');
     }
 
@@ -6281,7 +6321,7 @@ function isDM() {
 }
 
 function isEditMode() {
-  return String($('body').data('edit-mode')).toLowerCase() === 'true';
+  return String($('body').attr('data-edit-mode') || '').toLowerCase() === 'true';
 }
 
 // Update draggable entity classes for proper cursor styling
@@ -6803,7 +6843,7 @@ $(document).ready(() => {
 
   // Handle tile-based map selection
   $("#mapModal").on("click", ".map-card", function (event) {
-    if ($(event.target).closest('.upload-overlay').length) {
+    if ($(event.target).closest('.upload-overlay, .map-card-actions, .activate-map-set').length) {
       return;
     }
     const mapName = $(this).data("map-name");
@@ -6815,6 +6855,54 @@ $(document).ready(() => {
     resetViewport();
     Utils.switchMap(mapName, globalCanvas, () => {
       createGlobalCanvas();
+    });
+  });
+
+  $("#mapModal").on("click", ".activate-map-set", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const setId = $(this).data("map-set");
+    if (!setId) return;
+    ajaxPost("/admin/map_set/activate", { map_set: setId }, (data) => {
+      if (data && data.error) {
+        alert(data.error);
+        return;
+      }
+      if (data && data.skipped && data.skipped.length) {
+        const names = data.skipped.map((row) => row.entity_uid || row.username).join(", ");
+        alert("Some characters have no token on this map set. Place Party first: " + names);
+      }
+      window.location.reload();
+    });
+  });
+
+  $("#mapModal").on("click", ".place-party-on-map", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const mapName = $(this).data("map-name");
+    if (!mapName) return;
+    ajaxPost("/admin/map_set/place_party", { map_name: mapName }, (data) => {
+      if (data && data.error) {
+        alert(data.error);
+        return;
+      }
+      enqueueTileRefresh();
+    });
+  });
+
+  $("#mapModal").on("click", "#create-new-map-set", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    let setId = window.prompt("New map set id (letters, numbers, underscores):", "encounter");
+    if (!setId) return;
+    setId = (setId || "").trim().toLowerCase().replace(/[^a-z0-9_\-]/g, "_");
+    const label = window.prompt("Label for this map set:", setId.replace(/_/g, " "));
+    ajaxPost("/admin/map_set/create", { id: setId, label: label || setId }, (data) => {
+      if (data && data.error) {
+        alert(data.error);
+        return;
+      }
+      window.location.reload();
     });
   });
 
@@ -6848,9 +6936,11 @@ $(document).ready(() => {
     if (isNaN(width) || isNaN(height)) { width = 16; height = 8; }
     width = Math.max(2, Math.min(100, width));
     height = Math.max(2, Math.min(100, height));
+    let mapSet = window.prompt("Add to map set id (blank = current/root, or a new id for an adhoc scene):", "");
+    mapSet = (mapSet || "").trim().toLowerCase().replace(/[^a-z0-9_\-]/g, "_");
     ajaxPost(
       "/create_map",
-      { name: mapName, width, height },
+      { name: mapName, width, height, map_set: mapSet },
       (data) => {
         if (data && data.error) {
           alert(data.error);
@@ -6994,6 +7084,12 @@ $(document).ready(() => {
     if (isInteractionLocked()) {
       e.stopPropagation();
       return;
+    }
+    if (!targetMode && !moveMode && window.DmNotes && typeof window.DmNotes.handleTileClick === 'function') {
+      if (window.DmNotes.handleTileClick(e, $(this))) {
+        e.stopPropagation();
+        return;
+      }
     }
     const $tile = $(this);
     const targetCoords = resolveStackTargetCoords($tile);
@@ -7303,6 +7399,7 @@ $(document).ready(() => {
         $section.find('.dm-portrait-section-toggle').attr('aria-expanded', 'false');
       }
     });
+    syncDmPortraitDockCompact($dock);
 
     $dock.off('click.dmPortraitToggle', '.dm-portrait-section-toggle');
     $dock.on('click.dmPortraitToggle', '.dm-portrait-section-toggle', function (event) {
@@ -7316,8 +7413,15 @@ $(document).ready(() => {
       if (key) {
         window.localStorage.setItem(`natural20.dmPortraitSection.${key}`, expanded ? '1' : '0');
       }
+      syncDmPortraitDockCompact($dock);
     });
   };
+
+  function syncDmPortraitDockCompact($dock) {
+    const allCollapsed = $dock.find('.dm-portrait-section').length > 0
+      && $dock.find('.dm-portrait-section:not(.collapsed)').length === 0;
+    $dock.toggleClass('is-compact', allCollapsed);
+  }
 
   initDmPortraitSections();
 
@@ -7824,14 +7928,14 @@ $(document).ready(() => {
   // --- Floating Menu Handlers ---
   $("#expand-menu").click(() => {
     $("#menu").fadeIn();
-    $("#expand-menu").hide();
-    $("#collapse-menu").show();
+    $("#expand-menu").hide().attr('aria-expanded', 'false');
+    $("#collapse-menu").show().attr('aria-expanded', 'true');
   });
 
   $("#collapse-menu").click(() => {
     $("#menu").fadeOut();
-    $("#expand-menu").show();
-    $("#collapse-menu").hide();
+    $("#expand-menu").show().attr('aria-expanded', 'false');
+    $("#collapse-menu").hide().attr('aria-expanded', 'false');
   });
 
   $("#start-battle").click(() => {
@@ -7856,12 +7960,12 @@ $(document).ready(() => {
 
   const showConsole = () => {
     $("#console-container").fadeIn();
-    $("#open-console").html("Hide Console");
+    Utils.setVttMenuLabel("#open-console", "Hide Combat Log");
   };
 
   const hideConsole = () => {
     $("#console-container").fadeOut();
-    $("#open-console").html("Show Console");
+    Utils.setVttMenuLabel("#open-console", "Combat Log");
   };
 
   $("#open-console").click(() => {
@@ -8081,6 +8185,9 @@ $(document).ready(() => {
   });
 
   // NPC Spawner functionality
+  let availableNpcs = [];
+  const npcCrGroupCollapsed = {};
+
   $("#toggle-npc-spawner").click(() => {
     const $npcSpawner = $("#npc-spawner");
     if ($npcSpawner.is(":visible")) {
@@ -8099,7 +8206,11 @@ $(document).ready(() => {
   function loadAvailableNPCs() {
     $.get("/available_npcs", (data) => {
       if (data.npcs) {
-        displayNPCs(data.npcs);
+        availableNpcs = data.npcs;
+        displayNPCs(availableNpcs);
+        if (typeof Utils !== 'undefined' && Utils.applyNpcSpawnerSearch) {
+          Utils.applyNpcSpawnerSearch($("#npc-search-input").val());
+        }
       }
     }).fail((jqXHR) => {
       console.error("Failed to load NPCs:", jqXHR.responseJSON ? jqXHR.responseJSON.error : jqXHR.statusText);
@@ -8107,45 +8218,126 @@ $(document).ready(() => {
     });
   }
 
-  // Display NPCs in the spawner window
+  function npcSpawnerEscape(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function buildNpcSpawnerItem(npc) {
+    const unique = !!npc.unique;
+    const onMap = npc.on_map ? String(npc.on_map) : '';
+    const uniqueBadge = unique
+      ? '<span class="npc-unique-badge" title="Named unique NPC — one token per map set">Unique</span>'
+      : '';
+    const onMapBadge = onMap
+      ? `<span class="npc-on-map-badge" title="Already on ${npcSpawnerEscape(onMap)} — drop to move">On ${npcSpawnerEscape(onMap)}</span>`
+      : '';
+    const titleParts = [`AC: ${npc.ac}`, `HP: ${npc.hp}`];
+    if (unique) {
+      titleParts.push(onMap ? `Drop to move from ${onMap}` : 'Unique NPC');
+    }
+    const haystack = (typeof Utils !== 'undefined' && Utils.npcSpawnerSearchHaystack)
+      ? Utils.npcSpawnerSearchHaystack(npc)
+      : String(npc.name || '').toLowerCase();
+    const $npcItem = $(`
+      <div class="npc-item" draggable="true" data-npc-type="${npcSpawnerEscape(npc.id)}"
+           data-unique="${unique ? '1' : '0'}"
+           data-entity-uid="${npcSpawnerEscape(npc.entity_uid || '')}"
+           data-on-map="${npcSpawnerEscape(onMap)}"
+           data-search="${npcSpawnerEscape(haystack)}"
+           title="${npcSpawnerEscape(titleParts.join(', '))}">
+        <img class="npc-item-image" src="/assets/${npcSpawnerEscape(npc.image)}" alt="${npcSpawnerEscape(npc.name)}" onerror="this.onerror=null;this.src='/static/assets/token_player.png'">
+        <div class="npc-item-info">
+          <div class="npc-item-name-row">
+            <div class="npc-item-name">${npcSpawnerEscape(npc.name)}</div>
+            ${uniqueBadge}
+          </div>
+          <div class="npc-item-type">CR ${npcSpawnerEscape(npc.cr)} • ${npcSpawnerEscape(npc.size)} • AC ${npcSpawnerEscape(npc.ac)}${onMapBadge ? ' ' + onMapBadge : ''}</div>
+        </div>
+      </div>
+    `);
+    $npcItem.on('click', function (e) {
+      e.stopPropagation();
+      const npcType = $(this).data('npc-type');
+      const entityUid = $(this).attr('data-entity-uid');
+      const alreadyOnMap = $(this).attr('data-on-map');
+      if ($(this).attr('data-unique') === '1' && alreadyOnMap && entityUid) {
+        if (typeof centerOnEntityId === 'function') {
+          centerOnEntityId(entityUid);
+        }
+        return;
+      }
+      ajaxPost(
+        "/spawn_npc",
+        { npc_type: npcType, x: 0, y: 0 },
+        (data) => {
+          if (data.status === 'ok') {
+            if (data.moved && typeof Utils !== 'undefined' && Utils.showToast) {
+              const from = data.from_map ? (' from ' + data.from_map) : '';
+              Utils.showToast('Moved unique NPC' + from);
+            }
+            if (data.entity_uid) {
+              centerOnEntityId(data.entity_uid);
+            }
+            loadAvailableNPCs();
+          } else {
+            alert("Failed to spawn NPC: " + (data.error || "Unknown error"));
+          }
+        },
+        true
+      );
+    });
+    return $npcItem;
+  }
+
+  // Display NPCs in the spawner window, grouped by CR accordion folders
   function displayNPCs(npcs) {
     const $npcList = $("#npc-list");
     $npcList.empty();
+    const groups = (typeof Utils !== 'undefined' && Utils.groupNpcsByCr)
+      ? Utils.groupNpcsByCr(npcs)
+      : [{ label: 'NPCs', sort: 0, npcs: npcs || [] }];
 
-    npcs.forEach((npc) => {
-      const $npcItem = $(`
-        <div class="npc-item" draggable="true" data-npc-type="${npc.id}" title="AC: ${npc.ac}, HP: ${npc.hp}">
-          <img class="npc-item-image" src="/assets/${npc.image}" alt="${npc.name}" onerror="this.onerror=null;this.src='/static/assets/token_player.png'">
-          <div class="npc-item-info">
-            <div class="npc-item-name">${npc.name}</div>
-            <div class="npc-item-type">CR ${npc.cr} • ${npc.size} • AC ${npc.ac}</div>
-          </div>
+    groups.forEach((group) => {
+      const collapsed = Object.prototype.hasOwnProperty.call(npcCrGroupCollapsed, group.label)
+        ? !!npcCrGroupCollapsed[group.label]
+        : true;
+      const $group = $(`
+        <div class="npc-cr-group${collapsed ? ' collapsed' : ''}" data-cr-label="${npcSpawnerEscape(group.label)}" data-user-collapsed="${collapsed ? '1' : '0'}">
+          <button type="button" class="npc-cr-group-header">
+            <span class="npc-cr-group-chevron" aria-hidden="true"></span>
+            <span class="npc-cr-group-label">${npcSpawnerEscape(group.label)}</span>
+            <span class="npc-cr-group-count">${group.npcs.length}</span>
+          </button>
+          <div class="npc-cr-group-items"></div>
         </div>
       `);
-      $npcItem.on('click', function (e) {
-        e.stopPropagation();
-        const npcType = $(this).data('npc-type');
-        ajaxPost(
-          "/spawn_npc",
-          { npc_type: npcType, x: 0, y: 0 },
-          (data) => {
-            if (data.status === 'ok') {
-              console.log("NPC spawned successfully:", data.entity_uid);
-              // Optionally, center on the new NPC
-              centerOnEntityId(data.entity_uid);
-            } else {
-              alert("Failed to spawn NPC: " + (data.error || "Unknown error"));
-            }
-          },
-          true
-        );
+      const $items = $group.find('.npc-cr-group-items');
+      group.npcs.forEach((npc) => {
+        $items.append(buildNpcSpawnerItem(npc));
       });
-      $npcList.append($npcItem);
+      $npcList.append($group);
     });
   }
 
-  // NPC search functionality
+  $("#npc-list").on("click", ".npc-cr-group-header", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const $group = $(this).closest('.npc-cr-group');
+    $group.toggleClass('collapsed');
+    const collapsed = $group.hasClass('collapsed');
+    $group.attr('data-user-collapsed', collapsed ? '1' : '0');
+    npcCrGroupCollapsed[$group.attr('data-cr-label')] = collapsed;
+  });
+
+  // NPC search functionality — filters items and expands matching CR folders
   $("#npc-search-input").on("input", function () {
+    if (typeof Utils !== 'undefined' && Utils.applyNpcSpawnerSearch) {
+      Utils.applyNpcSpawnerSearch($(this).val());
+      return;
+    }
     const searchTerm = $(this).val().toLowerCase();
     $(".npc-item").each(function () {
       const npcName = $(this).find(".npc-item-name").text().toLowerCase();
@@ -8241,10 +8433,19 @@ $(document).ready(() => {
           .then((data) => {
             if (data && data.placement) {
               console.log("NPC placed in campaign YAML:", data.placement);
+              if (data.placement.moved && typeof Utils !== 'undefined' && Utils.showToast) {
+                const from = data.placement.from_map ? (' from ' + data.placement.from_map) : '';
+                Utils.showToast('Moved unique NPC' + from);
+              }
             } else if (data && data.entity_uid) {
               console.log("NPC spawned successfully:", data.entity_uid);
+              if (data.moved && typeof Utils !== 'undefined' && Utils.showToast) {
+                const from = data.from_map ? (' from ' + data.from_map) : '';
+                Utils.showToast('Moved unique NPC' + from);
+              }
             }
             afterMapPlacementRefresh();
+            loadAvailableNPCs();
           })
           .catch((err) => {
             alert("Failed to place NPC: " + (err.message || "Unknown error"));
@@ -10140,6 +10341,13 @@ $(document).ready(() => {
     }
   }
 
+  function updateInvitePartyButton(entityInfo) {
+    const $btn = $('#dialogInviteParty');
+    const show = !!(entityInfo && entityInfo.can_invite_party && entityInfo.is_npc && !entityInfo.is_sidekick);
+    $btn.toggle(show);
+  }
+  window.updateInvitePartyButton = updateInvitePartyButton;
+
   // Load entity profile information
   function isDialogDescriptionSuppressed() {
     const role = ($('body').attr('data-role') || '').toLowerCase();
@@ -10276,6 +10484,7 @@ $(document).ready(() => {
           setDialogEntityDescription(entity.description, entity.description_suppressed);
 
           updateMerchantDialogButton(entity);
+          updateInvitePartyButton(entity);
           loadDialogDmNpcControls(entityId, entity);
         } else {
           // Set default values if entity info not available
@@ -10286,6 +10495,7 @@ $(document).ready(() => {
           $('#dialogEntityClass').text('Unknown');
           setDialogEntityDescription(null, isDialogDescriptionSuppressed());
           updateMerchantDialogButton(null);
+          updateInvitePartyButton(null);
           loadDialogDmNpcControls(entityId, null);
         }
       },
@@ -10323,6 +10533,31 @@ $(document).ready(() => {
     const merchantUid = $('#dialogEntityName').data('entity-id');
     const buyerUid = Chat.getCurrentPovEntity();
     openMerchantTradeModal(merchantUid, buyerUid);
+  });
+
+  $('#dialogInviteParty').off('click.inviteParty').on('click.inviteParty', function () {
+    const entityUid = $('#dialogEntityName').data('entity-id');
+    if (!entityUid) {
+      return;
+    }
+    const force = isDM() && !!(window.event && window.event.shiftKey);
+    ajaxPost(
+      '/party/invite',
+      { entity_uid: entityUid, force },
+      (data) => {
+        if (data && data.error) {
+          if (typeof Utils !== 'undefined' && Utils.showToast) {
+            Utils.showToast(data.error);
+          }
+          return;
+        }
+        if (data && data.replies && typeof Chat !== 'undefined' && Chat.ingestTalkReplies) {
+          Chat.ingestTalkReplies(data.replies);
+        }
+        $('#dialogInviteParty').hide();
+      },
+      true
+    );
   });
 
   // Load available languages for the dialog
@@ -11200,7 +11435,7 @@ $(document).ready(() => {
     if (isEditMode() && !$tile.find('.entity, .npc, .object-container').length) return;
 
     // Prevent dragging if clicking on action buttons or other interactive elements
-    if ($(e.target).closest('.popover-menu, .popover-menu-2, .action-button, .add-to-turn-order, .dialog-bubble, .conversation-bubble, .close-bubble, .add-to-target, .object-quick-action, .object-quick-actions, .move-quick-action, .move-quick-action-layer').length) {
+    if ($(e.target).closest('.popover-menu, .popover-menu-2, .action-button, .add-to-turn-order, .dialog-bubble, .conversation-bubble, .close-bubble, .add-to-target, .object-quick-action, .object-quick-actions, .move-quick-action, .move-quick-action-layer, .dm-note-pin').length) {
       return;
     }
 

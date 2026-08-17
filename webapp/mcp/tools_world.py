@@ -55,16 +55,20 @@ def register(registry: ToolRegistry) -> None:
     def list_maps(context: MCPContext):
         cg = context.current_game
         maps = getattr(cg, 'maps', {}) or {}
+        active_set = _safe(lambda: getattr(context.game_session, 'active_map_set', None))
         result = []
         for name, m in maps.items():
+            map_set = _safe(lambda n=name: context.game_session.map_set_for(n))
             result.append({
                 'name': name,
                 'size': list(getattr(m, 'size', []) or []),
                 'feet_per_grid': getattr(m, 'feet_per_grid', None),
                 'entity_count': len(getattr(m, 'entities', {}) or {}),
                 'background_image': _safe(lambda mm=m: mm.background_image()),
+                'map_set': map_set,
+                'active': map_set == active_set,
             })
-        return {'maps': result}
+        return {'maps': result, 'active_map_set': active_set}
 
     @tool(
         registry,

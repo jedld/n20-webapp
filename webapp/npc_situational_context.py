@@ -89,6 +89,74 @@ def completed_offers_for_requester(
     return completed
 
 
+def in_party_sidekick_prompt_block(session, entity, speaker=None) -> str:
+    """Authoritative current-state text when ``entity`` is already a party sidekick.
+
+    YAML backstory often still says “if invited, join with [JOIN_PARTY]”. This
+    block overrides that so the NPC stays consistent after they have joined.
+    """
+    if entity is None or session is None:
+        return ''
+    try:
+        from natural20.sidekick import (
+            is_in_party_sidekick,
+            iter_party_members,
+            sidekick_owners,
+        )
+    except Exception:
+        return ''
+    try:
+        if not is_in_party_sidekick(session, entity):
+            return ''
+    except Exception:
+        return ''
+
+    self_uid = str(getattr(entity, 'entity_uid', '') or '')
+    companion_names = []
+    party_uids = set()
+    try:
+        for member in iter_party_members(session) or []:
+            uid = str(getattr(member, 'entity_uid', '') or '')
+            if uid:
+                party_uids.add(uid)
+            if uid and uid == self_uid:
+                continue
+            name = entity_label(member)
+            if name and name not in companion_names:
+                companion_names.append(name)
+    except Exception:
+        pass
+
+    lines = [
+        'Current party status (authoritative; overrides any backstory about still waiting to be invited):',
+        'You have already joined this adventuring party as a companion. You travel with them. This is settled.',
+    ]
+    if companion_names:
+        lines.append(f'You travel with: {", ".join(companion_names)}.')
+    owners = []
+    try:
+        owners = sidekick_owners(session, entity) or []
+    except Exception:
+        owners = []
+    if owners and not companion_names:
+        lines.append('You are a companion of this adventuring party.')
+
+    if speaker is not None:
+        speaker_uid = str(getattr(speaker, 'entity_uid', '') or '')
+        speaker_name = entity_label(speaker)
+        if speaker_uid and speaker_uid in party_uids:
+            lines.append(
+                f'The speaker ({speaker_name}) is a member of your party. '
+                'Treat them as a traveling companion, not a stranger asking you to come along.'
+            )
+
+    lines.append(
+        'Do not speak as if you are still deciding whether to go, still posted at your old duties, '
+        'or not yet committed to this journey.'
+    )
+    return '\n'.join(lines) + '\n'
+
+
 def build_npc_situational_context(
     session,
     current_game,
@@ -102,6 +170,10 @@ def build_npc_situational_context(
         return ''
 
     lines: List[str] = ['Situational awareness (authoritative):']
+
+    party_status = in_party_sidekick_prompt_block(session, actor, speaker=requester)
+    if party_status:
+        lines.append(party_status.rstrip())
 
     try:
         goal = current_game.get_short_term_goal(actor)

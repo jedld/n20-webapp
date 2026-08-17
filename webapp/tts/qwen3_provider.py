@@ -125,7 +125,7 @@ class Qwen3TTSProvider(TTSEngine):
 
         self._voice_registry: dict[str, VoiceConfig] = {}
         self._clone_prompts: dict[str, Any] = {}
-        self._clone_prompt_keys: dict[str, tuple[str, str, bool]] = {}
+        self._clone_prompt_keys: dict[str, tuple] = {}
         self._model = None
         self._clone_model = None
         self._design_model = None
@@ -333,6 +333,8 @@ class Qwen3TTSProvider(TTSEngine):
         design_prompt: str,
         language: str,
         campaign_root: str,
+        accent: Optional[str] = None,
+        force: bool = False,
     ) -> tuple[str, str]:
         from webapp.tts.voice_baking import bake_sample_text, load_baked_ref_text, save_baked_ref_text, voice_sample_path
 
@@ -340,8 +342,12 @@ class Qwen3TTSProvider(TTSEngine):
         if out is None:
             raise RuntimeError(f"Cannot bake voice sample without campaign_root for {npc_uid}")
         out.parent.mkdir(parents=True, exist_ok=True)
-        ref_text = bake_sample_text()
-        if out.is_file() and out.stat().st_size > 44:
+        ref_text = bake_sample_text(accent)
+        print(
+            f"[TTS] VoiceDesign instruct for {npc_uid}: {design_prompt}",
+            flush=True,
+        )
+        if not force and out.is_file() and out.stat().st_size > 44:
             print(f"[TTS] Reusing baked voice sample for {npc_uid}: {out}")
             return str(out), load_baked_ref_text(campaign_root, npc_uid)
 
@@ -368,8 +374,11 @@ class Qwen3TTSProvider(TTSEngine):
         *,
         language: str = "English",
         campaign_root: str,
+        accent: Optional[str] = None,
+        gender: Optional[str] = None,
     ) -> str:
         """Bake and return the path to a reference WAV for an NPC."""
+        del gender
         if not self._loaded:
             self.initialize()
         path, _ref_text = self._bake_voice_reference(
@@ -377,6 +386,7 @@ class Qwen3TTSProvider(TTSEngine):
             design_prompt,
             _resolve_language(language),
             campaign_root,
+            accent=accent,
         )
         return path
 
@@ -455,12 +465,21 @@ class Qwen3TTSProvider(TTSEngine):
             campaign_root=campaign_root,
             npc_uid=npc_uid,
             profile_strategy=profile_strategy,
+            profile={
+                **(profile if isinstance(profile, dict) else {}),
+                "npc_uid": npc_uid,
+                "campaign_root": campaign_root,
+                "design_prompt": design_prompt,
+                "voice_prompt": voice_prompt,
+                "accent": accent,
+            },
         ):
             reference_audio, ref_text = self._bake_voice_reference(
                 npc_uid,
                 design_prompt,
                 resolved_language,
                 campaign_root,
+                force=True,
             )
             effective_mode = "voice_clone"
             extra["qwen3_mode"] = "voice_clone"
@@ -494,7 +513,13 @@ class Qwen3TTSProvider(TTSEngine):
     ) -> None:
         model = self._get_clone_model()
         x_vector_only = not bool((ref_text or "").strip())
-        prompt_key = (ref_audio, ref_text or "", x_vector_only)
+        mtime = 0
+        try:
+            if ref_audio and os.path.exists(ref_audio):
+                mtime = int(Path(ref_audio).stat().st_mtime_ns)
+        except OSError:
+            mtime = 0
+        prompt_key = (ref_audio, ref_text or "", x_vector_only, mtime)
         if self._clone_prompt_keys.get(npc_uid) == prompt_key and npc_uid in self._clone_prompts:
             return
         self._clone_prompt_keys[npc_uid] = prompt_key
@@ -681,6 +706,7 @@ class Qwen3TTSProvider(TTSEngine):
 
     def remove_voice(self, npc_uid: str) -> bool:
         self._clone_prompts.pop(npc_uid, None)
+        self._clone_prompt_keys.pop(npc_uid, None)
         if npc_uid in self._voice_registry:
             del self._voice_registry[npc_uid]
             return True
@@ -697,6 +723,7 @@ class MockQwen3Provider(Qwen3TTSProvider):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._voice_registry = {}
         self._clone_prompts = {}
+        self._clone_prompt_keys = {}
         self._model = None
         self._clone_model = object()
         self._clone_model_id = "mock-clone"
@@ -719,7 +746,10 @@ class MockQwen3Provider(Qwen3TTSProvider):
         *,
         language: str = "English",
         campaign_root: str,
+        accent: Optional[str] = None,
+        gender: Optional[str] = None,
     ) -> str:
+        del accent, gender
         from webapp.tts.voice_baking import voice_sample_path
 
         out = voice_sample_path(campaign_root, npc_uid)

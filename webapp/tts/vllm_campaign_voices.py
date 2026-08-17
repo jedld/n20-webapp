@@ -31,17 +31,9 @@ class VoiceRegistrationSummary:
 
 
 def _ref_text(wav_path: Path) -> str:
-    sidecar = wav_path.with_suffix(".ref.txt")
-    if sidecar.is_file():
-        try:
-            text = sidecar.read_text(encoding="utf-8").strip()
-            if text:
-                return text
-        except OSError:
-            pass
-    return (
-        "A steady voice for dialogue. Warm, clear, and natural, just as I always speak."
-    )
+    from webapp.tts.voice_baking import load_ref_text_for_audio
+
+    return load_ref_text_for_audio(str(wav_path))
 
 
 def _list_voice_names(client, base_url: str) -> set[str]:
@@ -73,10 +65,16 @@ def register_campaign_voices(
     consent: Optional[str] = None,
     force: bool = False,
 ) -> VoiceRegistrationSummary:
-    """Upload ``assets/voice_samples/*.wav`` to the vLLM-Omni sidecar (idempotent)."""
+    """Upload ``assets/voice_samples/*.{wav,mp3}`` to the vLLM-Omni sidecar (idempotent)."""
     import httpx
 
     from webapp.tts.qwen3_vllm_provider import VLLMOmniTTSConfig
+    from webapp.tts.voice_baking import (
+        audio_file_signature,
+        list_campaign_voice_samples,
+        load_voice_profile_state,
+        save_voice_profile_state,
+    )
 
     campaign_path = Path(campaign_root).resolve()
     samples_dir = campaign_path / "assets" / "voice_samples"
@@ -84,7 +82,7 @@ def register_campaign_voices(
         logger.info("[TTS] No voice_samples directory for campaign %s", campaign_path)
         return VoiceRegistrationSummary()
 
-    wavs = sorted(samples_dir.glob("*.wav"))
+    wavs = list_campaign_voice_samples(samples_dir)
     if not wavs:
         return VoiceRegistrationSummary()
 
@@ -107,9 +105,28 @@ def register_campaign_voices(
 
         for wav_path in wavs:
             voice_name = f"{prefix}{wav_path.stem}"
+            signature = audio_file_signature(str(wav_path)) or {}
+            state = load_voice_profile_state(str(campaign_path), wav_path.stem)
+            sample_unchanged = bool(
+                state
+                and int(state.get("mtime_ns") or 0) == int(signature.get("mtime_ns") or 0)
+                and int(state.get("size") or 0) == int(signature.get("size") or 0)
+                and str(state.get("audio") or "") == wav_path.name
+            )
             if voice_name in existing and not force:
-                skipped += 1
-                continue
+                if sample_unchanged:
+                    skipped += 1
+                    continue
+                if state is None:
+                    save_voice_profile_state(
+                        str(campaign_path),
+                        wav_path.stem,
+                        fingerprint="",
+                        audio_path=str(wav_path),
+                        source="provided" if wav_path.suffix.lower() == ".mp3" else "baked",
+                    )
+                    skipped += 1
+                    continue
             ref_text = _ref_text(wav_path)
             # Resample to target sample rate if needed
             ref_for_upload = str(wav_path)
@@ -148,6 +165,13 @@ def register_campaign_voices(
                 response.raise_for_status()
                 uploaded += 1
                 existing.add(voice_name)
+                save_voice_profile_state(
+                    str(campaign_path),
+                    wav_path.stem,
+                    fingerprint=str((state or {}).get("fingerprint") or ""),
+                    audio_path=str(wav_path),
+                    source="provided" if wav_path.suffix.lower() == ".mp3" else "baked",
+                )
                 logger.debug("[TTS] Registered vLLM voice %s (from %s)", voice_name, upload_path)
             except httpx.HTTPError as exc:
                 failed += 1
