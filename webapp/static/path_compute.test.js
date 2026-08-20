@@ -1,7 +1,29 @@
 const path = require('path');
+const fs = require('fs');
 const { PathCompute, PathfindingCostMap } = require('./path_compute.js');
 
-const vectors = require(path.resolve(__dirname, '../../tests/fixtures/path_compute_vectors.json'));
+// The path_compute fixture lives in the engine (natural20) repo's tests/fixtures/,
+// while this test lives in the n20-webapp submodule/subdirectory. Resolve it
+// robustly for both the monorepo/submodule layout (CI, GitHub) and a standalone
+// n20-webapp checkout (where the fixture is copied alongside the tests).
+function _resolvePathVectors() {
+  const candidates = [
+    // n20-webapp as a subdirectory/submodule of the engine repo (CI, GitHub)
+    path.resolve(__dirname, '../../../tests/fixtures/path_compute_vectors.json'),
+    // n20-webapp standalone: fixture copied into n20-webapp/tests/fixtures/
+    path.resolve(__dirname, '../../tests/fixtures/path_compute_vectors.json'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return require(candidate);
+    }
+  }
+  throw new Error(
+    `path_compute_vectors.json not found. Tried:\n  - ${candidates[0]}\n  - ${candidates[1]}`
+  );
+}
+
+const vectors = _resolvePathVectors();
 
 function pathKey(p) {
   if (!p) return 'null';
