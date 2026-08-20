@@ -15,6 +15,10 @@
     "setupFiles": [
       "<rootDir>/jest.setup.js"
     ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/client-3d/"
+    ],
     "coverageProvider": "v8",
     "collectCoverage": true,
     "collectCoverageFrom": [
