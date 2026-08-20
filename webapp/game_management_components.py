@@ -44,7 +44,7 @@ class GameEntityRegistry:
 
     def defer_all_players(self):
         deferred_ids = set()
-        session = self.manager.game_session
+        session = getattr(self.manager, 'game_session', None)
         active = getattr(session, 'active_map_set', None)
         for entity_map in self.manager.maps.values():
             if active and session is not None:
