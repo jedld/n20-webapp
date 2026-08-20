@@ -166,7 +166,9 @@ const expose = new vm.Script(`({
   getTilePositionInContainer: (typeof getTilePositionInContainer !== 'undefined') ? getTilePositionInContainer : undefined,
   getTilePositionForGridCoords: (typeof getTilePositionForGridCoords !== 'undefined') ? getTilePositionForGridCoords : undefined,
   renderMoveQuickAction: (typeof renderMoveQuickAction !== 'undefined') ? renderMoveQuickAction : undefined,
-  executeMoveQuickAction: (typeof executeMoveQuickAction !== 'undefined') ? executeMoveQuickAction : undefined
+  executeMoveQuickAction: (typeof executeMoveQuickAction !== 'undefined') ? executeMoveQuickAction : undefined,
+  updateCoordsBox: (typeof updateCoordsBox !== 'undefined') ? updateCoordsBox : undefined,
+  appendTeleporterHoverHint: (typeof appendTeleporterHoverHint !== 'undefined') ? appendTeleporterHoverHint : undefined
 })`);
 const Engine = expose.runInContext(context);
 
@@ -179,7 +181,43 @@ describe('engine.js basic behavior', () => {
     expect(Engine.formatGameTime(3600)).toBe('1 hour');
     expect(Engine.formatGameTime(86400 + 3661)).toBe('1 day, 1 hour, 1 minute, 1 second');
   // multiple days with no remainder
-  expect(Engine.formatGameTime(2 * 24 * 60 * 60)).toBe('2 days');
+    expect(Engine.formatGameTime(2 * 24 * 60 * 60)).toBe('2 days');
+  });
+
+  test('updateCoordsBox writes coordinates and tooltip into #coords-box', () => {
+    const orig$ = global.$;
+    let written = null;
+    global.$ = (sel) => {
+      if (sel === '#coords-box') {
+        return { html: (html) => { written = html; } };
+      }
+      return orig$(sel);
+    };
+    try {
+      Engine.updateCoordsBox(11, 7, '<p>Difficult Terrain</p><p>Iron Gates</p>');
+      expect(written).toContain('X: 11');
+      expect(written).toContain('Y: 7');
+      expect(written).toContain('Difficult Terrain');
+      expect(written).toContain('Iron Gates');
+    } finally {
+      global.$ = orig$;
+    }
+  });
+
+  test('appendTeleporterHoverHint adds party travel interact copy', () => {
+    const marker = {
+      length: 1,
+      first() { return this; },
+      attr(name) {
+        if (name === 'data-destination') return 'Forest Clearing';
+        if (name === 'data-party-travel') return '1';
+        return '';
+      },
+    };
+    const $tile = { find: () => marker };
+    const html = Engine.appendTeleporterHoverHint($tile, '<p>Bright Light</p>');
+    expect(html).toContain('→ Forest Clearing');
+    expect(html).toContain('Interact to travel with the party');
   });
 
   test('EventQueue enqueues and processes events in order', async () => {

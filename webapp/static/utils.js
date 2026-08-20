@@ -19,6 +19,18 @@ const Utils = {
     }
     el.textContent = text;
   },
+  setEditModeBannerMap: function (mapName) {
+    const $map = $('.edit-mode-banner-map');
+    if (!$map.length) {
+      return;
+    }
+    const name = String(mapName || '').trim();
+    if (name) {
+      $map.text(name).removeAttr('hidden');
+    } else {
+      $map.text('').attr('hidden', true);
+    }
+  },
   manhattanDistance: function (sourceX, sourceY, destX, destY) {
     return Math.abs(sourceX - destX) + Math.abs(sourceY - destY);
   },
@@ -39,6 +51,9 @@ const Utils = {
     }
     if (window.DmNotes && typeof window.DmNotes.reload === 'function') {
       window.DmNotes.reload();
+    }
+    if (window.Notebook && typeof window.Notebook.reloadMapLinks === 'function') {
+      window.Notebook.reloadMapLinks();
     }
   },
   refreshPortraits: function () {
@@ -68,20 +83,7 @@ const Utils = {
     }
     Utils.updateStackLayerUI(stackFloors, name);
     if (String($('body').attr('data-edit-mode') || '').toLowerCase() === 'true') {
-      const $banner = $('.edit-mode-banner');
-      if ($banner.length && name) {
-        const text =
-          'Edit mode — map: ' + name
-            + ' — drag NPCs to reposition. Click fixture labels to edit notes and properties.'
-            + ' Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures.'
-            + ' Changes save to campaign YAML.';
-        const $label = $banner.find('.edit-mode-banner-text');
-        if ($label.length) {
-          $label.text(text);
-        } else {
-          $banner.text(text);
-        }
-      }
+      Utils.setEditModeBannerMap(name);
     }
   },
   updateStackLayerUI: function (stackFloors, currentMap) {

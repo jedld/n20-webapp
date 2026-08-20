@@ -211,7 +211,7 @@ button.vtt-menu-item:focus {
 }
 
 #coords-box {
-  z-index: 99;
+  z-index: 1300;
 }
 
 /* Viewport Pan/Zoom Controls (Roll20-style) */
@@ -230,7 +230,7 @@ button.vtt-menu-item:focus {
   transition: none;
 }
 
-/* Map chrome docks: left = zoom + landmarks, right = notes + minimized chat */
+/* Map chrome docks: left = zoom + landmarks, right = minimized chat (Notes panel is a right-edge pop-out) */
 .map-chrome-dock {
   position: fixed;
   bottom: 10px;
@@ -2189,15 +2189,30 @@ input.initiative-input.form-control {
   color: #6c757d;
 }
 
-/* Coords Box Styles */
+/* Coords Box Styles — tile inspect panel (coords, terrain, entity/object labels) */
 #coords-box {
   position: fixed;
   top: 0;
   right: 0;
-  background-color: white;
-  padding: 10px;
-  border: 1px solid black;
-  z-index: 99;
+  background-color: rgba(255, 252, 245, 0.97);
+  padding: 8px 12px;
+  border: 1px solid #c9b79c;
+  border-radius: 0 0 0 8px;
+  z-index: 1300;
+  pointer-events: none;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #4f3523;
+  min-width: 88px;
+  box-shadow: 0 8px 24px rgba(62, 39, 24, 0.18);
+}
+
+#coords-box:empty {
+  display: none;
+}
+
+#coords-box p {
+  margin: 0 0 2px;
 }
 
 .target-validation-hint {
@@ -2325,6 +2340,78 @@ input.initiative-input.form-control {
   color: #ddd;
 }
 
+.knockout-toggle {
+  width: 50px;
+  height: 50px;
+  padding: 2px;
+  border: 2px solid #6b3b3b;
+  border-radius: 8px;
+  background: #2a1a1a;
+  color: #f0d0d0;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.knockout-toggle:hover {
+  border-color: #c9a227;
+}
+
+.knockout-toggle.is-active {
+  border-color: #7ec8e3;
+  background: #163042;
+  color: #e8f6ff;
+  box-shadow: 0 0 8px rgba(126, 200, 227, 0.35);
+}
+
+.knockout-toggle-icon {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.knockout-toggle-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.knockout-attack-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(22, 48, 66, 0.55);
+  color: #e8f6ff;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.knockout-attack-overlay[hidden] {
+  display: none !important;
+}
+
+.center-action-entry .knockout-toggle {
+  width: clamp(34px, 4.4vw, 46px);
+  height: clamp(34px, 4.4vw, 46px);
+}
+
+.center-action-entry .knockout-attack-overlay {
+  width: 100%;
+  height: 100%;
+  font-size: 9px;
+}
+
 .object-container {
   position: absolute;
   top: 0;
@@ -2444,6 +2531,16 @@ body.highlight-doors .tile.tile-door-highlight {
 .door-highlight-marker-opened .door-highlight-marker-line {
   background: rgba(74, 222, 128, 0.95);
   box-shadow: 0 0 6px rgba(74, 222, 128, 0.85);
+}
+
+.window-highlight-marker .door-highlight-marker-line {
+  background: rgba(56, 189, 248, 0.95);
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.85);
+}
+
+.window-highlight-marker.door-highlight-marker-opened .door-highlight-marker-line {
+  background: rgba(125, 211, 252, 0.95);
+  box-shadow: 0 0 6px rgba(125, 211, 252, 0.85);
 }
 
 .tiny-hut-dome-marker {
@@ -6047,37 +6144,73 @@ body[data-role*="dm"] .tile.entity-dragging {
   background: #e3c66b;
 }
 
-/* Campaign edit mode */
+/* Campaign edit mode — compact chip next to the hamburger, not a full-width overlay. */
 .edit-mode-banner {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 6000;
-  background: rgba(120, 53, 15, 0.95);
+  top: 10px;
+  left: 56px;
+  right: auto;
+  z-index: 1025;
+  max-width: min(280px, calc(100vw - 80px));
+  background: rgba(120, 53, 15, 0.92);
   color: #fff7ed;
-  text-align: center;
-  padding: 8px 12px;
-  font-size: 14px;
+  text-align: left;
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 1.3;
+  border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
+  gap: 6px 8px;
+}
+
+.edit-mode-banner-kicker {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.edit-mode-banner-map {
+  opacity: 0.85;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-mode-banner-map[hidden] {
+  display: none !important;
 }
 
 .edit-mode-banner-text {
-  flex: 1 1 auto;
+  display: none;
+  flex: 1 0 100%;
+  font-size: 11px;
+  opacity: 0.92;
+}
+
+.edit-mode-banner:hover,
+.edit-mode-banner:focus-within {
+  max-width: min(360px, calc(100vw - 24px));
+}
+
+.edit-mode-banner:hover .edit-mode-banner-text,
+.edit-mode-banner:focus-within .edit-mode-banner-text {
+  display: block;
 }
 
 .edit-mode-banner-exit {
   flex: 0 0 auto;
   pointer-events: auto;
+  margin-left: auto;
 }
 
-body[data-edit-mode="true"] #floating-menu {
-  z-index: 6100;
+body.edit-properties-picking-path .edit-mode-banner,
+.modal-open .edit-mode-banner {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 body.edit-mode-dragging {
@@ -6262,6 +6395,111 @@ body.edit-mode-dragging .edit-mode-drag-handle {
   height: 34px;
 }
 
+.edit-properties-point-list .edit-point-list-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 8px;
+  min-height: 28px;
+}
+
+.edit-point-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(250, 204, 21, 0.18);
+  border: 1px solid rgba(250, 204, 21, 0.55);
+  color: #fde68a;
+  font-size: 12px;
+}
+
+.edit-point-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.edit-path-pick-banner {
+  position: fixed;
+  bottom: 20px;
+  top: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4000;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  max-width: min(720px, calc(100vw - 24px));
+  padding: 12px 16px;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(250, 204, 21, 0.7);
+  border-radius: 8px;
+  color: #f8fafc;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.edit-path-pick-banner[hidden] {
+  display: none !important;
+}
+
+.edit-path-pick-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.tile.edit-path-pick-tile {
+  outline: 2px solid rgba(250, 204, 21, 0.95);
+  outline-offset: -2px;
+  background: rgba(250, 204, 21, 0.18);
+}
+
+.tile.edit-path-pick-base {
+  outline-color: #4ade80;
+  background: rgba(74, 222, 128, 0.2);
+}
+
+.tile.edit-path-pick-top {
+  outline-color: #60a5fa;
+  background: rgba(96, 165, 250, 0.22);
+}
+
+.edit-path-pick-index {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  z-index: 20;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.88);
+  color: #fde68a;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+
+body.edit-properties-picking-path .tile {
+  cursor: cell;
+}
+
+body.edit-properties-picking-path .edit-mode-drag-handle,
+body.edit-properties-picking-path .edit-mode-marker,
+body.edit-properties-picking-path .edit-mode-drag-handle-editable,
+body.edit-properties-picking-path .map-annotation-marker,
+body.edit-properties-picking-path .map-annotation-drag-handle,
+body.edit-properties-picking-path .map-annotation-area-handle,
+body.edit-properties-picking-path .object-quick-action,
+body.edit-properties-picking-path .object-quick-actions,
+body.edit-properties-picking-path .object-quick-interact-layer,
+body.edit-properties-picking-path .show-note-btn,
+body.edit-properties-picking-path .add-to-turn-order,
+body.edit-properties-picking-path .add-to-target {
+  pointer-events: none !important;
+}
+
 body.edit-mode-shift-armed .tile.edit-highlight-wall,
 body.edit-mode-shift-armed .tile.edit-highlight-door,
 body.edit-mode-shift-armed .tile.edit-highlight-teleporter,
@@ -6343,6 +6581,11 @@ body.edit-mode-shift-armed .tile.edit-highlight-spawn {
   background: rgba(251, 191, 36, 0.16);
 }
 
+.edit-mode-drag-ghost.edit-marker-window .edit-mode-drag-ghost-tile {
+  border-color: rgba(34, 211, 238, 0.95);
+  background: rgba(34, 211, 238, 0.16);
+}
+
 .edit-mode-drag-ghost.edit-marker-wall .edit-mode-drag-ghost-tile,
 .edit-mode-drag-ghost.edit-marker-terrain .edit-mode-drag-ghost-tile {
   border-color: rgba(148, 163, 184, 0.95);
@@ -6372,6 +6615,11 @@ body.edit-mode-shift-armed .tile.edit-highlight-spawn {
 .edit-marker-door,
 .edit-highlight-door {
   box-shadow: inset 0 0 0 2px rgba(251, 191, 36, 0.95);
+}
+
+.edit-marker-window,
+.edit-highlight-window {
+  box-shadow: inset 0 0 0 2px rgba(34, 211, 238, 0.95);
 }
 
 .edit-marker-wall,

@@ -6,6 +6,7 @@
     <title>{{ title }}</title>
     <link href="/libs/bootstrap/3.3.7/css/bootstrap.min.css" rel="stylesheet">
     <link href="{{ asset_url('styles.css') }}" rel="stylesheet">
+    <link href="{{ asset_url('notebook.css') }}" rel="stylesheet">
     <script src="/libs/jquery/jquery-3.2.1.min.js"></script>
     <script src="/libs/bootstrap/3.3.7/js/bootstrap.min.js"></script>
     <script src="/libs/socket.io/socket.io.min.js"></script>
@@ -20,6 +21,7 @@
     <script src="{{ asset_url('js/chat.js') }}"></script>
     <script src="{{ asset_url('path_compute.js') }}"></script>
     <script src="{{ asset_url('engine.js') }}"></script>
+    <script src="{{ asset_url('notebook.js') }}"></script>
     {% if 'dm' in role %}
     <script src="{{ url_for('static', filename='edit_properties.js') }}?v={{ salt }}"></script>
     <script src="{{ url_for('static', filename='edit_mode.js') }}?v={{ salt }}"></script>
@@ -919,7 +921,13 @@
                     <li id="toggle-dm-notes">
                       <button type="button" class="vtt-menu-item">
                         <span class="glyphicon glyphicon-flag" aria-hidden="true"></span>
-                        <span class="vtt-menu-label">Hide DM Notes</span>
+                        <span class="vtt-menu-label">Map Pins</span>
+                      </button>
+                    </li>
+                    <li id="toggle-ai-assistant">
+                      <button type="button" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-comment" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">AI Assistant</span>
                       </button>
                     </li>
                     <li>
@@ -940,11 +948,23 @@
             <div class="vtt-menu-section">
                 <h2 class="vtt-menu-section-label">Session</h2>
                 <ul>
+                    <li>
+                      <a class="vtt-menu-item" href="/3d">
+                        <span class="glyphicon glyphicon-eye-open" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">3D View</span>
+                      </a>
+                    </li>
                     <li id="journal-notification-item">
                       <button type="button" id="open-journal-btn" class="vtt-menu-item">
                         <span class="glyphicon glyphicon-book" aria-hidden="true"></span>
                         <span class="vtt-menu-label">Journal</span>
                         <span id="journal-menu-unread-badge" class="journal-unread-badge">0</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button type="button" id="toggle-notebook" class="vtt-menu-item">
+                        <span class="glyphicon glyphicon-file" aria-hidden="true"></span>
+                        <span class="vtt-menu-label">Notes</span>
                       </button>
                     </li>
                     <li id="open-console">
@@ -1298,7 +1318,7 @@
         });
       })();
     </script>
-    <div id="coords-box" style="position: fixed; top: 0; right: 0; background-color: white; padding: 10px; border: 1px solid black;"></div>
+    <div id="coords-box" aria-live="polite"></div>
     {% if stack_floors and stack_floors|length > 1 %}
     <div id="stack-layer-focus" title="Switch which floor you are viewing in this building">
       <label for="stack-layer-select">Floor</label>

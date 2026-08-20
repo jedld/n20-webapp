@@ -448,6 +448,24 @@ def emit_active_effects_for_client(emit_fn):
 # Registration entry point
 # ---------------------------------------------------------------------------
 
+def _on_level_up_available(event):
+    """Forward milestone/event level-up grants to the VTT toast + persist."""
+    payload = event.get('message') or {}
+    try:
+        socketio = get_socketio()
+        if socketio is not None:
+            socketio.emit('message', {'type': 'level_up_available', 'message': payload})
+            socketio.emit('message', {'type': 'refresh_map'})
+    except Exception:
+        logger.debug('level_up_available socket emit failed', exc_info=True)
+    try:
+        game = get_current_game()
+        if game is not None and hasattr(game, 'save_game_async'):
+            game.save_game_async()
+    except Exception:
+        logger.debug('level_up_available save failed', exc_info=True)
+
+
 def register_effect_listeners(record_narration_fn):
     """Register all effect-related event listeners on the global event_manager.
 
@@ -467,6 +485,11 @@ def register_effect_listeners(record_narration_fn):
     event_manager.register_event_listener('control_override_added', _on_control_override_added)
     event_manager.register_event_listener('control_override_removed', _on_control_override_removed)
     event_manager.register_event_listener('turn_skipped', _on_turn_skipped)
+
+    from webapp.blueprints.helpers.party_travel import handle_party_travel_prompt
+    event_manager.register_event_listener('party_travel_prompt', handle_party_travel_prompt)
+
+    event_manager.register_event_listener('level_up_available', _on_level_up_available)
 
     from webapp.room_service_buzzer import register_room_service_listeners
     register_room_service_listeners(event_manager)

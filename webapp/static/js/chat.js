@@ -1981,9 +1981,13 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
             });
         }
 
+        function isAiChatEmbedded() {
+            return $("#ai-chat-panel").closest("#notebook-ai-host").length > 0;
+        }
+
         function saveAiChatPanelLayout() {
             const $panel = $("#ai-chat-panel");
-            if (!$panel.length) {
+            if (!$panel.length || isAiChatEmbedded()) {
                 return;
             }
             try {
@@ -2003,7 +2007,7 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
 
         function loadAiChatPanelLayout() {
             const $panel = $("#ai-chat-panel");
-            if (!$panel.length) {
+            if (!$panel.length || isAiChatEmbedded()) {
                 return;
             }
             const raw = localStorage.getItem(AI_CHAT_LAYOUT_KEY);
@@ -2043,7 +2047,18 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
             saveAiChatPanelLayout();
         }
 
-        $("#toggle-ai-chat").on("click", function () {
+        $("#toggle-ai-chat").on("click", function (e) {
+            if (window.Notebook && typeof window.Notebook.open === "function") {
+                e.preventDefault();
+                const onAssistant = $("body").hasClass("notebook-open")
+                    && $(".notebook-tab[data-tab='assistant']").hasClass("is-active");
+                if (onAssistant) {
+                    window.Notebook.close();
+                } else {
+                    window.Notebook.open("assistant");
+                }
+                return;
+            }
             const $panel = $("#ai-chat-panel");
             if ($panel.is(":visible")) {
                 $panel.hide();
@@ -2056,11 +2071,18 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
         });
 
         $("#close-chat").on("click", function () {
+            if (isAiChatEmbedded() && window.Notebook && typeof window.Notebook.close === "function") {
+                window.Notebook.close();
+                return;
+            }
             $("#ai-chat-panel").hide();
             $("#toggle-ai-chat").removeClass("btn-success").addClass("btn-primary");
         });
 
         $("#minimize-chat").on("click", function () {
+            if (isAiChatEmbedded()) {
+                return;
+            }
             const $panel = $("#ai-chat-panel");
             const $body = $panel.find(".panel-body");
 
@@ -2077,6 +2099,9 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
 
         $("#ai-chat-panel .panel-header").on("mousedown", function (e) {
             if (e.target.tagName === "BUTTON" || e.target.tagName === "I" || $(e.target).closest("button").length) {
+                return;
+            }
+            if (isAiChatEmbedded()) {
                 return;
             }
             const $panel = $("#ai-chat-panel");
@@ -2124,6 +2149,9 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
         });
 
         $("#ai-chat-panel .resize-handle").on("mousedown", function (e) {
+            if (isAiChatEmbedded()) {
+                return;
+            }
             const $panel = $("#ai-chat-panel");
             if (!$panel.length) {
                 return;
@@ -2169,7 +2197,7 @@ const Chat = Object.assign({}, window.LocalConversationChatBindings || {}, {
 
         $(window).on("resize.aiChatPanel", function () {
             const $panel = $("#ai-chat-panel");
-            if (!$panel.length || !$panel.is(":visible")) {
+            if (!$panel.length || !$panel.is(":visible") || isAiChatEmbedded()) {
                 return;
             }
             normalizeAiChatPanelPx($panel);

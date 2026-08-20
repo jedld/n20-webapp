@@ -29,6 +29,29 @@
     return String($('body').attr('data-edit-mode') || '').toLowerCase() === 'true';
   }
 
+  function currentMapName() {
+    const meta = document.querySelector('.map-metadata');
+    if (meta) {
+      const stackMap = meta.getAttribute('data-stack-active-map');
+      if (stackMap) {
+        return stackMap;
+      }
+      const named = meta.getAttribute('data-map-name');
+      if (named) {
+        return named;
+      }
+    }
+    return $('body').attr('data-current-map') || '';
+  }
+
+  function withMapName(payload) {
+    const map = currentMapName();
+    if (!map) {
+      return payload;
+    }
+    return Object.assign({ map_name: map }, payload || {});
+  }
+
   function tileCoordsFromElement($tile) {
     if (!$tile || !$tile.length) {
       return null;
@@ -178,7 +201,7 @@
       url: '/edit/annotations/move',
       method: 'POST',
       contentType: 'application/json',
-      data: JSON.stringify({ id: annotationId, x, y }),
+      data: JSON.stringify(withMapName({ id: annotationId, x, y })),
       success(resp) {
         if (resp && resp.success && resp.annotation) {
           const next = (state.annotations || []).filter((a) => a.id !== resp.annotation.id);
@@ -328,7 +351,7 @@
     $(document)
       .off('click.mapAnnotationSelect', '.map-annotation-drag-handle')
       .on('click.mapAnnotationSelect', '.map-annotation-drag-handle', function (e) {
-        if (!isEditMode() || e.shiftKey || state.mode) {
+        if (!isEditMode() || e.shiftKey || state.mode || document.body.classList.contains('edit-properties-picking-path')) {
           return;
         }
         e.preventDefault();
@@ -655,7 +678,7 @@
       url: '/edit/annotations/bounds',
       method: 'POST',
       contentType: 'application/json',
-      data: JSON.stringify({ id: annotationId, x1, y1, x2, y2 }),
+      data: JSON.stringify(withMapName({ id: annotationId, x1, y1, x2, y2 })),
       success(resp) {
         if (resp && resp.success && resp.annotation) {
           const next = (state.annotations || []).filter((a) => a.id !== resp.annotation.id);
@@ -783,7 +806,7 @@
   }
 
   function saveAnnotation(annotation) {
-    const payload = { annotation: Object.assign({}, annotation) };
+    const payload = withMapName({ annotation: Object.assign({}, annotation) });
 
     $.ajax({
       url: '/edit/annotations',
@@ -831,8 +854,12 @@
     if (fromModal && !window.confirm(`Delete landmark "${label}"?`)) {
       return;
     }
+    const map = currentMapName();
+    const url = map
+      ? `/edit/annotations/${encodeURIComponent(annotationId)}?map_name=${encodeURIComponent(map)}`
+      : `/edit/annotations/${encodeURIComponent(annotationId)}`;
     $.ajax({
-      url: `/edit/annotations/${encodeURIComponent(annotationId)}`,
+      url,
       method: 'DELETE',
       success(resp) {
         if (resp && resp.success) {
@@ -1141,11 +1168,18 @@
   }
 
   function loadAnnotations() {
-    return $.getJSON('/edit/annotations').then((resp) => {
+    const map = currentMapName();
+    const req = map
+      ? $.getJSON('/edit/annotations', { map_name: map })
+      : $.getJSON('/edit/annotations');
+    return req.then((resp) => {
       if (resp && resp.success) {
         state.selectedId = null;
         renderPersistedAnnotations(resp.annotations || []);
       }
+    }).fail((xhr) => {
+      const msg = (xhr.responseJSON && xhr.responseJSON.error) || 'Failed to load landmarks';
+      setStatus(msg);
     });
   }
 

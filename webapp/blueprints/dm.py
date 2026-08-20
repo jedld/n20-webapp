@@ -400,6 +400,75 @@ def admin_effect():
         return jsonify(status='ok')
     except Exception as e:
         return jsonify(error=str(e)), 500
+
+
+def _resolve_named_map(map_name=None):
+    current_game = get_current_game()
+    name = str(map_name or '').strip()
+    maps = getattr(current_game, 'maps', None) or {}
+    session_obj = get_game_session()
+    sess_maps = getattr(session_obj, 'maps', None) or {}
+
+    def _lookup(key):
+        if not key:
+            return None
+        if key in maps:
+            return maps[key]
+        if key in sess_maps:
+            return sess_maps[key]
+        for collection in (maps, sess_maps):
+            for map_key, battle_map in (collection or {}).items():
+                if str(map_key) == key or str(getattr(battle_map, 'name', '') or '') == key:
+                    return battle_map
+        return None
+
+    if name:
+        found = _lookup(name)
+        if found is not None:
+            return found
+    username = session.get('username')
+    getter = getattr(current_game, 'get_map_for_user', None)
+    if getter and username:
+        return getter(username)
+    return maps.get('index') or (next(iter(maps.values()), None) if maps else None)
+
+
+def _emit_vtt3d_illumination(payload):
+    event = {'type': 'vtt3d_illumination'}
+    event.update(payload)
+    get_socketio().emit('message', event)
+
+
+@dm_bp.route('/admin/illumination', methods=['POST'])
+def admin_illumination():
+    """DM-only: set 3D global ambient illumination for the current (or named) map."""
+    if not session.get('username'):
+        return jsonify(error='Unauthorized'), 401
+    if 'dm' not in user_role():
+        return jsonify(error='Forbidden'), 403
+    payload = request.get_json(silent=True) or {}
+    battle_map = _resolve_named_map(payload.get('map_name') or payload.get('map'))
+    if battle_map is None:
+        return jsonify(error='No map resolved'), 400
+    reset = bool(payload.get('reset'))
+    raw = payload.get('illumination')
+    if reset or raw is None:
+        value = None
+    else:
+        value = raw
+    try:
+        from natural20.web.vtt3d_illumination import apply_illumination
+
+        game_session = get_game_session()
+        if game_session is None:
+            return jsonify(error='No game session'), 400
+        lighting = apply_illumination(game_session, battle_map, value)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    _emit_vtt3d_illumination(lighting)
+    return jsonify(status='ok', **lighting)
+
+
 @dm_bp.route('/admin/perf', methods=['GET'])
 def admin_perf():
     if not session.get('username'):

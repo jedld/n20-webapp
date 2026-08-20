@@ -650,8 +650,14 @@ class ConversationService:
             return False
         if rendered_payload.get('tts_skipped'):
             return False
-        text = str(rendered_payload.get('message') or '').strip()
-        if not text:
+        from natural20.utils.conversation import is_tts_worthy_text
+
+        text = str(
+            rendered_payload.get('tts_text')
+            or rendered_payload.get('message')
+            or ''
+        ).strip()
+        if not is_tts_worthy_text(text):
             return False
         if not getattr(self, '_tts_manager', None) or not self._tts_manager.is_enabled():
             return False
@@ -1721,7 +1727,11 @@ class ConversationService:
         if rendered_payload.get('visual_only'):
             return rendered_payload
 
-        from natural20.utils.conversation import sanitize_spoken_text_for_tts, strip_spoken_address_prefix
+        from natural20.utils.conversation import (
+            is_tts_worthy_text,
+            sanitize_spoken_text_for_tts,
+            strip_spoken_address_prefix,
+        )
 
         text = strip_spoken_address_prefix(str(rendered_payload.get('message') or '').strip())
         if not text:
@@ -1729,6 +1739,9 @@ class ConversationService:
         rendered_payload['message'] = text
         tts_text = sanitize_spoken_text_for_tts(text)
         rendered_payload['tts_text'] = tts_text
+        if not is_tts_worthy_text(tts_text):
+            rendered_payload['tts_skipped'] = 'non_speech'
+            return rendered_payload
 
         roles = self.roles_for_username(username) or []
         is_dm = 'dm' in roles

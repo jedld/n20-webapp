@@ -21,6 +21,13 @@
     return String($('body').attr('data-edit-mode') || '').toLowerCase() === 'true';
   }
 
+  function isPickingPath() {
+    return !!(
+      (window.EditProperties && typeof window.EditProperties.isPickingPath === 'function' && window.EditProperties.isPickingPath())
+      || document.body.classList.contains('edit-properties-picking-path')
+    );
+  }
+
   function setBodyEditMode(on) {
     const enabled = !!on;
     $('body').attr('data-edit-mode', enabled ? 'true' : 'false');
@@ -79,17 +86,24 @@
       return;
     }
     const $banner = $('<div class="edit-mode-banner" role="status"></div>');
-    $banner.append(
-      $('<span class="edit-mode-banner-text"></span>').text(
-        'Edit mode — drag NPCs to reposition. Click fixture labels to edit notes and properties. Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures. Changes save to campaign YAML.',
-      ),
-    );
+    const help =
+      'Drag NPCs to reposition. Click fixture labels to edit notes and properties. Drag the info-sign to offset a note indicator. Shift+drag labels to move fixtures. Changes save to campaign YAML.';
+    $banner.attr('title', help);
+    $banner.append($('<span class="edit-mode-banner-kicker"></span>').text('Edit mode'));
+    $banner.append($('<span class="edit-mode-banner-map" hidden></span>'));
+    $banner.append($('<span class="edit-mode-banner-text"></span>').text(help));
     $banner.append(
       $('<button type="button" class="btn btn-xs btn-default edit-mode-banner-exit"></button>').text(
-        'Exit edit mode',
+        'Exit',
       ),
     );
     $('body').append($banner);
+    const currentMap = $('body').attr('data-current-map') || $('.map-metadata').attr('data-map-name');
+    if (currentMap && window.Utils && typeof window.Utils.setEditModeBannerMap === 'function') {
+      window.Utils.setEditModeBannerMap(currentMap);
+    } else if (currentMap) {
+      $banner.find('.edit-mode-banner-map').text(currentMap).removeAttr('hidden');
+    }
   }
 
   function updateShiftArmed() {
@@ -103,6 +117,12 @@
   function handleClassForItem(item) {
     if (item.kind === 'spawn_point') {
       return 'edit-marker-spawn';
+    }
+    if (item.category === 'window') {
+      return 'edit-marker-window';
+    }
+    if (item.category === 'door') {
+      return 'edit-marker-door';
     }
     if (item.kind === 'terrain') {
       return 'edit-marker-terrain';
@@ -127,6 +147,7 @@
     const categoryRank = {
       wall: 100,
       door: 200,
+      window: 210,
       teleporter: 300,
       trigger: 310,
       trap: 315,
@@ -304,6 +325,9 @@
       const blocked = String($tile.attr('data-blocked') || '').toLowerCase() === 'true';
       if (door || $tile.find('.secret-door-marker').length) {
         $tile.addClass('edit-highlight-door');
+      }
+      if ($tile.find('.window-highlight-marker').length) {
+        $tile.addClass('edit-highlight-window');
       }
       if ($tile.find('.teleporter-marker').length) {
         $tile.addClass('edit-highlight-teleporter');
@@ -1009,7 +1033,7 @@
   document.addEventListener(
     'click',
     function (e) {
-      if (!isEditMode() || e.button !== 0 || e.shiftKey) {
+      if (!isEditMode() || e.button !== 0 || e.shiftKey || isPickingPath()) {
         return;
       }
       if (
@@ -1038,7 +1062,7 @@
   );
 
   $(document).on('click', '.edit-mode-drag-handle-editable', function (e) {
-    if (!isEditMode() || e.shiftKey || dragHandle) {
+    if (!isEditMode() || e.shiftKey || dragHandle || isPickingPath()) {
       return;
     }
     if (suppressNextEditClick) {

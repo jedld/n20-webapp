@@ -27,6 +27,7 @@ window.TTSPlayer = (function () {
     var _userGestureUnlocked = false;
     var _playedReplyIds = new Set();
     var _streamDeliveredReplyIds = new Set();
+    var _streamAnnouncedReplyIds = new Set();
     var _pendingAutoplayReplyIds = new Set();
     var _pendingStreamStarts = [];
     var _playbackIdleWaiters = [];
@@ -152,11 +153,25 @@ window.TTSPlayer = (function () {
         return !!(buffer && buffer.chunks && buffer.chunks.length);
     }
 
+    function pendingStreamStartFor(replyId) {
+        if (!replyId) {
+            return false;
+        }
+        var token = String(replyId);
+        return _pendingStreamStarts.some(function (item) {
+            var candidate = item && (item.reply_id || item.replyId);
+            return candidate && String(candidate) === token;
+        });
+    }
+
     function shouldSuppressStreamWavAutoplay(replyKey) {
         if (!replyKey || getDeliveryMode() !== 'stream') {
             return false;
         }
         if (hasReplyPlayed(replyKey) || streamDeliveredAudio(replyKey)) {
+            return true;
+        }
+        if (pendingStreamStartFor(replyKey)) {
             return true;
         }
         if (_streams[replyKey] || hasBufferedStreamChunks(replyKey)) {
@@ -266,12 +281,11 @@ window.TTSPlayer = (function () {
     }
 
     function flushPendingStreamStarts() {
-        if (!_pendingStreamStarts.length || isPlaybackActive()) {
-            return;
-        }
-        var next = _pendingStreamStarts.shift();
-        if (next) {
-            beginStreamStart(next);
+        while (_pendingStreamStarts.length && !isPlaybackActive()) {
+            var next = _pendingStreamStarts.shift();
+            if (next) {
+                beginStreamStart(next);
+            }
         }
     }
 
@@ -325,6 +339,10 @@ window.TTSPlayer = (function () {
 
     function onStreamStart(data) {
         data = data || {};
+        var replyId = data.reply_id || data.replyId;
+        if (replyId) {
+            _streamAnnouncedReplyIds.add(String(replyId));
+        }
         try {
             if (window.Chat && typeof window.Chat.applyTtsStreaming === 'function') {
                 window.Chat.applyTtsStreaming(data);

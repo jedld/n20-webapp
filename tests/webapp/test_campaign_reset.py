@@ -29,7 +29,7 @@ class TestCampaignReset:
             manager.current_save_index = 3
             manager.logger = type('L', (), {'warning': lambda *a, **k: None})()
 
-            for name in ('save_0.yml', 'save_named.yml.gz', 'save_0.log.json', 'last_save.txt', 'campaign_logs.sqlite'):
+            for name in ('save_0.yml', 'save_named.yml.gz', 'save_0.log.json', 'last_save.txt', 'campaign_logs.sqlite', 'notebook.sqlite'):
                 with open(os.path.join(tmpdir, name), 'w', encoding='utf-8') as handle:
                     handle.write('x')
 
@@ -40,9 +40,11 @@ class TestCampaignReset:
             assert 'last_save.txt' in removed
             assert 'save_0.log.json' in removed
             assert 'campaign_logs.sqlite' not in removed
+            assert 'notebook.sqlite' not in removed
             assert manager.save_states == []
             assert manager.current_save_index == 0
             assert os.path.exists(os.path.join(tmpdir, 'campaign_logs.sqlite'))
+            assert os.path.exists(os.path.join(tmpdir, 'notebook.sqlite'))
 
     def test_admin_campaign_reset_requires_dm(self):
         client = app.test_client()

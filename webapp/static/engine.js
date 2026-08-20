@@ -462,7 +462,7 @@ function isTypingIntoField(target) {
   return (
     $target.is('input, textarea, select, [contenteditable="true"]') ||
     $target.closest(
-      '.modal, #jrpgDialogPanel, #command-form, #ai-chat-panel, #chat-form, #draggable-chat-form'
+      '.modal, #jrpgDialogPanel, #command-form, #ai-chat-panel, #chat-form, #draggable-chat-form, #notebook-panel'
     ).length > 0
   );
 }
@@ -476,7 +476,7 @@ function shouldSuppressSoundtrackOnClick(target) {
     return false;
   }
   return $target.closest(
-    '#ai-chat-panel, #toggle-ai-chat, #console-container, .modal, ' +
+    '#ai-chat-panel, #toggle-ai-chat, #notebook-panel, #console-container, .modal, ' +
     '#jrpgDialogPanel, #narration-overlay, #command-form, .draggable-panel, ' +
     '#local-conversation-panel, .chat-interface, .chat-transcript-actions'
   ).length > 0;
@@ -1044,6 +1044,22 @@ function findApproachPathForTeleporter(povUid, teleporterX, teleporterY, callbac
   findApproachPathToCoords(povUid, [{ x: teleporterX, y: teleporterY }], callback);
 }
 
+function appendTeleporterHoverHint($tile, tooltip) {
+  const $tpMarker = $tile.find('.teleporter-marker[data-destination]').first();
+  if (!$tpMarker.length) {
+    return tooltip;
+  }
+  const dest = $tpMarker.attr('data-destination') || '';
+  const color = 'var(--teleporter-marker-color, #22c55e)';
+  if (dest) {
+    tooltip += `<p class="teleporter-destination-hint"><span style="color: ${color};">→ ${dest}</span></p>`;
+  }
+  if ($tpMarker.attr('data-party-travel') === '1') {
+    tooltip += `<p class="teleporter-destination-hint">Interact to travel with the party</p>`;
+  }
+  return tooltip;
+}
+
 function runTeleporterApproach(povUid, tileX, tileY) {
   if (!povUid || teleporterApproachInFlight || isBattleInProgress() || isInteractionLocked()) {
     return;
@@ -1163,6 +1179,9 @@ function activateObjectQuickAction(btn) {
 }
 
 function handleObjectQuickActionActivate(event) {
+  if (document.body.classList.contains('edit-properties-picking-path')) {
+    return;
+  }
   const btn = event.target && event.target.closest
     ? event.target.closest('.object-quick-action')
     : null;
@@ -1545,6 +1564,7 @@ function initActionBarButtonDragDrop($tabs) {
   
   $panelInner.find('.action-bar-action-cell').each(function () {
     const $cell = $(this);
+    if ($cell.hasClass('action-bar-knockout-cell')) return;
     if ($cell.data('draggable-initialized')) return;
     $cell.data('draggable-initialized', true);
     
@@ -1741,6 +1761,51 @@ function toggleActionBarPin(entityUid, descriptor) {
   saveActionBarPrefs(entityUid, prefs);
 }
 
+const KNOCKOUT_MODE_STORAGE_KEY = 'n20_knock_unconscious';
+
+function isKnockUnconsciousMode() {
+  try {
+    return sessionStorage.getItem(KNOCKOUT_MODE_STORAGE_KEY) === '1';
+  } catch (e) {
+    return !!window.__n20KnockUnconsciousMode;
+  }
+}
+
+function setKnockUnconsciousMode(enabled) {
+  const on = !!enabled;
+  window.__n20KnockUnconsciousMode = on;
+  try {
+    sessionStorage.setItem(KNOCKOUT_MODE_STORAGE_KEY, on ? '1' : '0');
+  } catch (e) { /* ignore quota / private mode */ }
+  syncKnockoutModeUI();
+}
+
+function withKnockUnconsciousOpts(opts, $button) {
+  const next = Object.assign({}, opts || {});
+  if (isKnockUnconsciousMode() && $button && $button.attr('data-can-knock-unconscious') === '1') {
+    next.knock_unconscious = true;
+  }
+  return next;
+}
+
+function syncKnockoutModeUI($root) {
+  const on = isKnockUnconsciousMode();
+  const $scope = $root && $root.length ? $root : $('#centerActionBar');
+  $scope.find('.action-bar-tabs').addBack('.action-bar-tabs').toggleClass('knockout-mode', on);
+  $scope.find('.knockout-toggle').each(function () {
+    const $btn = $(this);
+    $btn.toggleClass('is-active', on).attr('aria-pressed', on ? 'true' : 'false');
+    $btn.find('.knockout-toggle-label').text(on ? 'Knock' : 'Kill');
+    $btn.attr(
+      'title',
+      on
+        ? 'Knock out: melee attacks that drop a creature to 0 HP leave them unconscious and stable. Click for lethal attacks.'
+        : 'Melee attacks are lethal. Click to knock foes unconscious instead.',
+    );
+  });
+  $scope.find('.knockout-attack-overlay').prop('hidden', !on);
+}
+
 function initializeActionBarTabs($root) {
   const $tabs = $root.find('.action-bar-tabs').addBack('.action-bar-tabs');
   $tabs.each(function () {
@@ -1757,6 +1822,7 @@ function initializeActionBarTabs($root) {
     applyActionBarButtonOrder($tabRoot);
     initActionBarButtonDragDrop($tabRoot);
     selectActionBarTab($tabRoot, defaultTab);
+    syncKnockoutModeUI($tabRoot);
   });
 }
 
@@ -3086,6 +3152,7 @@ class EventQueue {
           `);
 
           $modal.find('#n20PromptModalMessage').text(data.message || '');
+          $modal.find('#n20PromptModalLabel').text(data.title || 'Prompt');
           const $buttons = $modal.find('#n20PromptModalButtons');
           const fallbackOption = String(opts[opts.length - 1] || 'No');
           let responded = false;
@@ -3333,6 +3400,39 @@ class EventQueue {
             }
           } catch (e) {
             console.warn('dm_notes_changed failed', e);
+          }
+          resolve();
+          break;
+        }
+        case "notebook_changed": {
+          try {
+            if (window.Notebook && typeof window.Notebook.reload === 'function') {
+              window.Notebook.reload();
+            }
+          } catch (e) {
+            console.warn('notebook_changed failed', e);
+          }
+          resolve();
+          break;
+        }
+        case "notebook_share": {
+          try {
+            if (window.Notebook && typeof window.Notebook.showShared === 'function') {
+              window.Notebook.showShared(data);
+            }
+          } catch (e) {
+            console.warn('notebook_share failed', e);
+          }
+          resolve();
+          break;
+        }
+        case "notebook_map_links_changed": {
+          try {
+            if (window.Notebook && typeof window.Notebook.reloadMapLinks === 'function') {
+              window.Notebook.reloadMapLinks(data && data.map);
+            }
+          } catch (e) {
+            console.warn('notebook_map_links_changed failed', e);
           }
           resolve();
           break;
@@ -7078,6 +7178,12 @@ $(document).ready(() => {
   });
 
   $(".tiles-container").on("click", ".tile", function (e) {
+    if (!targetMode && !moveMode && window.EditProperties && typeof window.EditProperties.handleTileClick === 'function') {
+      if (window.EditProperties.handleTileClick(e, $(this))) {
+        e.stopPropagation();
+        return;
+      }
+    }
     if ($(e.target).closest('.object-quick-action, .object-quick-actions, .object-quick-interact-layer, .move-quick-action, .move-quick-action-layer').length) {
       return;
     }
@@ -7512,13 +7618,7 @@ $(document).ready(() => {
       ? pathDestY
       : (targetMode && (targetX !== coordsx || targetY !== coordsy) ? targetY : (displayY !== undefined ? displayY : coordsy));
     let tooltip = $tile.data("tooltip") || "";
-    const $tpMarker = $tile.find('.teleporter-marker[data-destination]').first();
-    if ($tpMarker.length) {
-      const dest = $tpMarker.attr('data-destination') || '';
-      if (dest) {
-        tooltip += `<p class="teleporter-destination-hint"><span style="color: var(--teleporter-marker-color, #22c55e);">→ ${dest}</span></p>`;
-      }
-    }
+    tooltip = appendTeleporterHoverHint($tile, tooltip);
     if (targetMode) {
       const cacheKey = `${targetX}-${targetY}`;
       $(".highlighted").removeClass("highlighted");
@@ -7536,13 +7636,7 @@ $(document).ready(() => {
       const cachedValidation = getCachedTargetValidation(cacheKey);
       if (cachedValidation) {
         let tooltip = $tile.data("tooltip") || "";
-        const $tpMarkerCached = $tile.find('.teleporter-marker[data-destination]').first();
-        if ($tpMarkerCached.length) {
-          const dest = $tpMarkerCached.attr('data-destination') || '';
-          if (dest) {
-            tooltip += `<p class="teleporter-destination-hint"><span style="color: var(--teleporter-marker-color, #22c55e);">→ ${dest}</span></p>`;
-          }
-        }
+        tooltip = appendTeleporterHoverHint($tile, tooltip);
         applyTargetPreview(targetX, targetY, showX, showY, $tile, {
           valid_target: cachedValidation.valid,
           primary_error: cachedValidation.primary_error,
@@ -7553,16 +7647,13 @@ $(document).ready(() => {
           applyTargetPreview(targetX, targetY, showX, showY, $tile, data, tooltip);
         });
       }
-    } else if (moveMode && !targetMode && !keyboardMovementMode) {
-      // Skip path computation entirely when in targetMode — the client is
-      // hovering over the map for attack targeting, not movement.  Firing
-      // /path requests during targeting wastes server CPU and produces
-      // spurious "unreachable" log entries for out-of-bounds coordinates.
+    } else {
+      // Always show tile inspect info on hover (coords, terrain, entity/object
+      // labels). Path preview stays gated on moveMode so targeting hover does
+      // not fire /path requests.
       hideTargetValidationHint();
-      $("#coords-box").html(
-        `<p>X: ${showX}</p><p>Y: ${showY}</p>${tooltip}`,
-      );
-      if ((pathDestX !== source.x || pathDestY !== source.y)) {
+      updateCoordsBox(showX, showY, tooltip);
+      if (moveMode && !keyboardMovementMode && source && (pathDestX !== source.x || pathDestY !== source.y)) {
         // Skip duplicate work when the mouseover bubbles from child elements
         // (entity sprites, tooltips, etc.) without changing the tile.
         if (lastHoverCoords && lastHoverCoords.x === pathDestX && lastHoverCoords.y === pathDestY) {
@@ -8381,17 +8472,22 @@ $(document).ready(() => {
   // Battlefield drop zone functionality — resolve tile from pointer, not event target
   // (avoids -1 offsets when the map is panned/zoomed or the drag hotspot is top-left).
   $(".tiles-container").on("dragover", function (e) {
-    if (!(draggedNPC || draggedObject || $('body').hasClass('object-drag-active'))) {
+    if (!(draggedNPC || draggedObject || $('body').hasClass('object-drag-active') || $('body').hasClass('notebook-map-drag-active'))) {
       return;
     }
     e.preventDefault();
     if (e.originalEvent.dataTransfer) {
-      e.originalEvent.dataTransfer.dropEffect = "copy";
+      e.originalEvent.dataTransfer.dropEffect = $('body').hasClass('notebook-map-drag-active') ? 'copy' : 'copy';
     }
 
     const hit = tileCoordsFromClientPoint(e.originalEvent.clientX, e.originalEvent.clientY);
-    $(".tile").removeClass("battlefield-drop-zone drag-over");
+    $(".tile").removeClass("battlefield-drop-zone drag-over notebook-map-drop-target");
     if (!hit) {
+      return;
+    }
+
+    if ($('body').hasClass('notebook-map-drag-active')) {
+      hit.$tile.addClass('notebook-map-drop-target');
       return;
     }
 
@@ -8409,6 +8505,13 @@ $(document).ready(() => {
       return;
     }
     const { x, y, $tile, mapName } = hit;
+
+    if (window.Notebook && typeof window.Notebook.handleMapDrop === 'function') {
+      if (window.Notebook.handleMapDrop(e, hit)) {
+        $(".tile").removeClass("battlefield-drop-zone drag-over notebook-map-drop-target");
+        return;
+      }
+    }
 
     if (draggedNPC) {
       // Handle NPC spawning (only on empty tiles)
@@ -8521,7 +8624,7 @@ $(document).ready(() => {
       }
     }
 
-    $(".tile").removeClass("battlefield-drop-zone drag-over");
+    $(".tile").removeClass("battlefield-drop-zone drag-over notebook-map-drop-target");
   });
 
   // PC Spawner functionality
@@ -9710,6 +9813,12 @@ $(document).ready(() => {
     activateCenterActionEntry($(this));
   });
 
+  $(".actions-container").on("click", ".knockout-toggle", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    setKnockUnconsciousMode(!isKnockUnconsciousMode());
+  });
+
   // --- Action Button Handler ---
   $(".actions-container").on("click", ".action-button", function (e) {
     if ($(this).hasClass('edit-fixture-remove-btn') || $(this).hasClass('edit-fixture-properties-btn')) {
@@ -9729,7 +9838,7 @@ $(document).ready(() => {
       }
     }
     const action = $(this).data("action-type");
-    const opts = $(this).data("action-opts");
+    const opts = withKnockUnconsciousOpts($(this).data("action-opts"), $(this));
     let entity_uid =
       $(this).closest('.center-action-entry').data('entityUid') ||
       $(this).closest(".tile").data("coords-id") ||

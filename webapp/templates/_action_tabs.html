@@ -26,6 +26,11 @@
       <div class="action-bar-tab-panel-inner">
         {% if common_actions %}
         <table>
+          {% if has_melee_knockout %}
+          <tr>
+            {% include '_knockout_toggle.html' %}
+          </tr>
+          {% endif %}
           {% for actions in common_actions | batch(10) %}
           <tr>
             {% for action in actions %}
@@ -78,6 +83,11 @@
         <p class="action-bar-empty-note">All available actions for this entity.</p>
         {% if common_actions or combat_actions %}
         <table class="action-bar-all-table">
+        {% if has_melee_knockout %}
+        <tr>
+          {% include '_knockout_toggle.html' %}
+        </tr>
+        {% endif %}
         {% if common_actions %}
         <tr><td colspan="10" class="action-bar-group-label">Common</td></tr>
         {% for actions in common_actions | batch(10) %}
@@ -140,6 +150,11 @@
     {% if combat_actions %}
     <section class="action-bar-tab-panel" data-tab="actions" role="tabpanel" hidden>
       <table>
+        {% if has_melee_knockout %}
+        <tr>
+          {% include '_knockout_toggle.html' %}
+        </tr>
+        {% endif %}
         {% for actions in combat_actions | batch(10) %}
         <tr>
           {% for action in actions %}

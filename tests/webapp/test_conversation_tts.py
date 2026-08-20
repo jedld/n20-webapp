@@ -189,6 +189,28 @@ def test_tts_skipped_for_deaf_listener():
     assert len(service._tts_manager.calls) == 0
 
 
+def test_tts_skipped_for_non_speech_placeholder():
+    listener = Mock()
+    listener.languages = lambda: ['common']
+    listener.statuses = []
+    listener.session = Mock()
+    service = _make_service(listener, understands=True)
+
+    source = Mock(spec=Npc)
+    source.entity_uid = 'cala'
+    source.label = lambda: 'Sister Cala'
+    source.properties = {}
+
+    rendered = {'message': '...'}
+    base = {'message': '...', 'language': 'common', 'volume': 'normal'}
+
+    result = service._attach_per_listener_tts(rendered, base, source, 'player1')
+
+    assert result.get('tts_generated') is False
+    assert result.get('tts_skipped') == 'non_speech'
+    assert len(service._tts_manager.calls) == 0
+
+
 def test_tts_skipped_when_listener_too_far():
     listener = Mock()
     listener.languages = lambda: ['common']

@@ -8,7 +8,8 @@
         title="{{ action.label() }}"
         style="position: relative;"
         {{'disabled' if action.disabled else ''}}
-        data-tooltips="{{ action.disabled_reason }}">
+        data-tooltips="{{ action.disabled_reason }}"
+        {% if action.can_knock_unconscious is defined and action.can_knock_unconscious() %}data-can-knock-unconscious="1"{% endif %}>
       {% if action.using %}
          {% set weapon_icon_slug = action.weapon_icon() if action.weapon_icon is defined else none %}
          {% if weapon_icon_slug %}
@@ -34,6 +35,9 @@
       <div style="position: absolute; top: 0; left: 0; width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; background-color: rgba(0,0,0,0.2); color: white; font-weight: bold;">
         Thrown
       </div>
+      {% endif %}
+      {% if action.can_knock_unconscious is defined and action.can_knock_unconscious() %}
+      <div class="knockout-attack-overlay" hidden>Knock</div>
       {% endif %}
       {% if action.weapon_mastery_badge is defined %}
         {% set mastery_badge = action.weapon_mastery_badge() %}

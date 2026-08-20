@@ -20,6 +20,7 @@ from webapp.blueprints.assets import assets_bp
 from webapp.blueprints.auth import auth_bp
 from webapp.blueprints.battle import battle_bp
 from webapp.blueprints.character import character_bp
+from webapp.blueprints.client_3d import client_3d_bp
 from webapp.blueprints.dm import dm_bp
 from webapp.blueprints.edit import edit_bp
 from webapp.blueprints.helpers.asset_utils import (
@@ -62,6 +63,7 @@ from webapp.blueprints.helpers.object_spawner_utils import (
 from webapp.blueprints.helpers.pvp import autofill_pvp_battle_turn_order, pvp_team_config
 from webapp.blueprints.merchant import merchant_bp
 from webapp.blueprints.navigation import navigation_bp
+from webapp.blueprints.notebook import notebook_bp
 from webapp.blueprints.socketio_handlers import register_socketio_handlers
 from webapp.entity_rag_handler import EntityRAGHandler
 from webapp.game_context import GameContextProvider
@@ -364,7 +366,7 @@ register_globals(
 
 register_template_globals(app)
 
-for blueprint in (assets_bp, auth_bp, ai_bp, navigation_bp, character_bp, battle_bp, dm_bp, edit_bp, merchant_bp):
+for blueprint in (assets_bp, auth_bp, ai_bp, navigation_bp, character_bp, battle_bp, dm_bp, edit_bp, merchant_bp, client_3d_bp, notebook_bp):
     app.register_blueprint(blueprint)
 
 register_effect_listeners(_record_narration_for_pcs)

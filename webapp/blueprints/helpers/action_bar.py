@@ -126,6 +126,17 @@ def _action_template_context(entity, effective_battle, entity_map, is_dm):
     favorite_spells_by_level = _favorite_spells_by_level(castable_spells_by_level, favorites)
     favorite_items = _favorite_items(usable_items, favorites)
 
+    has_melee_knockout = False
+    for action in list(common_actions) + list(combat_actions):
+        checker = getattr(action, 'can_knock_unconscious', None)
+        if callable(checker):
+            try:
+                if checker():
+                    has_melee_knockout = True
+                    break
+            except Exception:
+                continue
+
     return {
         'entity': entity,
         'battle': effective_battle,
@@ -149,6 +160,7 @@ def _action_template_context(entity, effective_battle, entity_map, is_dm):
         'is_dm': is_dm,
         'is_merchant': is_merchant(entity),
         'action_bar_config': bar_config,
+        'has_melee_knockout': has_melee_knockout,
     }
 
 

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta content="width=device-width, initial-scale=1" name="viewport">
+    <title>{{ title }} — 3D</title>
+    <link href="/libs/bootstrap/3.3.7/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ asset_url('styles.css') }}" rel="stylesheet">
+    <link href="/client-3d/assets/client-3d.css" rel="stylesheet">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32x32.png') }}">
+</head>
+<body class="vtt-3d"
+      data-username="{{ username }}"
+      data-role="{{ role }}"
+      data-current-map="{{ current_map }}"
+      data-pov-entity="{{ current_pov }}"
+      data-battle_in_progress="{{ 'true' if battle else 'false' }}"
+      data-controls="{{ entity_ids }}">
+    <header class="vtt-3d-topbar">
+        <a class="vtt-3d-brand" href="/">{{ title }}</a>
+        <span class="vtt-3d-map-name" id="vtt3d-map-name">{{ current_map_name }}</span>
+        <nav class="vtt-3d-top-actions">
+            <a class="btn btn-default btn-sm" href="/">2D View</a>
+            <a class="btn btn-default btn-sm" href="/character_builder">Sheet</a>
+            <span class="vtt-3d-user">{{ username }}</span>
+            <a class="btn btn-link btn-sm" href="/logout">Log out</a>
+        </nav>
+    </header>
+
+    <div id="map-3d-root">
+        <canvas id="map-3d"></canvas>
+        <div id="token-hud-layer" aria-hidden="true"></div>
+    </div>
+
+    <div id="map-chrome-left" class="map-chrome-dock map-chrome-dock--left">
+        <div id="zoom-controls">
+            <button id="zoom-out" type="button" title="Zoom Out">−</button>
+            <span id="zoom-level">100%</span>
+            <button id="zoom-in" type="button" title="Zoom In">+</button>
+            <button id="zoom-reset" type="button" title="Reset camera">Reset</button>
+            <button id="camera-topdown" type="button" title="Top-down view">Top</button>
+        </div>
+        {% if 'dm' in role %}
+        <div id="vtt3d-illumination" class="vtt-3d-illumination" title="3D global illumination">
+            <label for="vtt3d-illumination-slider">Light</label>
+            <input id="vtt3d-illumination-slider" type="range" min="0" max="100" step="1" value="100" aria-label="Global illumination">
+            <span id="vtt3d-illumination-value">100%</span>
+            <button id="vtt3d-illumination-reset" type="button" title="Reset to this map's default illumination">Reset</button>
+        </div>
+        {% endif %}
+    </div>
+
+    <div id="vtt3d-status" class="vtt-3d-status" role="status" aria-live="polite"></div>
+    <div id="noteModal" class="vtt-3d-note-modal" hidden>
+        <div class="vtt-3d-note-modal-panel" role="dialog" aria-labelledby="noteModalTitle">
+            <header class="vtt-3d-note-modal-header">
+                <h2 id="noteModalTitle">Notes</h2>
+                <button type="button" id="noteModalClose" class="btn btn-default btn-sm" aria-label="Close">&times;</button>
+            </header>
+            <div id="noteModalContent" class="vtt-3d-note-modal-body"></div>
+        </div>
+    </div>
+    <div id="target-validation-hint" class="target-validation-hint" role="status" aria-live="polite"></div>
+    <div id="movement-mode-hint" class="movement-mode-hint" style="display: none;" aria-live="polite">
+        <span class="movement-mode-hint__title">Movement Mode</span>
+        <span class="movement-mode-hint__keys">
+            Click a square to move · <kbd>Esc</kbd> cancel
+        </span>
+    </div>
+    <div id="multi-target-confirm-bar" class="multi-target-confirm-bar" style="display: none;" role="region" aria-live="polite">
+        <div class="multi-target-confirm-bar__panel">
+            <div class="multi-target-confirm-bar__info">
+                <span class="multi-target-confirm-bar__title">Select Targets</span>
+                <span class="multi-target-confirm-bar__count">
+                    <span id="multi-target-confirm-bar__current">0</span>
+                    <span class="multi-target-confirm-bar__sep">/</span>
+                    <span id="multi-target-confirm-bar__max">0</span>
+                </span>
+            </div>
+            <div class="multi-target-confirm-bar__actions">
+                <button type="button" id="multi-target-cancel" class="btn btn-default btn-sm">Cancel</button>
+                <button type="button" id="multi-target-confirm" class="btn btn-primary btn-sm" disabled>Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="centerActionBar" class="center-action-bar actions-container" style="display: none;">
+        <div class="center-action-bar-panel" role="region" aria-labelledby="centerActionBarTitle">
+            <div class="center-action-bar-header">
+                <div>
+                    <div id="centerActionBarTitle" class="center-action-bar-title">Actions</div>
+                    <div id="centerActionBarSubtitle" class="center-action-bar-subtitle">Choose an action for the selected entity.</div>
+                </div>
+                <div class="center-action-bar-toolbar">
+                    <button id="centerActionBarClose" type="button" class="btn btn-default btn-sm">Close</button>
+                </div>
+            </div>
+            <div id="centerActionBarInstructions" class="center-action-bar-instructions"></div>
+            <div id="centerActionBarContent" class="center-action-bar-content"></div>
+        </div>
+    </div>
+
+    <script src="{{ asset_url('sfx.js') }}"></script>
+    <script>
+      window.N20_3D = {
+        username: {{ username | tojson }},
+        role: {{ role | tojson }},
+        currentMap: {{ current_map | tojson }},
+        povEntity: {{ current_pov | tojson }},
+        userEntityIds: {{ user_entity_ids | tojson }},
+      };
+    </script>
+    <script type="module" src="/client-3d/client-3d.js"></script>
+</body>
+</html>

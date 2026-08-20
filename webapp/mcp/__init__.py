@@ -9,7 +9,7 @@ Logical modules:
 - :mod:`webapp.mcp.tools_world` — read-only inspection (maps, entities,
   battle state).
 - :mod:`webapp.mcp.tools_dm` — direct DM mutations (HP, statuses,
-  properties, spawn/remove/teleport).
+  properties, spawn/remove/teleport, notebook).
 - :mod:`webapp.mcp.tools_actions` — turn-based execution (MoveAction,
   attack, spell, generic action dispatch, end_turn, start/end battle).
 - :mod:`webapp.mcp.tools_npc` — NPC spatial awareness (location, areas).

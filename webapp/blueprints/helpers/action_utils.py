@@ -91,6 +91,16 @@ _ACTION_TYPE_MAP = {
 }
 
 
+def apply_knock_unconscious_opt(action, opts):
+    """Copy the 5e knockout toggle from a request payload onto an action."""
+    if action is None or not opts:
+        return
+    if not opts.get('knock_unconscious'):
+        return
+    if hasattr(action, 'knock_unconscious'):
+        action.knock_unconscious = True
+
+
 def action_type_to_class(action_type):
     """Map an action type string to its Python class.
 

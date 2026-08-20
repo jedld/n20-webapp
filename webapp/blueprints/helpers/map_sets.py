@@ -134,7 +134,8 @@ def assign_map_to_set(current_game, map_name: str, set_id: str) -> dict[str, Any
     return {'map': map_name, 'map_set': set_id}
 
 
-def place_party(current_game, map_name: str, x: Optional[int] = None, y: Optional[int] = None) -> dict[str, Any]:
+def place_party(current_game, map_name: str, x: Optional[int] = None, y: Optional[int] = None,
+                only_if_absent: bool = False) -> dict[str, Any]:
     session = current_game.game_session
     if map_name not in (session.maps or {}):
         raise ValueError(f'Unknown map: {map_name}')
@@ -145,8 +146,44 @@ def place_party(current_game, map_name: str, x: Optional[int] = None, y: Optiona
         if uid and uid not in seen:
             seen.add(uid)
             players.append(entity)
-    placed = place_party_on_map(session, map_name, x=x, y=y, players=players)
+    placed = place_party_on_map(
+        session,
+        map_name,
+        x=x,
+        y=y,
+        players=players,
+        only_if_absent=only_if_absent,
+        include_sidekicks=True,
+    )
     return {'map': map_name, 'placed': placed}
+
+
+def travel_party_to_map(current_game, map_name: str) -> dict[str, Any]:
+    """Instance missing PCs/sidekicks onto ``map_name`` and activate its map set."""
+    session = current_game.game_session
+    if map_name not in (session.maps or {}):
+        raise ValueError(f'Unknown map: {map_name}')
+    set_id = session.map_set_for(map_name)
+    placed = place_party(current_game, map_name, only_if_absent=True)
+    activated = activate_map_set(current_game, set_id)
+    try:
+        bump = getattr(current_game, 'bump_render_epoch', None)
+        if callable(bump):
+            bump()
+    except Exception:
+        pass
+    socketio = getattr(current_game, 'socketio', None)
+    if socketio is not None:
+        try:
+            socketio.emit('message', {'type': 'refresh_map'})
+        except Exception:
+            pass
+    return {
+        'map': map_name,
+        'map_set': set_id,
+        'placed': placed.get('placed') if isinstance(placed, dict) else placed,
+        **activated,
+    }
 
 
 def _known_player_characters(current_game) -> list:

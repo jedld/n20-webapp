@@ -45,6 +45,7 @@ class TestAttackActionRoute(unittest.TestCase):
         self.current_game.get_map_for_entity.return_value = self.battle_map
         self.current_game.commit_and_update.return_value = {'status': 'ok'}
         self.current_game.game_session = self.session
+        self.current_game.canonical_map_entity.side_effect = lambda entity: entity
 
     def test_attack_with_coords_uses_entity_at_fallback(self):
         """AttackAction must not IndexError when entities_at is empty but a token exists."""
@@ -72,6 +73,41 @@ class TestAttackActionRoute(unittest.TestCase):
         self.current_game.commit_and_update.assert_called_once()
         payload = response.get_json()
         self.assertNotEqual(payload.get('status'), 'error')
+
+    def test_attack_applies_knock_unconscious_opt(self):
+        captured = []
+
+        def capture(_username, action, _pov):
+            captured.append(action)
+            return {'status': 'ok'}
+
+        self.current_game.commit_and_update.side_effect = capture
+        client = app.test_client()
+        wx, wy = self.battle_map.position_of(self.wolf)
+
+        with client.session_transaction() as sess:
+            sess['username'] = 'dm'
+
+        with patch('webapp.blueprints.battle.get_current_game', return_value=self.current_game), \
+             patch('webapp.blueprints.battle.get_game_session', return_value=self.session), \
+             patch('webapp.blueprints.battle.entities_controlled_by', return_value=[self.fighter.entity_uid]):
+            response = client.post(
+                '/action',
+                json={
+                    'id': self.fighter.entity_uid,
+                    'action': 'AttackAction',
+                    'opts': {
+                        'using': 'rapier',
+                        'action_type': 'attack',
+                        'knock_unconscious': True,
+                    },
+                    'target': {'x': wx, 'y': wy},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(captured)
+        self.assertTrue(captured[0].knock_unconscious)
 
 
 if __name__ == '__main__':

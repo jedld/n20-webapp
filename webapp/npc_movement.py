@@ -977,6 +977,8 @@ class NpcMovementManager:
         *,
         return_to_post: bool = False,
         trigger_arrival_debrief: bool = False,
+        on_arrival_event: Optional[str] = None,
+        on_arrival_payload: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         if entity is None or not target_info:
             return None
@@ -1003,6 +1005,9 @@ class NpcMovementManager:
             'last_error': None,
             'running': False,
         }
+        if on_arrival_event:
+            task_record['on_arrival_event'] = str(on_arrival_event)
+            task_record['on_arrival_payload'] = dict(on_arrival_payload or {})
         with self.manager.game_state_lock:
             self.manager.npc_movements[task_id] = task_record
         self.kick(entity)
@@ -1074,6 +1079,8 @@ class NpcMovementManager:
         if entity is None:
             return None
         task_id = self._task_id(entity)
+        arrival_event = None
+        arrival_payload = None
         with self.manager.game_state_lock:
             task = self.manager.npc_movements.get(task_id)
             if task is None:
@@ -1090,7 +1097,27 @@ class NpcMovementManager:
                     'reason': reason,
                 })
                 task['history'] = task['history'][-12:]
+            if status in ('completed', 'abandoned'):
+                arrival_event = task.get('on_arrival_event')
+                arrival_payload = dict(task.get('on_arrival_payload') or {})
+        if arrival_event:
+            self._emit_arrival_event(entity, arrival_event, arrival_payload, status=status)
         return task
+
+    def _emit_arrival_event(self, entity, event_name: str, payload: Optional[Dict[str, Any]], *, status: str) -> None:
+        session = getattr(self.manager, 'game_session', None)
+        event_manager = getattr(session, 'event_manager', None) if session is not None else None
+        if event_manager is None:
+            return
+        event = dict(payload or {})
+        event['event'] = str(event_name)
+        event.setdefault('source', entity)
+        event['arrived'] = status == 'completed'
+        event['movement_status'] = status
+        try:
+            event_manager.received_event(event)
+        except Exception:
+            logger.exception('NPC arrival event %s failed', event_name)
 
     def _target_uid_from_info(self, target_info: Dict[str, Any]) -> Optional[str]:
         if not target_info:

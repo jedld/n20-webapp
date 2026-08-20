@@ -60,6 +60,13 @@ def _edit_map_object(current_game, map_name):
         raise KeyError(f"Unknown map: {map_name}")
     return game_session.maps[map_name]
 
+
+def _annotation_error(exc):
+    message = exc.args[0] if getattr(exc, "args", None) else str(exc)
+    if isinstance(exc, (KeyError, FileNotFoundError)):
+        return jsonify({"success": False, "error": str(message)}), 404
+    raise exc
+
 edit_bp = Blueprint("edit", __name__)
 
 
@@ -340,8 +347,16 @@ def edit_annotations_list():
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
-    annotations = list_map_annotation_documents(current_game.game_session, battle_map.name)
-    return jsonify({"success": True, "map": battle_map.name, "annotations": annotations})
+    map_name = _resolve_edit_map_name(
+        current_game,
+        battle_map,
+        {"map_name": request.args.get("map_name")},
+    )
+    try:
+        annotations = list_map_annotation_documents(current_game.game_session, map_name)
+    except (KeyError, FileNotFoundError) as exc:
+        return _annotation_error(exc)
+    return jsonify({"success": True, "map": map_name, "annotations": annotations})
 
 
 @edit_bp.route("/edit/annotations", methods=["POST"])
@@ -365,10 +380,12 @@ def edit_annotations_save():
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
-    map_name = battle_map.name
+    map_name = _resolve_edit_map_name(current_game, battle_map, data)
 
     try:
         saved = save_map_annotation(current_game.game_session, map_name, normalized)
+    except (KeyError, FileNotFoundError) as exc:
+        return _annotation_error(exc)
     except OSError as exc:
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
 
@@ -388,10 +405,16 @@ def edit_annotations_delete(annotation_id):
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
-    map_name = battle_map.name
+    map_name = _resolve_edit_map_name(
+        current_game,
+        battle_map,
+        {"map_name": request.args.get("map_name")},
+    )
 
     try:
         remove_map_annotation(current_game.game_session, map_name, annotation_id)
+    except (KeyError, FileNotFoundError) as exc:
+        return _annotation_error(exc)
     except OSError as exc:
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500
 
@@ -422,13 +445,14 @@ def edit_annotations_move():
 
     current_game = get_current_game()
     battle_map = current_game.get_map_for_user(session["username"])
-    map_name = battle_map.name
+    map_name = _resolve_edit_map_name(current_game, battle_map, data)
 
-    if x < 0 or y < 0 or x >= battle_map.size[0] or y >= battle_map.size[1]:
+    live_map = (getattr(current_game.game_session, "maps", None) or {}).get(map_name) or battle_map
+    if x < 0 or y < 0 or x >= live_map.size[0] or y >= live_map.size[1]:
         return jsonify(
             {
                 "success": False,
-                "error": f"Coordinates out of bounds ({battle_map.size[0]}x{battle_map.size[1]})",
+                "error": f"Coordinates out of bounds ({live_map.size[0]}x{live_map.size[1]})",
             }
         ), 400
 
@@ -471,7 +495,7 @@ def edit_annotations_bounds():
     except (KeyError, ValueError):
         return jsonify({"success": False, "error": "x1, y1, x2, y2 are required integers"}), 400
 
-    map_name = battle_map.name
+    map_name = _resolve_edit_map_name(current_game, battle_map, data)
     try:
         updated = update_area_annotation_bounds(current_game.game_session, map_name, annotation_id, x1, y1, x2, y2)
     except KeyError as exc:
@@ -843,3 +867,23 @@ def edit_map_graph_data():
         current_map_name=battle_map.name if battle_map is not None else None,
     )
     return jsonify({"success": True, **graph})
+
+
+@edit_bp.route("/edit/map_graph/layout", methods=["POST"])
+def edit_map_graph_layout():
+    denied = _require_edit_dm()
+    if denied:
+        return denied
+
+    data = request.get_json(silent=True) or {}
+    positions = data.get("positions") if isinstance(data, dict) else None
+    if not isinstance(positions, dict):
+        return jsonify({"success": False, "error": "positions must be an object"}), 400
+
+    from webapp.blueprints.helpers.map_graph import save_map_graph_layout
+
+    try:
+        saved = save_map_graph_layout(get_current_game().game_session, positions)
+    except OSError as exc:
+        return jsonify({"success": False, "error": f"Failed to write map graph layout: {exc}"}), 500
+    return jsonify({"success": True, "positions": saved})

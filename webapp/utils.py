@@ -672,6 +672,11 @@ class GameManagement:
         self.campaign_log_db = CampaignLogDB(
             os.path.join(self.save_dir, 'campaign_logs.sqlite')
         )
+        from natural20.notebook_db import NotebookDB
+        self.notebook_db = NotebookDB(
+            os.path.join(self.save_dir, 'notebook.sqlite'),
+            files_dir=os.path.join(self.save_dir, 'notebook_files'),
+        )
         from natural20.npc_memory_store import NpcMemoryStore
         self.npc_memory_store = NpcMemoryStore(getattr(self.game_session, 'root_path', '.'))
         if self.output_logger:
@@ -683,7 +688,7 @@ class GameManagement:
                 self.logger.debug(f"Combat log restore skipped: {exc}")
 
         self.logger.info(f"Loading map from {self.map_location}")
-        self.battle_map = Map(game_session, self.map_location, name='index')
+        self.battle_map = self._starting_battle_map(game_session)
 
         self.maps = self.game_session.maps
         try:
@@ -999,9 +1004,27 @@ class GameManagement:
         self.waiting_for_user = waiting
 
     def reset(self):
-        self.battle_map = Map(self.game_session, self.map_location)
+        self.battle_map = self._starting_battle_map(self.game_session)
         self.battle = None
         self.socketio.emit('message', {'type': 'reset', 'message': {}})
+
+    def _starting_battle_map(self, game_session):
+        """Return the campaign starting map object, keyed by its game.yml name.
+
+        Older campaigns used the registry key ``index`` for the starting map.
+        Do not reuse that name when ``index`` is a different map (for example
+        a later dungeon while ``starting_map`` is a prologue hub).
+        """
+        getter = getattr(game_session, 'default_map_key', None)
+        start_key = getter(self.map_location) if callable(getter) else None
+        maps = getattr(game_session, 'maps', None) or {}
+        if start_key and start_key in maps:
+            return maps[start_key]
+        if start_key:
+            return Map(game_session, self.map_location, name=start_key)
+        if 'index' in maps:
+            return maps['index']
+        return Map(game_session, self.map_location, name='index')
 
     def _map_file_for(self, map_name: str) -> str:
         """Resolve campaign YAML path for a map registry key."""
@@ -1010,6 +1033,10 @@ class GameManagement:
         game_maps = (getattr(self.game_session, 'game_properties', None) or {}).get('maps') or {}
         if map_name in game_maps:
             return game_maps[map_name]
+        live = (self.maps or {}).get(map_name)
+        live_path = getattr(live, 'map_file_path', None) if live is not None else None
+        if live_path:
+            return live_path
         if map_name in ('index', 'battle') and self.map_location:
             return self.map_location
         raise KeyError(f"Map file reference not found for {map_name!r}")
@@ -1068,12 +1095,14 @@ class GameManagement:
             return False
         return any(results)
 
-    def prompt(self, message, callback=None, options=None, usernames=None):
+    def prompt(self, message, callback=None, options=None, usernames=None, title=None):
         callback_id = uuid.uuid4().hex
         self.callbacks[callback_id] = callback
         payload = {'type': 'prompt', 'message': message, 'callback': callback_id}
         if options:
             payload['options'] = options
+        if title:
+            payload['title'] = title
 
         if usernames:
             delivered = False
@@ -1739,7 +1768,7 @@ class GameManagement:
         return before
 
     def clear_save_files(self) -> list:
-        """Delete game save files under ``save_dir`` (not campaign_logs.sqlite)."""
+        """Delete game save files under ``save_dir`` (not campaign_logs.sqlite or notebook.sqlite)."""
         removed = []
         if not self.save_dir or not os.path.isdir(self.save_dir):
             return removed
@@ -1820,7 +1849,7 @@ class GameManagement:
 
         self.game_session = new_session
         self.battle = None
-        self.battle_map = Map(new_session, self.map_location, name='index')
+        self.battle_map = self._starting_battle_map(new_session)
         self.maps = new_session.maps
         self.read_notes = set()
         self.player_character_game_times = {}
@@ -2039,7 +2068,16 @@ class GameManagement:
         self.game_session = new_session
         self.battle = new_battle
 
-        self.battle_map = new_maps['index']
+        new_maps = new_maps or {}
+        getter = getattr(new_session, 'default_map_key', None)
+        start_key = getter(self.map_location) if callable(getter) else None
+        self.battle_map = (
+            (new_maps.get(start_key) if start_key else None)
+            or new_maps.get('index')
+            or next(iter(new_maps.values()), None)
+        )
+        if self.battle_map is None:
+            self.battle_map = self._starting_battle_map(new_session)
         self.maps = new_maps
         # Do not mutate the save list on load; keep history intact
 
@@ -2256,6 +2294,8 @@ class GameManagement:
         *,
         return_to_post=False,
         trigger_arrival_debrief=False,
+        on_arrival_event=None,
+        on_arrival_payload=None,
     ):
         return self.movement_manager.schedule_move_to(
             entity,
@@ -2264,6 +2304,8 @@ class GameManagement:
             speaker=speaker,
             return_to_post=return_to_post,
             trigger_arrival_debrief=trigger_arrival_debrief,
+            on_arrival_event=on_arrival_event,
+            on_arrival_payload=on_arrival_payload,
         )
 
     def schedule_npc_follow(self, entity, target, distance_ft=5, speaker=None):

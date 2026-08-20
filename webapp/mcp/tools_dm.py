@@ -1266,6 +1266,60 @@ def register(registry: ToolRegistry) -> None:
 
     @tool(
         registry,
+        name='dm.illumination',
+        description='Get or set 3D global ambient illumination for a map '
+                    '(0 = dark, 1 = full). Visual only — does not change fog or '
+                    'Map.light_at. op: get | set | reset. Default is the map YAML '
+                    'illumination. Optional map_name (current map when omitted).',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {'type': 'string', 'enum': ['get', 'set', 'reset']},
+                'illumination': {'type': 'number', 'minimum': 0, 'maximum': 1},
+                'map_name': {'type': 'string'},
+            },
+        },
+        category='dm',
+    )
+    def illumination(
+        context: MCPContext,
+        op: str,
+        illumination: Optional[float] = None,
+        map_name: Optional[str] = None,
+    ):
+        from natural20.web.vtt3d_illumination import apply_illumination, resolve_illumination
+
+        op = (op or '').strip().lower()
+        battle_map = context.resolve_map(map_name)
+        if battle_map is None:
+            raise tool_error('No map resolved for illumination')
+        if op == 'get':
+            return resolve_illumination(battle_map, context.game_session)
+        if op == 'reset':
+            lighting = apply_illumination(context.game_session, battle_map, None)
+        elif op == 'set':
+            if illumination is None:
+                raise tool_error('illumination required for op=set')
+            lighting = apply_illumination(context.game_session, battle_map, illumination)
+        else:
+            raise tool_error('op must be one of: get, set, reset')
+        socketio = context.socketio
+        if socketio is not None:
+            event = {'type': 'vtt3d_illumination'}
+            event.update(lighting)
+            try:
+                socketio.emit('message', event)
+            except Exception as exc:
+                raise tool_error(f'emit failed: {exc}')
+        context.log_dm(
+            f"DM 3D illumination {op} map={lighting.get('map')} "
+            f"value={lighting.get('illumination')}"
+        )
+        return lighting
+
+    @tool(
+        registry,
         name='dm.advance_time',
         description='Advance (or set) the in-game clock by `seconds`. '
                     'Use op="set" to assign an absolute value, "add" to advance.',
@@ -1572,6 +1626,198 @@ def register(registry: ToolRegistry) -> None:
             return {'op': op, 'map': existing.get('map'), 'note_id': existing['id'], 'deleted': True}
 
         raise tool_error('op must be one of: list, upsert, delete, move')
+
+    @tool(
+        registry,
+        name='dm.notebook',
+        description='Player/campaign notes and journals (not character journals, not map pins). '
+                    'Stored in the campaign SQLite notebook. Default scope is campaign (DM). '
+                    'op: list | get | search | create | update | delete | mkdir | move | share. '
+                    'Use dm.note for map-square pins.',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {
+                    'type': 'string',
+                    'enum': [
+                        'list', 'get', 'search', 'create', 'update',
+                        'delete', 'mkdir', 'move', 'share',
+                    ],
+                },
+                'scope': {'type': 'string', 'enum': ['campaign', 'player'], 'default': 'campaign'},
+                'owner': {'type': 'string', 'description': 'Player username when scope=player'},
+                'item_id': {'type': 'string'},
+                'folder_id': {'type': 'string'},
+                'parent_id': {'type': 'string'},
+                'title': {'type': 'string'},
+                'name': {'type': 'string'},
+                'content': {'type': 'string'},
+                'query': {'type': 'string'},
+                'limit': {'type': 'integer'},
+                'kind': {'type': 'string', 'enum': ['note', 'folder', 'item']},
+                'usernames': {'type': 'array', 'items': {'type': 'string'}},
+                'all_players': {'type': 'boolean'},
+            },
+        },
+        category='dm',
+    )
+    def notebook(
+        context: MCPContext,
+        op: str,
+        scope: str = 'campaign',
+        owner: Optional[str] = None,
+        item_id: Optional[str] = None,
+        folder_id: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        title: Optional[str] = None,
+        name: Optional[str] = None,
+        content: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: Optional[int] = None,
+        kind: Optional[str] = None,
+        usernames: Optional[List[str]] = None,
+        all_players: bool = False,
+    ):
+        from natural20.notebook_db import CAMPAIGN_OWNER, NotebookError
+
+        db = getattr(context.current_game, 'notebook_db', None)
+        if db is None:
+            raise tool_error('Notebook database is not initialized')
+        op = (op or '').strip().lower()
+        scope_key = (scope or 'campaign').strip().lower()
+        try:
+            if scope_key == 'player':
+                owner_id = str(owner or '').strip().lower()
+                if not owner_id:
+                    raise tool_error('owner (username) is required when scope=player')
+                scope_key, owner_id = db.normalize_scope_owner('player', owner_id, is_dm=True)
+            else:
+                scope_key, owner_id = db.normalize_scope_owner('campaign', CAMPAIGN_OWNER, is_dm=True)
+        except NotebookError as exc:
+            raise tool_error(str(exc)) from exc
+
+        def _notify():
+            socketio = context.socketio
+            if socketio is None:
+                return
+            try:
+                socketio.emit('message', {
+                    'type': 'notebook_changed',
+                    'scope': scope_key,
+                    'owner': owner_id,
+                })
+            except Exception:
+                pass
+
+        try:
+            if op == 'list':
+                tree = db.tree(scope_key, owner_id, sort='updated', order='desc')
+                return {'op': op, 'scope': scope_key, 'owner': owner_id, **tree}
+            if op == 'search':
+                items = db.search(
+                    scope_key,
+                    owner_id,
+                    query or '',
+                    limit=int(limit or 40),
+                )
+                return {'op': op, 'scope': scope_key, 'items': items}
+            if op == 'get':
+                item = db.get_item(item_id, include_content=True) if item_id else None
+                if item is None:
+                    raise tool_error('item_id not found')
+                return {'op': op, 'item': item}
+            if op == 'create':
+                item = db.create_note(
+                    scope_key,
+                    owner_id,
+                    title or name or 'Untitled note',
+                    content=content or '',
+                    folder_id=folder_id,
+                    created_by='dm',
+                )
+                context.log_dm(f"DM created campaign note {item.get('title')}")
+                _notify()
+                return {'op': op, 'item': item}
+            if op == 'update':
+                saved = db.update_item(
+                    item_id,
+                    title=title,
+                    content=content,
+                    folder_id=folder_id,
+                    move_folder=folder_id is not None,
+                )
+                context.log_dm(f"DM updated notebook item {saved.get('id')}")
+                _notify()
+                return {'op': op, 'item': saved}
+            if op == 'delete':
+                node_kind = (kind or 'item').strip().lower()
+                if node_kind == 'folder':
+                    ok = db.delete_folder(item_id or folder_id)
+                else:
+                    ok = db.delete_item(item_id)
+                if not ok:
+                    raise tool_error('not found')
+                context.log_dm(f"DM deleted notebook {node_kind} {item_id or folder_id}")
+                _notify()
+                return {'op': op, 'deleted': True}
+            if op == 'mkdir':
+                folder = db.create_folder(
+                    scope_key,
+                    owner_id,
+                    name or title or 'Folder',
+                    parent_id=parent_id or folder_id,
+                )
+                context.log_dm(f"DM created notebook folder {folder.get('name')}")
+                _notify()
+                return {'op': op, 'folder': folder}
+            if op == 'move':
+                dest = parent_id if parent_id is not None else folder_id
+                node = item_id
+                if (kind or 'item') == 'folder' and not node:
+                    node = folder_id
+                    dest = parent_id
+                saved = db.move_node(
+                    kind or 'item',
+                    node,
+                    folder_id=dest,
+                )
+                _notify()
+                return {'op': op, 'node': saved}
+            if op == 'share':
+                recipients = list(usernames or [])
+                if all_players:
+                    recipients.append('*')
+                shares = db.create_shares(item_id, 'dm', recipients)
+                item = db.get_item(item_id, include_content=False)
+                socketio = context.socketio
+                sid_map = getattr(context.current_game, 'username_to_sid', {}) or {}
+                if socketio is not None and item is not None:
+                    for share in shares:
+                        event = {
+                            'type': 'notebook_share',
+                            'share_id': share['id'],
+                            'from_username': share['from_username'],
+                            'title': item.get('title'),
+                            'kind': item.get('kind'),
+                            'is_image': bool(item.get('is_image')),
+                        }
+                        target = share['to_username']
+                        names = list(sid_map.keys()) if target == '*' else [target]
+                        for uname in names:
+                            for sid in sid_map.get(uname, []) or []:
+                                try:
+                                    socketio.emit('message', event, to=sid)
+                                except Exception:
+                                    pass
+                context.log_dm(f"DM shared notebook item {item_id}")
+                return {'op': op, 'shares': shares}
+        except NotebookError as exc:
+            raise tool_error(str(exc)) from exc
+
+        raise tool_error(
+            'op must be one of: list, get, search, create, update, delete, mkdir, move, share'
+        )
 
     @tool(
         registry,

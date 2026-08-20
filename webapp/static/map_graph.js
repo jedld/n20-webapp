@@ -17,6 +17,7 @@
   let dragState = null;
   let panState = null;
   let suppressNodeClick = false;
+  let persistTimer = null;
 
   function readBootstrap() {
     const el = document.getElementById('map-graph-bootstrap');
@@ -70,6 +71,131 @@
       x: nodeLeft + x,
       y: nodeTop + y,
     };
+  }
+
+  function campaignStorageKey() {
+    return 'n20.map_graph.positions.' + (graph.campaign || 'default');
+  }
+
+  function readLocalPositions() {
+    try {
+      var raw = window.localStorage.getItem(campaignStorageKey());
+      return raw ? JSON.parse(raw) : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function writeLocalPositions(positions) {
+    try {
+      window.localStorage.setItem(campaignStorageKey(), JSON.stringify(positions || {}));
+    } catch (err) {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function snapshotPositions() {
+    var out = {};
+    Object.keys(nodePositions).forEach(function (id) {
+      var p = nodePositions[id];
+      if (!p) return;
+      out[id] = { x: Math.round(p.x), y: Math.round(p.y) };
+    });
+    return out;
+  }
+
+  function persistLayout() {
+    var positions = snapshotPositions();
+    graph.positions = positions;
+    writeLocalPositions(positions);
+    fetch('/edit/map_graph/layout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ positions: positions }),
+    }).then(function (resp) {
+      return resp.json().then(function (data) {
+        if (!resp.ok || !data || !data.success) {
+          throw new Error((data && data.error) || 'Failed to save layout');
+        }
+        if (data.positions) graph.positions = data.positions;
+      });
+    }).catch(function (err) {
+      console.warn('Failed to persist map graph layout', err);
+    });
+  }
+
+  function schedulePersistLayout() {
+    if (persistTimer) window.clearTimeout(persistTimer);
+    persistTimer = window.setTimeout(function () {
+      persistTimer = null;
+      persistLayout();
+    }, 200);
+  }
+
+  function savedPositionMap() {
+    var local = readLocalPositions();
+    var server = graph.positions || {};
+    var merged = {};
+    Object.keys(server).forEach(function (id) { merged[id] = server[id]; });
+    Object.keys(local).forEach(function (id) { merged[id] = local[id]; });
+    return merged;
+  }
+
+  function hasSavedPositions(nodes) {
+    var saved = savedPositionMap();
+    return (nodes || []).some(function (node) {
+      var p = saved[node.id];
+      return p && isFinite(Number(p.x)) && isFinite(Number(p.y));
+    });
+  }
+
+  function placeMissingNodes(missing, positions) {
+    var maxX = CANVAS_PADDING;
+    Object.keys(positions).forEach(function (id) {
+      var p = positions[id];
+      var size = nodeSizes[id] || { width: NODE_WIDTH };
+      maxX = Math.max(maxX, (p.x || 0) + size.width);
+    });
+    var x = maxX + NODE_GAP_X;
+    var y = CANVAS_PADDING;
+    missing.forEach(function (node) {
+      var size = getNodeSize(node);
+      positions[node.id] = { x: x, y: y };
+      y += size.totalHeight + NODE_GAP_Y;
+    });
+  }
+
+  function applySavedOrAutoLayout(nodes, edges) {
+    var saved = savedPositionMap();
+    var positions = {};
+    var missing = [];
+    (nodes || []).forEach(function (node) {
+      var p = saved[node.id];
+      if (p && isFinite(Number(p.x)) && isFinite(Number(p.y))) {
+        positions[node.id] = { x: Number(p.x), y: Number(p.y) };
+      } else {
+        missing.push(node);
+      }
+    });
+    if (!nodes.length) {
+      return {};
+    }
+    if (missing.length === nodes.length) {
+      positions = initialLayout(nodes);
+      runForceLayout(nodes, edges || [], positions, 80);
+      separateOverlappingNodes(positions, nodes.map(function (n) { return n.id; }));
+    } else if (missing.length) {
+      placeMissingNodes(missing, positions);
+    }
+    return positions;
+  }
+
+  function computeAutoLayout(nodes, edges) {
+    var positions = initialLayout(nodes || []);
+    runForceLayout(nodes || [], edges || [], positions, 80);
+    separateOverlappingNodes(positions, (nodes || []).map(function (n) { return n.id; }));
+    return positions;
   }
 
   function initialLayout(nodes) {
@@ -460,21 +586,25 @@
     });
   }
 
-  function render() {
-    // Reset node sizes cache
+  function render(opts) {
+    opts = opts || {};
     nodeSizes = {};
-    // Pre-compute sizes for all nodes
     (graph.nodes || []).forEach(function (node) {
       getNodeSize(node);
     });
-    nodePositions = initialLayout(graph.nodes || []);
-    runForceLayout(graph.nodes || [], graph.edges || [], nodePositions, 80);
-    separateOverlappingNodes(nodePositions, (graph.nodes || []).map(function (n) { return n.id; }));
+    var nodes = graph.nodes || [];
+    var edges = graph.edges || [];
+    if (opts.reset) {
+      nodePositions = computeAutoLayout(nodes, edges);
+    } else {
+      nodePositions = applySavedOrAutoLayout(nodes, edges);
+    }
     resizeCanvas();
     renderNodes();
     ensureEdgesOnTop();
     renderEdges();
-    fitView();
+    if (!opts.skipFit) fitView();
+    if (opts.persist) persistLayout();
   }
 
   function fitView() {
@@ -584,10 +714,15 @@
         ev.preventDefault();
         return;
       }
-      if (ev.button === 0) {
+      if (ev.button === 0 || ev.button === 2) {
         panState = { startX: ev.clientX, startY: ev.clientY, scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop };
         stage.classList.add('dragging');
+        ev.preventDefault();
       }
+    });
+
+    stage.addEventListener('contextmenu', function (ev) {
+      ev.preventDefault();
     });
 
     window.addEventListener('mousemove', function (ev) {
@@ -617,6 +752,7 @@
     window.addEventListener('mouseup', function () {
       if (dragState && dragState.moved) {
         suppressNodeClick = true;
+        schedulePersistLayout();
       }
       dragState = null;
       panState = null;
@@ -625,6 +761,12 @@
 
     document.getElementById('map-graph-refresh').addEventListener('click', refreshGraph);
     document.getElementById('map-graph-fit').addEventListener('click', fitView);
+    var resetBtn = document.getElementById('map-graph-reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function () {
+        render({ reset: true, persist: true });
+      });
+    }
   }
 
   document.addEventListener('DOMContentLoaded', function () {
@@ -638,5 +780,8 @@
     }
     render();
     setupInteractions();
+    if (!hasSavedPositions(graph.nodes || [])) {
+      writeLocalPositions(snapshotPositions());
+    }
   });
 })();

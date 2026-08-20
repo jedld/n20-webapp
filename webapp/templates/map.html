@@ -128,7 +128,7 @@
                      style="--hut-radius-squares: {{ ((obj['tiny_hut_radius_ft'] or 10) // 5) }}; --hut-color: {{ obj['tiny_hut_color'] or 'sapphire' }};"></div>
               {% endif %}
               {% if highlight_doors and obj.get('door_highlight') %}
-                <div class="door-highlight-marker {% if obj.get('door_highlight_opened') %}door-highlight-marker-opened{% endif %}" aria-hidden="true" title="{{ obj.get('label') or 'Door' }}">
+                <div class="door-highlight-marker {% if obj.get('window_highlight') %}window-highlight-marker{% endif %} {% if obj.get('door_highlight_opened') %}door-highlight-marker-opened{% endif %}" aria-hidden="true" title="{{ obj.get('label') or 'Door' }}">
                   {% if obj.get('door_highlight_edges', {}).get('top') %}
                     <div class="door-highlight-marker-line door-highlight-marker-top"></div>
                   {% endif %}
@@ -202,7 +202,7 @@
 
           {% if tile['objects'] %}
             {% for obj in tile['objects'] %}
-              {% if pov_entity and obj.get('quick_interact') and (not tile.get('id') or tile.get('id') != pov_entity.entity_uid) %}
+              {% if pov_entity and obj.get('quick_interact') %}
                 <div class="object-quick-interact-layer"
                      data-object-id="{{ obj['id'] }}"
                      {% if obj.get('door_approach_anchors') %}data-door-approach="{{ obj['door_approach_anchors']|join(',') }}"{% endif %}

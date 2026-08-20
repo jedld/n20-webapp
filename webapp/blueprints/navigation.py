@@ -3,7 +3,7 @@
 Extracted from webapp/app.py.
 Routes: /, /command, /reload_map, /response, /focus, /switch_map,
         /path, /path/cost_map, /jump_info, /refresh-portraits,
-        /update, /mark_note_read
+        /update, /map_state, /mark_note_read
 """
 import json
 import os
@@ -44,6 +44,7 @@ from natural20.player_character import PlayerCharacter
 from natural20.utils.movement import Movement
 from webapp.pov_utils import build_portrait_render_context, dm_pov_portrait_entities
 from natural20.web.json_renderer import JsonRenderer
+from natural20.web.map_state import build_map_state
 from natural20.web.stack_renderer import build_stack_render_layers, stack_for_map, stack_floors_for_ui, annotate_base_tiles_with_stack_overlay_entities
 
 from .helpers.auth_utils import logged_in, session_username, user_role
@@ -1451,6 +1452,46 @@ def update():
     )
     _timing_log(f"update:total={render_dur:.1f}ms battle={'yes' if battle else 'no'}")
     return resp
+
+
+def _pov_entities_for_user(username, battle_map):
+    """POV list used by /update and /map_state (controlled entities, then DM camera)."""
+    _pov_entities = entities_controlled_by(username, battle_map)
+    if not _pov_entities:
+        _pov_entities = render_pov_entities()
+    return _pov_entities
+
+
+@navigation_bp.route('/map_state', endpoint='map_state')
+def map_state():
+    """JSON twin of GET /update for the Three.js VTT client."""
+    username = session_username()
+    if not username:
+        return jsonify({'error': 'unauthorized'}), 401
+    logger = get_logger()
+    current_game = get_current_game()
+    battle_map = _battle_map_for_render(current_game, username)
+    battle = current_game.get_current_battle()
+    _pov_entities = _pov_entities_for_user(username, battle_map)
+    renderer = JsonRenderer(
+        battle_map,
+        battle,
+        padding=None,
+        logger=logger,
+        reveal_all_notes=bool(get_edit_mode()),
+    )
+    tiles = renderer.render(entity_pov=_pov_entities)
+    display_map = _stack_display_map(current_game, battle_map)
+    background = _background_for_stack_view(
+        current_game, username, battle_map, display_map, False,
+    )
+    payload = build_map_state(
+        battle_map,
+        tiles,
+        background=background,
+        display_name=getattr(battle_map, 'name', None),
+    )
+    return jsonify(payload)
 
 
 @navigation_bp.route('/mark_note_read', methods=['POST'], endpoint='mark_note_read')

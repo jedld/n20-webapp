@@ -61,7 +61,12 @@ from .helpers.template_globals import (
     reaction_template_for,
 )
 from .helpers.npc_stat_block import lookup_info_entity, render_info_page
-from .helpers.action_utils import action_type_to_class, resolve_requested_action_type, resolve_use_item_name
+from .helpers.action_utils import (
+    action_type_to_class,
+    apply_knock_unconscious_opt,
+    resolve_requested_action_type,
+    resolve_use_item_name,
+)
 from .helpers.action_bar import resolve_actions_for_id
 from .helpers.runtime_state import (
     get_current_game,
@@ -906,6 +911,7 @@ def action():
     }
     _action_type = None
     _entity_id = None
+    opts = {}
 
     def _mark(name):
         now = time.perf_counter()
@@ -913,6 +919,7 @@ def action():
         _ctx['last'] = now
 
     def _commit_and_update(action_obj, pov_entities):
+        apply_knock_unconscious_opt(action_obj, opts if isinstance(opts, dict) else {})
         _t_commit = time.perf_counter()
         result = get_current_game().commit_and_update(session['username'], action_obj, pov_entities)
         _ctx['commit_ms_total'] += (time.perf_counter() - _t_commit) * 1000.0

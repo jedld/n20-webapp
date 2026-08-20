@@ -894,3 +894,31 @@ class GameContextProvider:
             'game_time': self.game_session.game_time,
             'config': config,
         }
+
+    def _notebook_db(self):
+        return getattr(self.current_game, 'notebook_db', None)
+
+    def list_campaign_notes(self, query: Optional[str] = None, limit: int = 40) -> Dict[str, Any]:
+        """List campaign-level notes/journals for the DM assistant (not PC journals)."""
+        db = self._notebook_db()
+        if db is None:
+            return {'success': False, 'error': 'Notebook database is not initialized'}
+        summary = db.campaign_summary(limit=limit, query=query)
+        summary['success'] = True
+        return summary
+
+    def get_campaign_note(self, note_id: str) -> Dict[str, Any]:
+        """Fetch a campaign notebook note or file metadata by id."""
+        db = self._notebook_db()
+        if db is None:
+            return {'success': False, 'error': 'Notebook database is not initialized'}
+        item = db.get_item(note_id, include_content=True)
+        if item is None:
+            return {'success': False, 'error': 'note not found'}
+        if item.get('scope') != 'campaign':
+            return {'success': False, 'error': 'not a campaign note'}
+        return {'success': True, 'item': item}
+
+    def search_campaign_notes(self, query: str = '', limit: int = 20) -> Dict[str, Any]:
+        """Search campaign notebook titles and note bodies."""
+        return self.list_campaign_notes(query=query, limit=limit)

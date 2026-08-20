@@ -356,6 +356,25 @@ def register_game_context_functions(llm_handler, game_context_provider, mcp_regi
         "Get current in-game clock, day/night phase, and time_of_day schedule from game.yml."
     )
 
+    llm_handler.register_game_context_function(
+        "list_campaign_notes",
+        game_context_provider.list_campaign_notes,
+        "List campaign-level notes and journals (not character journals, not map pins). "
+        "Optional query (str) and limit (int). MCP equivalent: dm.notebook op=list|search."
+    )
+
+    llm_handler.register_game_context_function(
+        "get_campaign_note",
+        game_context_provider.get_campaign_note,
+        "Get a campaign notebook item by id, including markdown content. Args: note_id."
+    )
+
+    llm_handler.register_game_context_function(
+        "search_campaign_notes",
+        game_context_provider.search_campaign_notes,
+        "Search campaign notebook titles and note text. Args: query (str), limit (int)."
+    )
+
     # ── MCP bridge ────────────────────────────────────────────────────
     # Expose the full MCP tool registry to the DM AI assistant so it
     # uses the same tool surface as external MCP clients. The model

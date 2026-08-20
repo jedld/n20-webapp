@@ -143,6 +143,37 @@ class TestActionBarRoutes(unittest.TestCase):
         self.assertEqual(len(payload['sections']), 1)
         self.assertTrue(payload['sections'][0].get('html'))
 
+    def test_fighter_action_bar_includes_knockout_toggle(self):
+        from webapp.blueprints.helpers.action_bar import _action_template_context
+
+        self.battle.set_current_turn(self.fighter)
+        self.fighter.reset_turn(self.battle)
+
+        with patch('webapp.blueprints.helpers.action_bar.get_game_session', return_value=self.session):
+            ctx = _action_template_context(self.fighter, self.battle, self.battle_map, is_dm=True)
+
+        self.assertTrue(
+            ctx['has_melee_knockout'],
+            'expected a melee attack eligible for knockout on the fighter action bar',
+        )
+
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess['username'] = 'dm'
+
+        with patch('webapp.blueprints.helpers.action_bar.get_current_game', return_value=self.current_game), \
+             patch('webapp.blueprints.helpers.action_bar.get_game_session', return_value=self.session), \
+             patch('webapp.blueprints.helpers.action_bar.entity_owners', return_value=['dm']):
+            response = client.get(
+                '/actions/batch',
+                query_string={'ids': self.fighter.entity_uid},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_json()['sections'][0]['html']
+        self.assertIn('knockout-toggle', html)
+        self.assertIn('data-can-knock-unconscious="1"', html)
+
 
 if __name__ == '__main__':
     unittest.main()

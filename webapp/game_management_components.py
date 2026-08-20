@@ -1,4 +1,3 @@
-import os
 import sys
 import time
 
@@ -21,21 +20,16 @@ class GameEntityRegistry:
         return state
 
     def _campaign_default_map_key(self):
+        session = getattr(self.manager, 'game_session', None)
+        getter = getattr(session, 'default_map_key', None)
+        if callable(getter):
+            key = getter(getattr(self.manager, 'map_location', None))
+            maps = self.manager.maps or {}
+            if key in maps:
+                return key
         maps = self.manager.maps
         if 'index' in maps:
             return 'index'
-        props = getattr(self.manager.game_session, 'game_properties', {}) or {}
-        starting = props.get('starting_map') or ''
-        if starting:
-            key = os.path.splitext(os.path.basename(starting))[0]
-            if key in maps:
-                return key
-            for map_key, map_path in (props.get('maps') or {}).items():
-                if map_key in maps and (
-                    str(map_path).endswith(key)
-                    or str(starting).endswith(f'{map_key}.yml')
-                ):
-                    return map_key
         if maps:
             return next(iter(maps))
         return None

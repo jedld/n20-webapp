@@ -1,0 +1,276 @@
+html, body.vtt-3d {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0b0d12;
+  color: #e8e4d9;
+}
+
+.vtt-3d-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: rgba(12, 14, 20, 0.82);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.vtt-3d-brand {
+  color: #f3ead2;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.vtt-3d-map-name {
+  opacity: 0.8;
+  font-size: 13px;
+}
+
+.vtt-3d-top-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vtt-3d-user {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+#map-3d-root {
+  position: absolute;
+  inset: 0;
+}
+
+#map-3d {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#token-hud-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.token-hp-chip {
+  position: absolute;
+  transform: translate(-50%, -120%);
+  min-width: 42px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(8, 10, 16, 0.78);
+  color: #f4f0e4;
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.token-hp-chip.is-dead {
+  opacity: 0.55;
+}
+
+.hud-note-btn {
+  position: absolute;
+  transform: translate(-50%, -120%);
+  pointer-events: auto;
+  z-index: 6;
+}
+
+.hud-object-interact {
+  position: absolute;
+  transform: translate(-50%, -110%);
+  pointer-events: auto;
+  z-index: 7;
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(12, 14, 20, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+body.vtt-3d .hud-object-interact .object-quick-action {
+  position: relative;
+}
+
+.vtt-3d-note-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.vtt-3d-note-modal[hidden] {
+  display: none !important;
+}
+
+.vtt-3d-note-modal-panel {
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(70vh, 520px);
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #1a1612;
+  color: #f4ead9;
+  border: 1px solid rgba(228, 201, 149, 0.28);
+}
+
+.vtt-3d-note-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.vtt-3d-note-modal-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.vtt-3d-note-modal-body p {
+  margin: 0 0 8px;
+}
+
+body.vtt-3d .center-action-bar-content .popover-actions-body > table,
+body.vtt-3d .center-action-entry .action-bar-tab-panel-inner > table {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: auto;
+  max-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+body.vtt-3d .center-action-entry tbody,
+body.vtt-3d .center-action-entry tr {
+  display: contents;
+}
+
+body.vtt-3d .center-action-entry td {
+  padding: 0;
+  display: inline-flex;
+}
+
+.vtt-3d-status {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgba(12, 14, 20, 0.75);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+/* Keep the 2D action-bar stacking (20050) so zoom/light never cover it. */
+body.vtt-3d #map-chrome-left {
+  top: 56px;
+  bottom: auto;
+  flex-direction: column;
+  z-index: 1200;
+}
+
+/* 2D zoom chrome is a white bar; body.vtt-3d inherits cream text onto it. */
+body.vtt-3d #zoom-controls {
+  background: rgba(12, 14, 20, 0.92);
+  color: #f4ead9;
+  border: 1px solid rgba(228, 201, 149, 0.38);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+body.vtt-3d #zoom-controls button {
+  background: #2a241c;
+  color: #f4ead9;
+  border: 1px solid rgba(228, 201, 149, 0.5);
+}
+
+body.vtt-3d #zoom-controls button:hover,
+body.vtt-3d #zoom-controls button:focus {
+  background: #3d3428;
+  color: #fff8ea;
+  border-color: rgba(228, 201, 149, 0.85);
+  outline: none;
+}
+
+body.vtt-3d #zoom-controls button:active {
+  background: #1a1612;
+  color: #f4ead9;
+}
+
+body.vtt-3d #zoom-level {
+  color: #f4ead9;
+  font-weight: 600;
+}
+
+.vtt-3d-illumination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: rgba(12, 14, 20, 0.92);
+  color: #f4ead9;
+  border: 1px solid rgba(228, 201, 149, 0.38);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.vtt-3d-illumination label {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.vtt-3d-illumination input[type="range"] {
+  width: 110px;
+  height: 22px;
+  margin: 0;
+  accent-color: #e4c995;
+}
+
+.vtt-3d-illumination #vtt3d-illumination-value {
+  min-width: 2.6em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+}
+
+.vtt-3d-illumination button {
+  background: #2a241c;
+  color: #f4ead9;
+  border: 1px solid rgba(228, 201, 149, 0.5);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.vtt-3d-illumination button:hover,
+.vtt-3d-illumination button:focus {
+  background: #3d3428;
+  color: #fff8ea;
+  border-color: rgba(228, 201, 149, 0.85);
+  outline: none;
+}
+
+.vtt-3d-illumination.is-default button {
+  opacity: 0.45;
+}

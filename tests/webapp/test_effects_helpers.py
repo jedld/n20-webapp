@@ -411,18 +411,12 @@ class TestEffectsHelpers(unittest.TestCase):
 
         self.mod.register_effect_listeners(lambda *a, **k: None)
 
-        mock_event_mgr.register_event_listener.assert_any_call(
-            'narration', MagicMock()
-        )
-        mock_event_mgr.register_event_listener.assert_any_call(
-            'control_override_added', MagicMock()
-        )
-        mock_event_mgr.register_event_listener.assert_any_call(
-            'control_override_removed', MagicMock()
-        )
-        mock_event_mgr.register_event_listener.assert_any_call(
-            'turn_skipped', MagicMock()
-        )
+        called_events = [call.args[0] for call in mock_event_mgr.register_event_listener.call_args_list]
+        assert 'narration' in called_events
+        assert 'control_override_added' in called_events
+        assert 'control_override_removed' in called_events
+        assert 'turn_skipped' in called_events
+        assert 'party_travel_prompt' in called_events
         mock_current_game.register_event_handler.assert_called_once()
 
     @patch('webapp.blueprints.helpers.effects.get_event_manager')

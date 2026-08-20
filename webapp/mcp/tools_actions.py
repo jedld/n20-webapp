@@ -100,7 +100,8 @@ def register(registry: ToolRegistry) -> None:
         name='actions.execute',
         description='Execute a non-movement action for an entity. Engine performs '
                     'auto-targeting via autobuild. Pass a target entity uid in `target` '
-                    'and free-form options in `opts` (e.g. spell name, at_level). '
+                    'and free-form options in `opts` (e.g. spell name, at_level, '
+                    'knock_unconscious=true for melee knockout). '
                     'For doors and map objects, use action_type "InteractAction" (or omit '
                     'it and set opts.action to "open", "close", etc.). '
                     'InteractAction with `target` uses the DungeonMaster actor (same as '
@@ -229,6 +230,8 @@ def register(registry: ToolRegistry) -> None:
         if not built:
             raise tool_error('No valid action could be built (no legal targets/options)')
         action = built[0]
+        if opts.get('knock_unconscious') and hasattr(action, 'knock_unconscious'):
+            action.knock_unconscious = True
         try:
             _with_dm_mcp_privileges(ent, lambda: context.current_game.commit_and_update('dm', action, [ent]))
         except Exception as exc:

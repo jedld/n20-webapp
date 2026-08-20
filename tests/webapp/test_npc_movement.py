@@ -253,6 +253,30 @@ class TestNpcMovementManager(unittest.TestCase):
         cancelled = self.movement_manager.cancel(entity, reason='test', mode='move_to')
         self.assertEqual(cancelled['status'], 'cancelled')
 
+    def test_complete_fires_on_arrival_event(self):
+        entity = Mock()
+        entity.entity_uid = 'npc-1'
+        event_manager = Mock()
+        self.manager.game_session.event_manager = event_manager
+        self.manager.get_entity_by_uid.return_value = entity
+        target_info = {'kind': 'square', 'square': (4, 4)}
+
+        self.movement_manager.schedule_move_to(
+            entity,
+            target_info,
+            distance_ft=0,
+            on_arrival_event='npc_left_scene',
+            on_arrival_payload={'map': 'tavern'},
+        )
+        self.movement_manager.complete(entity, status='completed', reason='Destination reached')
+
+        event_manager.received_event.assert_called_once()
+        payload = event_manager.received_event.call_args[0][0]
+        self.assertEqual(payload['event'], 'npc_left_scene')
+        self.assertEqual(payload['source'], entity)
+        self.assertTrue(payload['arrived'])
+        self.assertEqual(payload['map'], 'tavern')
+
     def test_schedule_follow(self):
         entity = Mock()
         entity.entity_uid = 'npc-1'

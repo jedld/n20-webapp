@@ -7,6 +7,7 @@
   let activeSchema = null;
   let activeBinding = null;
   let activeObjectType = null;
+  let pathPick = null;
 
   function ensureModal() {
     if ($('#edit-properties-modal').length) {
@@ -32,6 +33,9 @@
     `);
     $('body').append($modal);
     $modal.on('hidden.bs.modal', function () {
+      if (pathPick) {
+        return;
+      }
       activeFixture = null;
       activeSchema = null;
       activeBinding = null;
@@ -85,6 +89,9 @@
 
   function openPropertiesEditor(fixture) {
     ensureModal();
+    if (pathPick) {
+      finishPathPick(true);
+    }
     activeFixture = fixture;
     if (!activeFixture.object_type) {
       return;
@@ -538,6 +545,281 @@
     return $wrap;
   }
 
+  function coercePointList(value) {
+    const points = [];
+    const seen = {};
+    const source = Array.isArray(value) ? value : [];
+    source.forEach((item) => {
+      const x = Number(Array.isArray(item) ? item[0] : item && item.x);
+      const y = Number(Array.isArray(item) ? item[1] : item && item.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return;
+      }
+      const key = `${x},${y}`;
+      if (seen[key]) {
+        return;
+      }
+      seen[key] = true;
+      points.push([x, y]);
+    });
+    return points;
+  }
+
+  function readPointList(key) {
+    const raw = $(`.edit-properties-point-list[data-field-key="${key}"] input[data-point-list="1"]`).val();
+    try {
+      return coercePointList(JSON.parse(raw || '[]'));
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function writePointList(key, points, $root) {
+    const pts = coercePointList(points);
+    const $wrap = $root && $root.length
+      ? $root
+      : $(`.edit-properties-point-list[data-field-key="${key}"]`);
+    $wrap.find('input[data-point-list="1"]').val(JSON.stringify(pts));
+    const $chips = $wrap.find('.edit-point-list-chips').empty();
+    if (!pts.length) {
+      $chips.append($('<span class="text-muted"></span>').text('No squares yet — pick the base, then each step to the top.'));
+      return pts;
+    }
+    pts.forEach((pt, index) => {
+      let label = String(index + 1);
+      if (index === 0) {
+        label = 'Base';
+      } else if (index === pts.length - 1) {
+        label = 'Top';
+      }
+      $chips.append(
+        $('<span class="edit-point-chip"></span>').text(`${label} (${pt[0]}, ${pt[1]})`),
+      );
+    });
+    return pts;
+  }
+
+  function renderPointList(field, value) {
+    const key = field.key;
+    const $wrap = $('<div class="edit-properties-point-list"></div>').attr('data-field-key', key);
+    const $hidden = $('<input type="hidden">')
+      .attr('data-field-key', key)
+      .attr('data-point-list', '1');
+    const $chips = $('<div class="edit-point-list-chips"></div>');
+    const $btns = $('<div class="edit-point-list-actions"></div>');
+    const $pick = $('<button type="button" class="btn btn-default btn-sm">Pick squares on map</button>');
+    const $undo = $('<button type="button" class="btn btn-default btn-sm">Undo</button>');
+    const $clear = $('<button type="button" class="btn btn-default btn-sm">Clear</button>');
+    $btns.append($pick, $undo, $clear);
+    $wrap.append($hidden, $chips, $btns);
+    writePointList(key, value, $wrap);
+    $pick.on('click', function () {
+      startPathPick(field);
+    });
+    $undo.on('click', function () {
+      const pts = readPointList(key);
+      pts.pop();
+      writePointList(key, pts, $wrap);
+    });
+    $clear.on('click', function () {
+      writePointList(key, [], $wrap);
+    });
+    return $wrap;
+  }
+
+  function tileCoords($tile) {
+    if (!$tile || !$tile.length) {
+      return null;
+    }
+    const x = $tile.data('coords-x');
+    const y = $tile.data('coords-y');
+    if (x === undefined || y === undefined) {
+      return null;
+    }
+    return { x: Number(x), y: Number(y) };
+  }
+
+  function isPickingPath() {
+    return !!pathPick;
+  }
+
+  function isUsablePathTile($tile) {
+    return !!(
+      $tile
+      && $tile.length
+      && $tile.closest('.tiles-container').length
+      && !$tile.hasClass('map-stack-underlay-tile')
+    );
+  }
+
+  function ignorePathPickClick(event) {
+    return $(event.target).closest(
+      '#edit-path-pick-banner, .modal, #centerActionBar, .popover-menu, .popover-menu-2, .map-annotations-panel, .edit-mode-banner, .navbar, #console-container',
+    ).length > 0;
+  }
+
+  function tileFromPointerEvent(event) {
+    let $tile = $(event.target).closest('.tiles-container .tile');
+    if (isUsablePathTile($tile)) {
+      return $tile;
+    }
+    if (typeof document.elementsFromPoint !== 'function') {
+      return $();
+    }
+    const stack = document.elementsFromPoint(event.clientX, event.clientY) || [];
+    for (let i = 0; i < stack.length; i += 1) {
+      $tile = $(stack[i]).closest('.tiles-container .tile');
+      if (isUsablePathTile($tile)) {
+        return $tile;
+      }
+    }
+    return $();
+  }
+
+  function ensurePickBanner() {
+    if ($('#edit-path-pick-banner').length) {
+      return;
+    }
+    const $banner = $(`
+      <div id="edit-path-pick-banner" class="edit-path-pick-banner" hidden>
+        <span class="edit-path-pick-label">Click squares from the stair base to the top.</span>
+        <span class="edit-path-pick-actions">
+          <button type="button" class="btn btn-default btn-sm" data-path-pick="undo">Undo</button>
+          <button type="button" class="btn btn-default btn-sm" data-path-pick="clear">Clear</button>
+          <button type="button" class="btn btn-primary btn-sm" data-path-pick="done">Done — use this path</button>
+          <button type="button" class="btn btn-default btn-sm" data-path-pick="cancel">Cancel</button>
+        </span>
+      </div>
+    `);
+    $('body').append($banner);
+    $(document).off('keydown.editPathPick').on('keydown.editPathPick', function (event) {
+      if (!pathPick) {
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        finishPathPick(false);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        finishPathPick(true);
+      }
+    });
+    $banner.on('click', '[data-path-pick]', function () {
+      const op = $(this).attr('data-path-pick');
+      if (op === 'undo') {
+        if (pathPick && pathPick.points.length) {
+          pathPick.points.pop();
+          writePointList(pathPick.key, pathPick.points);
+          paintPathPick();
+        }
+      } else if (op === 'clear') {
+        if (pathPick) {
+          pathPick.points = [];
+          writePointList(pathPick.key, []);
+          paintPathPick();
+        }
+      } else if (op === 'done') {
+        finishPathPick(false);
+      } else if (op === 'cancel') {
+        finishPathPick(true);
+      }
+    });
+  }
+
+  function paintPathPick() {
+    $('.edit-path-pick-index').remove();
+    $('.tile').removeClass('edit-path-pick-tile edit-path-pick-base edit-path-pick-top');
+    if (!pathPick) {
+      $('#edit-path-pick-banner').attr('hidden', true);
+      $('body').removeClass('edit-properties-picking-path');
+      return;
+    }
+    pathPick.points.forEach((pt, index) => {
+      const $tile = $(`.tiles-container .tile[data-coords-x="${pt[0]}"][data-coords-y="${pt[1]}"]`)
+        .not('.map-stack-underlay-tile')
+        .first();
+      $tile.addClass('edit-path-pick-tile');
+      if (index === 0) {
+        $tile.addClass('edit-path-pick-base');
+      }
+      if (index === pathPick.points.length - 1) {
+        $tile.addClass('edit-path-pick-top');
+      }
+      $tile.append($('<span class="edit-path-pick-index"></span>').text(String(index + 1)));
+    });
+    const n = pathPick.points.length;
+    let label = 'Click the base square, then each step toward the top.';
+    if (n === 1) {
+      label = 'Base set. Click each step toward the top, then click that last square again (or Done).';
+    } else if (n > 1) {
+      label = `${n} squares — last is the top. Click it again, press Enter, or click Done to commit.`;
+    }
+    $('#edit-path-pick-banner .edit-path-pick-label').text(label);
+    $('#edit-path-pick-banner').removeAttr('hidden');
+    $('body').addClass('edit-properties-picking-path');
+  }
+
+  function startPathPick(field) {
+    ensurePickBanner();
+    const key = field.key;
+    pathPick = {
+      key: key,
+      bounds: field.bounds || {},
+      original: readPointList(key),
+      points: readPointList(key),
+    };
+    $('#edit-properties-modal').modal('hide');
+    paintPathPick();
+  }
+
+  function finishPathPick(cancelled) {
+    if (!pathPick) {
+      return;
+    }
+    const key = pathPick.key;
+    const pts = cancelled ? pathPick.original : pathPick.points;
+    pathPick = null;
+    paintPathPick();
+    writePointList(key, pts);
+    if (activeFixture) {
+      $('#edit-properties-modal').modal('show');
+    }
+  }
+
+  function handleTileClick(event, $tileArg) {
+    if (!pathPick) {
+      return false;
+    }
+    const $tile = $tileArg && $tileArg.length ? $tileArg : tileFromPointerEvent(event);
+    if (!isUsablePathTile($tile)) {
+      return false;
+    }
+    const coords = tileCoords($tile);
+    if (!coords) {
+      return false;
+    }
+    const bounds = pathPick.bounds || {};
+    if (bounds.width && (coords.x < 0 || coords.x >= bounds.width)) {
+      return true;
+    }
+    if (bounds.height && (coords.y < 0 || coords.y >= bounds.height)) {
+      return true;
+    }
+    const last = pathPick.points[pathPick.points.length - 1];
+    const isLast = last && last[0] === coords.x && last[1] === coords.y;
+    if (isLast && pathPick.points.length >= 2) {
+      finishPathPick(false);
+      return true;
+    }
+    const already = pathPick.points.some((pt) => pt[0] === coords.x && pt[1] === coords.y);
+    if (!already) {
+      pathPick.points.push([coords.x, coords.y]);
+      writePointList(pathPick.key, pathPick.points);
+      paintPathPick();
+    }
+    return true;
+  }
+
   function renderField(field, values) {
     const key = field.key;
     const id = fieldId(key);
@@ -548,7 +830,8 @@
     $group.append($label);
 
     const type = field.type || 'string';
-    if (type === 'map_ref' || type === 'enum') {
+    const isChoiceField = type === 'map_ref' || type === 'enum' || type === 'select';
+    if (isChoiceField) {
       const $select = $(`<select class="form-control" id="${id}"></select>`).attr('data-field-key', key);
       const choices = field.choices || [];
       $select.append($('<option value="">Select…</option>'));
@@ -595,6 +878,13 @@
           $('<p class="help-block"></p>').text(`Valid range: x 0–${bounds.width - 1}, y 0–${bounds.height - 1}`),
         );
       }
+    } else if (type === 'point_list') {
+      $group.append(renderPointList(field, value));
+    } else if (type === 'integer') {
+      const $input = $(`<input type="number" step="1" class="form-control" id="${id}">`)
+        .attr('data-field-key', key)
+        .val(value == null || value === '' ? (field.default != null ? field.default : '') : value);
+      $group.append($input);
     } else if (type === 'boolean') {
       const $checkbox = $(`<input type="checkbox" id="${id}">`).attr('data-field-key', key);
       if (value) {
@@ -663,6 +953,8 @@
           const x = Number($(`[data-field-key="${key}"][data-point-part="x"]`).val());
           const y = Number($(`[data-field-key="${key}"][data-point-part="y"]`).val());
           values[key] = [x, y];
+        } else if (type === 'point_list') {
+          values[key] = pathPick && pathPick.key === key ? pathPick.points.slice() : readPointList(key);
         } else if (type === 'offset_px') {
           const top = Number($(`[data-field-key="${key}"][data-offset-part="top"]`).val() || 0);
           const left = Number($(`[data-field-key="${key}"][data-offset-part="left"]`).val() || 0);
@@ -727,7 +1019,7 @@
           values[key] = notes;
         } else if (type === 'boolean') {
           values[key] = $(`[data-field-key="${key}"]`).prop('checked');
-        } else if (type === 'map_ref' || type === 'enum') {
+        } else if (type === 'map_ref' || type === 'enum' || type === 'select') {
           values[key] = $(`select[data-field-key="${key}"]`).val();
         } else {
           values[key] = $(`[data-field-key="${key}"]`).val();
@@ -809,8 +1101,35 @@
       });
   }
 
+  document.addEventListener(
+    'click',
+    function (event) {
+      if (!pathPick || event.button) {
+        return;
+      }
+      if (ignorePathPickClick(event)) {
+        return;
+      }
+      const $tile = tileFromPointerEvent(event);
+      if (!isUsablePathTile($tile)) {
+        return;
+      }
+      if (!handleTileClick(event, $tile)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation();
+      }
+    },
+    true,
+  );
+
   window.EditProperties = {
     openFromHandle,
     openFromFixture,
+    handleTileClick,
+    isPickingPath,
   };
 })(window, jQuery);

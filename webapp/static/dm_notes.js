@@ -104,6 +104,14 @@
     if (!$item.length) {
       return;
     }
+    if (window.Notebook) {
+      if (window.Utils && typeof window.Utils.setVttMenuLabel === 'function') {
+        window.Utils.setVttMenuLabel($item, 'Map Pins');
+      } else {
+        $item.find('.vtt-menu-label').text('Map Pins');
+      }
+      return;
+    }
     const label = state.visible ? 'Hide DM Notes' : 'Show DM Notes';
     if (window.Utils && typeof window.Utils.setVttMenuLabel === 'function') {
       window.Utils.setVttMenuLabel($item, label);
@@ -128,6 +136,11 @@
         .dm-notes-panel.is-collapsed .dm-notes-panel-body { display: none; }
         .dm-notes-panel.is-collapsed .dm-notes-panel-title small { display: none; }
         .dm-notes-panel.is-hidden { display: none !important; }
+        .dm-notes-panel.is-embedded {
+          position: relative; left: auto; right: auto; top: auto; bottom: auto;
+          width: 100%; max-width: none; max-height: none;
+          border: none; box-shadow: none; background: transparent;
+        }
         .dm-notes-panel-header {
           display: flex; align-items: center; justify-content: space-between;
           padding: 8px 10px; border-bottom: 1px solid #3f3f46; font-size: 13px;
@@ -172,6 +185,22 @@
     `);
   }
 
+  function mountPanel($host) {
+    if (!$host || !$host.length) {
+      return ensurePanel();
+    }
+    const $panel = ensurePanel();
+    $panel.addClass('is-embedded');
+    if ($panel.parent()[0] !== $host[0]) {
+      $host.append($panel);
+    }
+    $panel.removeClass('is-hidden is-collapsed');
+    state.visible = true;
+    persistVisible();
+    syncMenuLabel();
+    return $panel;
+  }
+
   function ensurePanel() {
     if ($('#dm-notes-panel').length) {
       return $('#dm-notes-panel');
@@ -196,7 +225,11 @@
       </div>
     `);
     const $dock = $('#map-chrome-right');
-    if ($dock.length) {
+    const $host = $('#notebook-map-pins-host');
+    if ($host.length) {
+      $panel.addClass('is-embedded');
+      $host.append($panel);
+    } else if ($dock.length) {
       $dock.append($panel);
     } else {
       $('body').append($panel);
@@ -535,6 +568,10 @@
       }
     });
     $('#toggle-dm-notes').off('click.dmNotes').on('click.dmNotes', function () {
+      if (window.Notebook && typeof window.Notebook.open === 'function') {
+        window.Notebook.open('map-pins');
+        return;
+      }
       setVisible(!state.visible);
     });
   }
@@ -565,6 +602,7 @@
     handleTileClick,
     setVisible,
     setPlacing,
+    mountPanel,
   };
 
   $(function () {
