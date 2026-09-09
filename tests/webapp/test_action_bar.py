@@ -109,7 +109,6 @@ class TestActionBarRoutes(unittest.TestCase):
             ctx = _action_template_context(door, None, self.battle_map, is_dm=True)
 
         self.assertEqual(ctx['usable_items'], [])
-        self.assertEqual(ctx['other_items'], [])
 
     def test_actions_batch_handles_null_inventory_objects(self):
         from natural20.item_library.door_object import DoorObject

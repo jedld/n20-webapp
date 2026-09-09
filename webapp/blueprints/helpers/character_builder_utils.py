@@ -16,6 +16,8 @@ import base64
 import io
 import logging
 
+from flask import session as flask_session
+
 from PIL import Image
 import yaml
 
@@ -511,7 +513,6 @@ def _persist_outward_appearance_for_entity(entity, outward_appearance: str):
 
 
 def _can_edit_character(character_name):
-    from flask import session as flask_session
     from .pvp import selectable_character_entry
     from .template_globals import controller_of as _controller_of
     from .auth_utils import roles_for_username

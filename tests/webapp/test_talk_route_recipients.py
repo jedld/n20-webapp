@@ -172,6 +172,9 @@ class FakeEntityRagHandler:
     def process_entity_response(self, response, receiver, speaker, llm_conversation_handler):
         return 'common', response
 
+    def collect_perceivable_targets(self, observer, *, range_ft=120, include_objects=True):
+        return []
+
     def build_conversation_response_plan(self, response, receiver, speaker, llm_conversation_handler):
         if '[SET_GOAL:' in response:
             goal_text = response.split('[SET_GOAL:', 1)[1].split(']', 1)[0].strip()

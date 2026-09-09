@@ -156,6 +156,14 @@
     "rule": "/admin/effect"
   },
   {
+    "endpoint": "dm.admin_illumination",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/admin/illumination"
+  },
+  {
     "endpoint": "dm.admin_load",
     "methods": [
       "OPTIONS",

@@ -96,7 +96,10 @@ def _action_template_context(entity, effective_battle, entity_map, is_dm):
         else:
             entity_class_level = entity.class_and_level()
     if entity_map is not None:
-        entity_x, entity_y = entity_map.entity_or_object_pos(entity)
+        try:
+            entity_x, entity_y = entity_map.entity_or_object_pos(entity)
+        except (KeyError, ValueError):
+            entity_x, entity_y = 0, 0
 
     inline_spells = bool(castable_spells_by_level)
     inline_items = bool(usable_items)

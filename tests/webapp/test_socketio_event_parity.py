@@ -18,6 +18,10 @@ for _dir in (WEBAPP_DIR, PROJECT_ROOT):
 template_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates'))
 os.environ.setdefault('TEMPLATE_DIR', template_root)
 
+# The baseline was captured with TTS enabled; ensure the TTS blueprint is
+# registered during parity checks so the full route/endpoint set matches.
+os.environ.setdefault('TTS_ENABLED', '1')
+
 # Import app module — must happen after path setup
 from webapp.app import socketio  # noqa: E402
 

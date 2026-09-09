@@ -46,6 +46,9 @@ class FakeEntityRagHandler:
     def get_conversation_targets(self, receiver, speaker=None):
         return [speaker] if speaker is not None else []
 
+    def collect_perceivable_targets(self, observer, *, range_ft=120, include_objects=True):
+        return []
+
     def witnessed_events_summary(self, entity):
         return ""
 
