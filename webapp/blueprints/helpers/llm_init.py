@@ -97,6 +97,26 @@ def configure_llm_handler_from_environment(handler):
             logger.error(f"Failed to initialize llama.cpp provider: {config}")
         return success
 
+    if llm_provider == 'jev':
+        api_key = os.environ.get('TYPESAFE_API_KEY')
+        base_url = os.environ.get('TYPESAFE_BASE_URL')
+        model = os.environ.get('TYPESAFE_MODEL') or os.environ.get('TYPESAFE_DEFAULT_MODEL')
+
+        config = {}
+        if api_key:
+            config['api_key'] = api_key
+        if base_url:
+            config['base_url'] = base_url
+        if model:
+            config['model'] = model
+
+        success = handler.initialize_provider('jev', config)
+        if success:
+            logger.info(f"Initialized Jev (System One) decision provider (model={model or 'jev-latest'})")
+        else:
+            logger.error("Failed to initialize Jev provider (missing TYPESAFE_API_KEY or typesafe_sdk?)")
+        return success
+
     logger.warning(f"Unknown LLM provider: {llm_provider}, using mock provider")
     return handler.initialize_provider('mock', {})
 
@@ -208,6 +228,35 @@ def configure_npc_provider_from_environment(handler):
         if initialized and handler.npc_provider is not None:
             apply_context_limit_to_provider(handler.npc_provider, role='npc')
         return initialized
+
+    if llm_provider == 'jev':
+        # Jev (System One) is a decision model; useful for NPC intent
+        # classification but not prose. Keys follow the TYPESAFE_* naming.
+        jev_api_key = (
+            os.environ.get('NPC_JEV_API_KEY')
+            or os.environ.get('NPC_API_KEY')
+            or os.environ.get('TYPESAFE_API_KEY')
+        )
+        jev_base_url = (
+            os.environ.get('NPC_JEV_BASE_URL')
+            or os.environ.get('NPC_BASE_URL')
+            or os.environ.get('TYPESAFE_BASE_URL')
+        )
+        jev_model = (
+            os.environ.get('NPC_JEV_MODEL')
+            or os.environ.get('NPC_MODEL')
+            or os.environ.get('TYPESAFE_MODEL')
+            or os.environ.get('TYPESAFE_DEFAULT_MODEL')
+        )
+        config = {}
+        if jev_api_key:
+            config['api_key'] = jev_api_key
+        if jev_base_url:
+            config['base_url'] = jev_base_url
+        if jev_model:
+            config['model'] = jev_model
+        config['timeout'] = npc_llm_request_timeout('jev')
+        return handler.initialize_npc_provider('jev', config)
 
     logger.warning("[NPC LLM] Unknown NPC_LLM_PROVIDER=%s, using mock", llm_provider)
     return handler.initialize_npc_provider('mock', {})

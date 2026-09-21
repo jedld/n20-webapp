@@ -1079,6 +1079,219 @@ class LlamaCppProvider(LLMProvider):
         return int(self.context_window) if self.context_window else None
 
 
+class JevProvider(LLMProvider):
+    """TypeSafe Jev "System One" decision-model provider.
+
+    Jev is a *decision* model, not a free-text generator. It consumes an
+    unstructured ``state`` plus a set of typed ``questions`` and returns
+    type-safe structured answers (choice / score / noul) with calibrated
+    probabilities and a confidence value. That maps directly onto the
+    controller's "pick one of N actions" decision path, so this provider
+    exposes a native ``decide_action`` / ``decide_bool`` API that the
+    ``LlmMcpController`` prefers over the string-parsing path.
+
+    It still satisfies the ``LLMProvider`` ABC so it can be registered in
+    ``LLMHandler.providers`` and selected via ``LLM_PROVIDER=jev``, but its
+    ``send_message`` is a graceful no-op note because Jev cannot generate
+    prose (DM narration / NPC dialogue must stay on a generative provider).
+
+    Configuration (env or config dict):
+      - TYPESAFE_API_KEY  (required)
+      - TYPESAFE_BASE_URL (default https://api.typesafe.ai)
+      - TYPESAFE_MODEL    (default jev-latest; falls back to TYPESAFE_DEFAULT_MODEL)
+      - JEV_TIMEOUT       (default 8s)
+    """
+
+    DEFAULT_BASE_URL = "https://api.typesafe.ai"
+    DEFAULT_MODEL = "jev-latest"
+
+    def __init__(self, opts=None):
+        opts = opts or {}
+        self.base_url = opts.get('base_url') or os.environ.get('TYPESAFE_BASE_URL') or self.DEFAULT_BASE_URL
+        self.api_key = opts.get('api_key') or os.environ.get('TYPESAFE_API_KEY')
+        self.current_model = (
+            opts.get('model')
+            or os.environ.get('TYPESAFE_MODEL')
+            or os.environ.get('TYPESAFE_DEFAULT_MODEL')
+            or self.DEFAULT_MODEL
+        )
+        self.request_timeout = int(opts.get('timeout') or os.environ.get('JEV_TIMEOUT', '8'))
+        self.client = None
+        self.initialized = False
+
+    @staticmethod
+    def _import_sdk():
+        """Lazily import typesafe_sdk so a missing optional dep never breaks import."""
+        from typesafe_sdk import TypeSafeClient, Choice, Noul
+        return TypeSafeClient, Choice, Noul
+
+    def initialize(self, config: Dict[str, Any]) -> bool:
+        try:
+            config = config or {}
+            self.base_url = (config.get('base_url') or self.base_url or self.DEFAULT_BASE_URL).rstrip('/')
+            self.api_key = config.get('api_key') or self.api_key or os.environ.get('TYPESAFE_API_KEY')
+            if config.get('timeout') is not None:
+                self.request_timeout = int(config['timeout'])
+            if config.get('model'):
+                self.current_model = config['model']
+
+            if not self.api_key:
+                logger.warning("[JevProvider] No TYPESAFE_API_KEY set; Jev provider disabled.")
+                return False
+
+            TypeSafeClient, _, _ = self._import_sdk()
+            self.client = TypeSafeClient(
+                api_key=self.api_key,
+                model=self.current_model,
+                base_url=self.base_url,
+                timeout=self.request_timeout,
+            )
+            self.initialized = True
+            logger.info("[JevProvider] Initialized Jev (System One) at %s model=%s", self.base_url, self.current_model)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize Jev provider: {e}")
+            self.client = None
+            self.initialized = False
+            return False
+
+    @property
+    def is_available(self) -> bool:
+        return bool(self.client)
+
+    def send_message(self, messages: List[Dict[str, str]]) -> str:
+        """Jev cannot generate prose. Return a short note rather than crash.
+
+        The controller uses ``decide_action`` / ``decide_bool`` for the
+        decision path; any code path that still routes free text through
+        ``send_message`` degrades gracefully here.
+        """
+        return ("[JevProvider] Jev is a System One decision model and does not "
+                "generate free text. Use a generative provider (ollama/openai/"
+                "anthropic/llama_cpp) for DM narration and NPC dialogue.")
+
+    # ------------------------------------------------------------------ #
+    # Native decision API (preferred by LlmMcpController)                 #
+    # ------------------------------------------------------------------ #
+    def decide_action(self, state: str, options: List[str]) -> Optional[Dict[str, Any]]:
+        """Ask Jev to pick one option from ``options``.
+
+        Returns ``{'index': int, 'choice': str, 'confidence': float|None,
+        'probabilities': dict|None}`` on success, or ``None`` on any failure
+        (missing client, SDK error, out-of-range choice, cardinality > 255).
+        """
+        if self.client is None:
+            return None
+        if not options:
+            return None
+        if len(options) > 255:
+            logger.warning("[JevProvider] %d options exceed Jev cardinality cap (255); skipping.", len(options))
+            return None
+
+        try:
+            _, Choice, _ = self._import_sdk()
+            criteria = {str(i): (desc if isinstance(desc, str) else str(desc)) for i, desc in enumerate(options)}
+            question = Choice(
+                instructions="Choose the single best action index for the entity given the state.",
+                criteria=criteria,
+            )
+            result = self.client.system_one(state=state, questions={"action": question})
+            return self._extract_choice(result, "action", options)
+        except Exception as e:
+            logger.error(f"[JevProvider] decide_action failed: {e}")
+            return None
+
+    def decide_bool(self, state: str, instructions: str) -> Optional[Dict[str, Any]]:
+        """Ask Jev a yes/no question. Returns ``{'noul': float, 'confidence': float}`` or ``None``."""
+        if self.client is None:
+            return None
+        try:
+            _, _, Noul = self._import_sdk()
+            question = Noul(instructions=instructions)
+            result = self.client.system_one(state=state, questions={"answer": question})
+            n = result.nouls["answer"]
+            value = float(getattr(n, 'noul', 0.0))
+            return {'noul': value, 'confidence': float(getattr(n, 'confidence', 0.0) or 0.0)}
+        except Exception as e:
+            logger.error(f"[JevProvider] decide_bool failed: {e}")
+            return None
+
+    def _extract_choice(self, result, question_name: str, options: List[str]) -> Optional[Dict[str, Any]]:
+        try:
+            choices = getattr(result, 'choices', None)
+            choice_resp = None
+            if isinstance(choices, dict):
+                choice_resp = choices.get(question_name)
+            elif choices is not None:
+                choice_resp = getattr(choices, question_name, None)
+            if choice_resp is None:
+                return None
+
+            choice_label = getattr(choice_resp, 'choice', None)
+            confidence = getattr(choice_resp, 'confidence', None)
+            probabilities = getattr(choice_resp, 'probabilities', None)
+
+            index = None
+            if isinstance(choice_label, bool):
+                index = None
+            elif isinstance(choice_label, int):
+                index = choice_label
+            elif isinstance(choice_label, str):
+                try:
+                    index = int(choice_label)
+                except (TypeError, ValueError):
+                    index = None
+
+            if index is None or not (0 <= index < len(options)):
+                logger.warning("[JevProvider] Jev returned out-of-range choice %r; ignoring.", choice_label)
+                return None
+
+            return {
+                'index': index,
+                'choice': choice_label,
+                'confidence': float(confidence) if confidence is not None else None,
+                'probabilities': dict(probabilities) if isinstance(probabilities, dict) else None,
+            }
+        except Exception as e:
+            logger.error(f"[JevProvider] could not parse Choice result: {e}")
+            return None
+
+    def get_available_models(self) -> List[str]:
+        if self.client is None:
+            return [self.current_model] if self.current_model else []
+        try:
+            resp = self.client.models.list()
+            names = []
+            models = getattr(resp, 'models', None)
+            if isinstance(models, list):
+                for m in models:
+                    name = m if isinstance(m, str) else (getattr(m, 'id', None) or getattr(m, 'name', None) or (m.get('id') if isinstance(m, dict) else None))
+                    if name and name not in names:
+                        names.append(name)
+            return names or [self.current_model]
+        except Exception as e:
+            logger.error(f"[JevProvider] error listing models: {e}")
+            return [self.current_model] if self.current_model else []
+
+    def set_model(self, model_name: str) -> bool:
+        if not model_name:
+            return False
+        self.current_model = model_name
+        if self.client is not None:
+            try:
+                self.client.model = model_name
+            except Exception as e:
+                logger.warning("[JevProvider] could not set model on client: %s", e)
+        return True
+
+    def set_context_window(self, context_window: int) -> bool:
+        # Jev has no context-window concept; accept no-op for API parity.
+        return False
+
+    def get_context_window(self) -> Optional[int]:
+        return None
+
+
 class LLMHandler:
     """Main handler for LLM interactions with RAG capabilities."""
     
@@ -1089,6 +1302,7 @@ class LLMHandler:
             'anthropic': AnthropicProvider(),
             'ollama': OllamaProvider(opts),
             'llama_cpp': LlamaCppProvider(opts),
+            'jev': JevProvider(opts),
         }
         self.current_provider = None
         self.npc_provider = None
@@ -1177,6 +1391,8 @@ class LLMHandler:
             return OllamaProvider({})
         if provider_name == 'llama_cpp':
             return LlamaCppProvider({})
+        if provider_name == 'jev':
+            return JevProvider({})
         raise ValueError(f"Unknown provider: {provider_name}")
 
     def initialize_npc_provider(self, provider_name: str, config: Dict[str, Any]) -> bool:
