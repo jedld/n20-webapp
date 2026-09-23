@@ -262,6 +262,73 @@ def configure_npc_provider_from_environment(handler):
     return handler.initialize_npc_provider('mock', {})
 
 
+def configure_battle_provider_from_environment(handler):
+    """Apply ``BATTLE_LLM_PROVIDER`` to an existing handler's battle-decision slot.
+
+    Battle 'llm' controllers (``LlmMcpController``) use this provider when it is
+    set, otherwise they fall back to the DM prose provider. This lets a campaign
+    run combat decisions on a dedicated decision model (e.g. ``jev`` / System
+    One) while DM narration and NPC dialogue stay on a generative model.
+
+    Environment variables (all optional):
+
+    * ``BATTLE_LLM_PROVIDER`` – provider name. ``jev`` is fully supported; any
+      other value is ignored with a warning (battle keeps the DM provider).
+    * ``BATTLE_TYPESAFE_API_KEY`` / ``BATTLE_TYPESAFE_BASE_URL`` /
+      ``BATTLE_TYPESAFE_MODEL`` – JEV endpoint overrides, falling back to the
+      shared ``TYPESAFE_*`` vars.
+
+    Returns True if a battle provider was initialized.
+    """
+    llm_provider = os.environ.get('BATTLE_LLM_PROVIDER', '').strip().lower()
+    if not llm_provider:
+        return False
+
+    if llm_provider != 'jev':
+        logger.warning(
+            "[Battle LLM] BATTLE_LLM_PROVIDER=%s is not supported for battle "
+            "decisions; battle 'llm' controllers will use the DM provider",
+            llm_provider,
+        )
+        return False
+
+    api_key = (
+        os.environ.get('BATTLE_TYPESAFE_API_KEY')
+        or os.environ.get('TYPESAFE_API_KEY')
+    )
+    base_url = (
+        os.environ.get('BATTLE_TYPESAFE_BASE_URL')
+        or os.environ.get('TYPESAFE_BASE_URL')
+    )
+    model = (
+        os.environ.get('BATTLE_TYPESAFE_MODEL')
+        or os.environ.get('TYPESAFE_MODEL')
+        or os.environ.get('TYPESAFE_DEFAULT_MODEL')
+    )
+
+    config = {}
+    if api_key:
+        config['api_key'] = api_key
+    if base_url:
+        config['base_url'] = base_url
+    if model:
+        config['model'] = model
+
+    success = handler.initialize_battle_provider('jev', config)
+    if success:
+        logger.info(
+            "[Battle LLM] Battle decisions will use Jev (System One) "
+            "(model=%s)", model or 'jev-latest',
+        )
+    else:
+        logger.error(
+            "[Battle LLM] Failed to initialize Jev battle provider "
+            "(missing TYPESAFE_API_KEY or typesafe_sdk?); battle 'llm' "
+            "controllers will use the DM provider"
+        )
+    return success
+
+
 def initialize_llm_from_env(llm_handler_class):
     """Construct a handler and configure it from environment variables.
 

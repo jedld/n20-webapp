@@ -989,7 +989,19 @@ def register(registry: ToolRegistry) -> None:
                 ctrl = GenericController(context.game_session)
             elif kind == 'llm':
                 from natural20.llm_controller import LlmMcpController
-                ctrl = LlmMcpController(context.game_session)
+                # Prefer the dedicated battle provider (BATTLE_LLM_PROVIDER,
+                # e.g. JEV/System One) when configured, else the DM provider.
+                try:
+                    from webapp.blueprints.helpers.runtime_state import get_llm_handler
+                    _handler = get_llm_handler()
+                except Exception:
+                    _handler = None
+                _battle_fn = getattr(_handler, 'battle_llm_provider', None)
+                if callable(_battle_fn):
+                    _provider = _battle_fn()
+                else:
+                    _provider = getattr(_handler, 'current_provider', None)
+                ctrl = LlmMcpController(context.game_session, llm_provider=_provider)
             else:
                 raise tool_error("kind must be 'manual', 'ai' or 'llm'")
         except tool_error.__class__:

@@ -39,6 +39,8 @@ from webapp.blueprints.helpers.cors_config import (
 from webapp.blueprints.helpers.effects import register_effect_listeners, register_battle_end_hook_handlers
 from webapp.blueprints.helpers.journal_utils import _record_narration_for_pcs
 from webapp.blueprints.helpers.llm_init import (
+    configure_battle_provider_from_environment,
+    configure_llm_handler_from_environment,
     configure_npc_provider_from_environment,
     initialize_llm_from_env,
     register_game_context_functions,
@@ -332,6 +334,7 @@ for extension in EXTENSIONS:
 
 llm_handler = initialize_llm_from_env(LLMHandler)
 configure_npc_provider_from_environment(llm_handler)
+configure_battle_provider_from_environment(llm_handler)
 register_game_context_functions(llm_handler, game_context_provider, _mcp_registry, _mcp_context)
 llm_conversation_handler = LLMConversationController(llm_handler)
 entity_rag_handler = EntityRAGHandler(game_session, current_game)
@@ -2732,8 +2735,10 @@ def start_battle_with_initiative():
             if ctrl_kind == 'ai':
                 controller = GenericController(game_session)
             elif ctrl_kind == 'llm':
-                # Use the same LLM provider configured for the webapp (e.g., Ollama)
-                controller = LlmMcpController(game_session, llm_provider=llm_handler.current_provider)
+                # Battle 'llm' controllers use the dedicated battle provider
+                # (BATTLE_LLM_PROVIDER, e.g. JEV/System One) when configured,
+                # otherwise the DM prose provider.
+                controller = LlmMcpController(game_session, llm_provider=llm_handler.battle_llm_provider())
             else:
                 controller = current_game.get_controller_for_entity(entity)
 
@@ -4948,7 +4953,7 @@ def update_controller():
             engine_controller = GenericController(game_session)
         elif new_controller == 'llm':
             from natural20.llm_controller import LlmMcpController
-            engine_controller = LlmMcpController(game_session, llm_provider=llm_handler.current_provider)
+            engine_controller = LlmMcpController(game_session, llm_provider=llm_handler.battle_llm_provider())
 
         if engine_controller and battle:
             engine_controller.register_handlers_on(entity)
@@ -5627,17 +5632,20 @@ def ai_initialize():
 
 @app.route('/ai/initialize-from-env', methods=['POST'])
 def ai_initialize_from_env():
-    """Re-apply ``LLM_PROVIDER`` / ``NPC_*`` env vars to the shared handler."""
+    """Re-apply ``LLM_PROVIDER`` / ``NPC_*`` / ``BATTLE_LLM_PROVIDER`` env vars."""
     if 'dm' not in user_role():
         return jsonify({'success': False, 'error': 'DM access required'}), 403
     try:
         dm_ok = configure_llm_handler_from_environment(llm_handler)
         npc_ok = configure_npc_provider_from_environment(llm_handler)
+        battle_ok = configure_battle_provider_from_environment(llm_handler)
         info = llm_handler.get_provider_info()
         info['npc_provider'] = llm_handler.get_npc_provider_info()
+        info['battle_provider'] = llm_handler.get_battle_provider_info()
         return jsonify({
             'success': bool(dm_ok and info.get('initialized')),
             'npc_provider_ready': bool(npc_ok),
+            'battle_provider_ready': bool(battle_ok),
             'info': info,
         })
     except Exception as e:
@@ -5939,12 +5947,13 @@ def ai_get_provider_info():
     """Get information about the current AI provider."""
     if 'dm' not in user_role():
         return jsonify({'success': False, 'error': 'DM access required'}), 403
-    
+
     try:
         info = llm_handler.get_provider_info()
         info['npc_provider'] = llm_handler.get_npc_provider_info()
+        info['battle_provider'] = llm_handler.get_battle_provider_info()
         return jsonify({'success': True, 'info': info})
-        
+
     except Exception as e:
         logger.error(f"Error getting provider info: {e}")
         return jsonify({'success': False, 'error': str(e)})

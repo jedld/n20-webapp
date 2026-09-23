@@ -416,9 +416,18 @@ class GameControllerRegistry:
         if kind == 'ai':
             return GenericController(self.manager.game_session)
         if kind == 'llm':
+            # Battle 'llm' controllers prefer the dedicated battle provider
+            # (BATTLE_LLM_PROVIDER, e.g. JEV/System One) when configured,
+            # otherwise they fall back to the DM prose provider.
             try:
                 from webapp.app import llm_handler as current_llm_handler  # type: ignore
-                provider = getattr(current_llm_handler, 'current_provider', None)
+                battle_provider_fn = getattr(
+                    current_llm_handler, 'battle_llm_provider', None
+                )
+                if callable(battle_provider_fn):
+                    provider = battle_provider_fn()
+                else:
+                    provider = getattr(current_llm_handler, 'current_provider', None)
             except Exception:
                 provider = None
             controller_class = LlmMcpController

@@ -12,7 +12,10 @@ from webapp.blueprints.helpers.runtime_state import (
     get_llm_handler,
     get_logger,
 )
-from webapp.blueprints.helpers.llm_init import configure_llm_handler_from_environment
+from webapp.blueprints.helpers.llm_init import (
+    configure_battle_provider_from_environment,
+    configure_llm_handler_from_environment,
+)
 
 ai_bp = Blueprint('ai', __name__)
 
@@ -126,7 +129,7 @@ def ai_initialize():
 
 @ai_bp.route('/ai/initialize-from-env', methods=['POST'], endpoint='ai_initialize_from_env')
 def ai_initialize_from_env():
-    """Re-apply ``LLM_PROVIDER`` / API keys to the shared handler (same as NPC/dialog LLM)."""
+    """Re-apply ``LLM_PROVIDER`` / ``BATTLE_LLM_PROVIDER`` / API keys to the handler."""
     if 'dm' not in _user_role():
         return jsonify({'success': False, 'error': 'DM access required'}), 403
     try:
@@ -134,9 +137,12 @@ def ai_initialize_from_env():
         logger = get_logger()
         if getattr(llm_handler, 'current_provider', None):
             info = llm_handler.get_provider_info()
+            info['battle_provider'] = llm_handler.get_battle_provider_info()
             return jsonify({'success': bool(info.get('initialized')), 'info': info})
         ok = configure_llm_handler_from_environment(llm_handler)
+        configure_battle_provider_from_environment(llm_handler)
         info = llm_handler.get_provider_info()
+        info['battle_provider'] = llm_handler.get_battle_provider_info()
         return jsonify({
             'success': bool(ok and info.get('initialized')),
             'info': info,
@@ -355,6 +361,8 @@ def ai_get_provider_info():
         llm_handler = get_llm_handler()
         logger = get_logger()
         info = llm_handler.get_provider_info()
+        info['npc_provider'] = llm_handler.get_npc_provider_info()
+        info['battle_provider'] = llm_handler.get_battle_provider_info()
         return jsonify({'success': True, 'info': info})
 
     except Exception as e:

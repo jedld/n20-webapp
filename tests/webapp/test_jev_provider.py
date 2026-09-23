@@ -67,7 +67,12 @@ class TestJevProviderInit(unittest.TestCase):
         self.assertFalse(p.is_available)
 
     def test_initialize_with_sdk_returns_true(self):
-        p = self.JevProvider({'api_key': 'secret', 'model': 'jev-latest'})
+        # Hermetic: ignore any TYPESAFE_* leaked into os.environ (e.g. a loaded .env).
+        with patch.dict(os.environ, {}, clear=False):
+            for k in ('TYPESAFE_BASE_URL', 'TYPESAFE_MODEL', 'TYPESAFE_DEFAULT_MODEL',
+                      'JEV_TIMEOUT'):
+                os.environ.pop(k, None)
+            p = self.JevProvider({'api_key': 'secret', 'model': 'jev-latest'})
 
         fake_client = MagicMock()
         fake_client_cls = MagicMock(return_value=fake_client)
@@ -281,9 +286,25 @@ class TestJevProviderMisc(unittest.TestCase):
 
 
 class TestJevEnvWiring(unittest.TestCase):
+    # Clear these so a loaded .env (via webapp.app import) can't leak real
+    # TYPESAFE_*/provider values into the env-wiring assertions.
+    _ENV_KEYS = ('LLM_PROVIDER', 'NPC_LLM_PROVIDER', 'TYPESAFE_API_KEY',
+                 'TYPESAFE_BASE_URL', 'TYPESAFE_MODEL', 'TYPESAFE_DEFAULT_MODEL',
+                 'JEV_TIMEOUT', 'NPC_JEV_API_KEY', 'NPC_JEV_BASE_URL', 'NPC_JEV_MODEL')
+
     def setUp(self):
         from webapp.blueprints.helpers import llm_init as mod
         self.mod = mod
+        self._saved_env = {k: os.environ.get(k) for k in self._ENV_KEYS}
+        for k in self._ENV_KEYS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     @patch.dict(os.environ, {'LLM_PROVIDER': 'jev', 'TYPESAFE_API_KEY': 'ts_key'})
     def test_dm_jev_with_key(self):

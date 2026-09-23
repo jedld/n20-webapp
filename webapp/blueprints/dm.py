@@ -1495,7 +1495,10 @@ def update_controller():
             engine_controller = GenericController(get_game_session())
         elif new_controller == 'llm':
             from natural20.llm_controller import LlmMcpController
-            engine_controller = LlmMcpController(get_game_session(), llm_provider=get_llm_handler().current_provider)
+            _handler = get_llm_handler()
+            _battle_fn = getattr(_handler, 'battle_llm_provider', None)
+            _provider = _battle_fn() if callable(_battle_fn) else _handler.current_provider
+            engine_controller = LlmMcpController(get_game_session(), llm_provider=_provider)
 
         if engine_controller and battle:
             engine_controller.register_handlers_on(entity)

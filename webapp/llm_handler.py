@@ -1306,6 +1306,7 @@ class LLMHandler:
         }
         self.current_provider = None
         self.npc_provider = None
+        self.battle_provider = None
         self.game_context_functions = {}
         self.conversation_history = []
         self.session_logger = SessionLogger()  # Create session logger
@@ -1422,6 +1423,40 @@ class LLMHandler:
             return True
         logger.error("[LLMHandler] Failed to initialize NPC provider: %s", provider_name)
         return False
+
+    def initialize_battle_provider(self, provider_name: str, config: Dict[str, Any]) -> bool:
+        """Initialize the dedicated battle-decision provider.
+
+        Battle controllers (``LlmMcpController``) use this provider instead of
+        the DM prose provider when it is set, so combat decisions can run on a
+        decision model (e.g. ``jev`` / System One) while DM narration and NPC
+        dialogue stay on a generative model.
+        """
+        if provider_name not in self.providers:
+            logger.error(f"Unknown battle provider: {provider_name}")
+            return False
+
+        try:
+            provider = self._instantiate_provider(provider_name)
+        except ValueError:
+            logger.error(f"Unknown battle provider: {provider_name}")
+            return False
+
+        if provider.initialize(config):
+            self.battle_provider = provider
+            logger.info(
+                "[LLMHandler] Battle provider initialized: %s (model=%s, timeout=%ss)",
+                provider_name,
+                getattr(provider, 'current_model', getattr(provider, 'model', 'unknown')),
+                getattr(provider, 'request_timeout', 'default'),
+            )
+            return True
+        logger.error("[LLMHandler] Failed to initialize battle provider: %s", provider_name)
+        return False
+
+    def battle_llm_provider(self):
+        """Provider for battle 'llm' controllers: battle provider if set, else DM."""
+        return self.battle_provider or self.current_provider
 
     @staticmethod
     def _response_looks_complete(content: str, done_reason: Optional[str] = None) -> bool:
@@ -2861,7 +2896,22 @@ class LLMHandler:
         except Exception:
             pass
         return info
-    
+
+    def get_battle_provider_info(self) -> Dict[str, Any]:
+        """Summarize the dedicated battle-decision provider (if configured)."""
+        provider = self.battle_provider
+        if provider is None:
+            return {"initialized": False}
+        info = {
+            "initialized": True,
+            "provider_type": type(provider).__name__,
+        }
+        if hasattr(provider, 'current_model'):
+            info['current_model'] = provider.current_model
+        if hasattr(provider, 'base_url'):
+            info['base_url'] = provider.base_url
+        return info
+
     def clear_history(self):
         """Clear conversation history."""
         self.conversation_history = []

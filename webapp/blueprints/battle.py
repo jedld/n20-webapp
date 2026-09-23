@@ -195,8 +195,13 @@ def start_battle_with_initiative():
             if ctrl_kind == 'ai':
                 controller = GenericController(get_game_session())
             elif ctrl_kind == 'llm':
-                # Use the same LLM provider configured for the webapp (e.g., Ollama)
-                controller = LlmMcpController(get_game_session(), llm_provider=get_llm_handler().current_provider)
+                # Battle 'llm' controllers use the dedicated battle provider
+                # (BATTLE_LLM_PROVIDER, e.g. JEV/System One) when configured,
+                # otherwise the DM prose provider.
+                _handler = get_llm_handler()
+                _battle_fn = getattr(_handler, 'battle_llm_provider', None)
+                _provider = _battle_fn() if callable(_battle_fn) else _handler.current_provider
+                controller = LlmMcpController(get_game_session(), llm_provider=_provider)
             else:
                 controller = get_current_game().get_controller_for_entity(entity)
 
