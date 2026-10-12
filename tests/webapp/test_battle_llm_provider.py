@@ -197,6 +197,27 @@ class TestBattleProviderRouting(unittest.TestCase):
     def test_none_when_no_handler(self):
         self.assertIsNone(_resolve_battle_provider(None))
 
+    def test_registry_llm_controller_uses_runtime_battle_provider(self):
+        """Auto-battle controllers must use the live handler, not re-import webapp.app."""
+        from types import SimpleNamespace
+        from webapp.blueprints.helpers import runtime_state
+        from webapp.game_management_components import GameControllerRegistry
+
+        handler = MagicMock()
+        handler.battle_llm_provider = MagicMock(return_value='jev-provider')
+        captured = {}
+
+        class _FakeLlmController:
+            def __init__(self, session, llm_provider=None):
+                captured['provider'] = llm_provider
+
+        registry = GameControllerRegistry(SimpleNamespace(game_session=None))
+        with patch.dict(runtime_state._globals, {'llm_handler': handler}), \
+                patch('webapp.game_management_components.LlmMcpController', _FakeLlmController), \
+                patch.dict(sys.modules, {'webapp.utils': None}):
+            registry._build_controller_by_kind('llm')
+        self.assertEqual(captured['provider'], 'jev-provider')
+
 
 if __name__ == '__main__':
     unittest.main()

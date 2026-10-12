@@ -10,3 +10,6 @@ saves/
 llm_logs/
 *.log
 .DS_Store
+
+# AI settings may contain API keys (DM Console > AI Settings)
+.ai.yaml

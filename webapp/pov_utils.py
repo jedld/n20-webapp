@@ -40,6 +40,43 @@ def dm_pov_portrait_groups(current_game, battle_map=None):
     return {'party': party, 'npcs': npcs}
 
 
+def sidekick_follow_state(current_game, username, roles=None) -> dict:
+    """Map ``entity_uid`` -> sidekick follow state for portrait overlays.
+
+    Only in-party sidekicks are included. ``can_control`` is True for the DM
+    and for players listed in the sidekick record's ``owners``.
+    """
+    from natural20.sidekick import (
+        is_auto_follow_sidekick,
+        iter_in_party_sidekicks,
+        sidekick_owners,
+    )
+
+    state = {}
+    session = getattr(current_game, 'game_session', None)
+    if session is None:
+        return state
+    try:
+        for entity in iter_in_party_sidekicks(session):
+            uid = getattr(entity, 'entity_uid', None)
+            if not uid:
+                continue
+            can_control = False
+            if roles and 'dm' in roles:
+                can_control = True
+            else:
+                owners = sidekick_owners(session, entity)
+                name = str(username or '').strip().lower()
+                can_control = bool(name) and name in owners
+            state[str(uid)] = {
+                'auto_follow': bool(is_auto_follow_sidekick(session, entity)),
+                'can_control': can_control,
+            }
+    except Exception:
+        pass
+    return state
+
+
 def build_portrait_render_context(current_game, username, roles):
     """Template context for floating_portraits.html."""
     from webapp.blueprints.helpers.template_globals import entities_controlled_by
@@ -56,6 +93,7 @@ def build_portrait_render_context(current_game, username, roles):
             'pov_party_entities': groups['party'],
             'pov_npc_entities': groups['npcs'],
             'pov_entities': groups['party'] + groups['npcs'],
+            'sidekick_follow': sidekick_follow_state(current_game, username, roles),
         }
     controlled = entities_controlled_by(username) or []
     return {
@@ -64,6 +102,7 @@ def build_portrait_render_context(current_game, username, roles):
         'pov_party_entities': [],
         'pov_npc_entities': [],
         'pov_entities': controlled,
+        'sidekick_follow': sidekick_follow_state(current_game, username, roles),
     }
 
 

@@ -3612,10 +3612,27 @@ class EntityRAGHandler:
         directive_result: Dict[str, Any],
     ) -> bool:
         """Take one exploration step toward the movement target. Returns True if a move was committed."""
+        distance_ft = task.get('distance_ft', 5)
+        max_steps = None
+        if task.get('mode') == 'follow':
+            # Auto-follow ticks are slow (goal_turn_seconds); let the sidekick
+            # cover up to one round of movement per tick so it catches up
+            # instead of closing one tile at a time.
+            try:
+                battle_map = self.current_game.get_map_for_entity(entity)
+                if battle_map is not None:
+                    max_steps = self.movement_helper._follow_step_budget(
+                        entity,
+                        battle_map,
+                        distance_ft,
+                    )
+            except Exception:
+                max_steps = None
         move_action = self.movement_helper.build_move_step(
             entity,
             target_info,
-            distance_ft=task.get('distance_ft', 5),
+            distance_ft=distance_ft,
+            max_steps=max_steps,
         )
         if move_action is None:
             return False

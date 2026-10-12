@@ -39,6 +39,17 @@
       {% if action.can_knock_unconscious is defined and action.can_knock_unconscious() %}
       <div class="knockout-attack-overlay" hidden>Knock</div>
       {% endif %}
+      {% if action.grapple_instead is defined and action.grapple_instead %}
+      <div class="weapon-mastery-badge" title="Grapples the target instead of dealing the attack's primary damage">Grapple</div>
+      {% endif %}
+      {% if legendary_phase and action.legendary_action %}
+        {% if action.__class__.__name__ == 'MoveAction' %}
+          {% set legendary_cost = action.legendary_cost %}
+        {% else %}
+          {% set legendary_cost = (action.npc_action or {}).get('cost') or 1 %}
+        {% endif %}
+      <div class="legendary-cost-badge" title="Legendary action (costs {{ legendary_cost }})">L{{ legendary_cost }}</div>
+      {% endif %}
       {% if action.weapon_mastery_badge is defined %}
         {% set mastery_badge = action.weapon_mastery_badge() %}
         {% if mastery_badge %}

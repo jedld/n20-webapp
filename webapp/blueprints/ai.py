@@ -12,6 +12,7 @@ from webapp.blueprints.helpers.runtime_state import (
     get_llm_handler,
     get_logger,
 )
+from webapp import ai_config
 from webapp.blueprints.helpers.llm_init import (
     configure_battle_provider_from_environment,
     configure_llm_handler_from_environment,
@@ -369,6 +370,93 @@ def ai_get_provider_info():
         logger = get_logger()
         logger.error(f"Error getting provider info: {e}")
         return jsonify({'success': False, 'error': str(e)})
+
+
+def _dm_required():
+    if 'dm' not in _user_role():
+        return jsonify({'success': False, 'error': 'DM access required'}), 403
+    return None
+
+
+def _ai_config_response(extra=None, status=200):
+    payload = ai_config.config_payload(get_current_game(), get_llm_handler())
+    payload['success'] = True
+    payload.update(extra or {})
+    return jsonify(payload), status
+
+
+@ai_bp.route('/ai/config', methods=['GET'], endpoint='ai_config_get')
+def ai_config_get():
+    """AI Settings panel state: masked .ai.yaml layers, env fallbacks, provider status, NPCs."""
+    denied = _dm_required()
+    if denied:
+        return denied
+    return _ai_config_response()
+
+
+@ai_bp.route('/ai/config', methods=['POST'], endpoint='ai_config_save')
+def ai_config_save():
+    """Replace one layer (``scope``: campaign|webapp) and re-apply changed providers."""
+    denied = _dm_required()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    scope = data.get('scope') or 'campaign'
+    try:
+        applied = ai_config.save_and_apply(get_llm_handler(), get_current_game(), scope, data.get('config') or {})
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    except OSError as exc:
+        return jsonify({'success': False, 'error': f'Failed to write .ai.yaml: {exc}'}), 500
+    get_logger().info("AI config (%s) saved by %s; re-applied %s", scope, session.get('username'), applied)
+    return _ai_config_response({'applied': applied})
+
+
+@ai_bp.route('/ai/config/npc', methods=['POST'], endpoint='ai_config_npc')
+def ai_config_npc():
+    """Upsert or clear one per-NPC override (``key`` = entity_uid or NPC type)."""
+    denied = _dm_required()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    config = ai_config.get_ai_config()
+    try:
+        ai_config.set_entity_override(config, data.get('scope') or 'campaign', data.get('key'), data.get('settings'))
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    except OSError as exc:
+        return jsonify({'success': False, 'error': f'Failed to write .ai.yaml: {exc}'}), 500
+    return _ai_config_response()
+
+
+@ai_bp.route('/ai/config/test', methods=['POST'], endpoint='ai_config_test')
+def ai_config_test():
+    """Try to initialize a provider profile without saving it."""
+    denied = _dm_required()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    try:
+        result = ai_config.test_profile(get_llm_handler(), data.get('profile') or {}, name=data.get('name'))
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)})
+    return jsonify(result)
+
+
+@ai_bp.route('/ai/config/reload', methods=['POST'], endpoint='ai_config_reload')
+def ai_config_reload():
+    """Re-read both .ai.yaml files from disk and re-apply every provider slot."""
+    denied = _dm_required()
+    if denied:
+        return denied
+    config = ai_config.get_ai_config()
+    if config is None:
+        return jsonify({'success': False, 'error': 'AI configuration is not initialized'}), 400
+    config.reload()
+    applied = ai_config.reapply(get_llm_handler(), get_current_game())
+    return _ai_config_response({'applied': applied})
 
 
 @ai_bp.route('/ai/entity-details', methods=['GET'], endpoint='ai_get_entity_details')

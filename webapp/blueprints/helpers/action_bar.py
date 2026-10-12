@@ -81,13 +81,19 @@ def _action_template_context(entity, effective_battle, entity_map, is_dm):
         admin_actions=is_dm,
     )
 
+    legendary_phase = bool(
+        effective_battle is not None
+        and getattr(effective_battle, 'in_legendary_phase', None)
+        and effective_battle.in_legendary_phase(entity)
+    )
+
     castable_spells_by_level = {}
     usable_items = []
     entity_class_level = []
     entity_x = entity_y = 0
-    if _entity_supports_spellcasting(entity):
+    if _entity_supports_spellcasting(entity) and not legendary_phase:
         castable_spells_by_level = entity.castable_spells_by_level(effective_battle)
-    if hasattr(entity, 'usable_items'):
+    if hasattr(entity, 'usable_items') and not legendary_phase:
         usable_items = list(entity.usable_items() or [])
         usable_items.sort(key=lambda item: item.get('label') or item.get('name', ''))
     if hasattr(entity, 'class_and_level'):
@@ -164,6 +170,10 @@ def _action_template_context(entity, effective_battle, entity_map, is_dm):
         'is_merchant': is_merchant(entity),
         'action_bar_config': bar_config,
         'has_melee_knockout': has_melee_knockout,
+        'legendary_phase': legendary_phase,
+        'legendary_actions_remaining': (
+            entity.total_legendary_actions(effective_battle) if legendary_phase else 0
+        ),
     }
 
 

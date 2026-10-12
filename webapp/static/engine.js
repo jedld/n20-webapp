@@ -467,6 +467,110 @@ function isTypingIntoField(target) {
   );
 }
 
+// --- DM Delete / Ctrl+Z (undo delete) hotkeys -------------------------------
+// The DM can delete the currently focused entity (POV entity or the active
+// action-bar entry) with the Delete key; Ctrl+Z restores the last deletion
+// via POST /undo_delete_entity (server keeps a per-DM in-memory stack).
+const DM_DELETE_UNDO_LIMIT = 20;
+let dmDeleteUndoStack = [];
+
+function getDmFocusEntityUid() {
+  // Prefer the action bar's active entry (the entity the DM just selected),
+  // then the DM's current POV entity.
+  if (typeof actionBarState !== 'undefined' && actionBarState.visible && actionBarState.activeEntityUid) {
+    return actionBarState.activeEntityUid;
+  }
+  const povUid = $('body').attr('data-pov-entity')
+    || (typeof Chat !== 'undefined' && Chat.getCurrentPovEntity && Chat.getCurrentPovEntity());
+  return povUid || null;
+}
+
+function dmDeleteHotkeyActive() {
+  if (typeof isTypingIntoField !== 'function' || isTypingIntoField(document.activeElement)) {
+    return false;
+  }
+  if (typeof isDM !== 'function' || !isDM()) {
+    return false;
+  }
+  // Never fire while targeting/movement selection is in progress or while
+  // binding action-bar hotkeys (Backspace/Delete clears a pending binding).
+  if (typeof targetMode !== 'undefined' && targetMode) return false;
+  if (typeof multiTargetMode !== 'undefined' && multiTargetMode) return false;
+  if (typeof coneMode !== 'undefined' && coneMode) return false;
+  if (typeof moveMode !== 'undefined' && moveMode) return false;
+  if (typeof keyboardMovementMode !== 'undefined' && keyboardMovementMode) return false;
+  if (typeof actionBarState !== 'undefined' && actionBarState.visible && actionBarState.bindingMode) {
+    return false;
+  }
+  return true;
+}
+
+function pushDmDeleteUndo(entry) {
+  if (!entry || !entry.entity_uid) return;
+  dmDeleteUndoStack.push(entry);
+  if (dmDeleteUndoStack.length > DM_DELETE_UNDO_LIMIT) {
+    dmDeleteUndoStack = dmDeleteUndoStack.slice(-DM_DELETE_UNDO_LIMIT);
+  }
+}
+
+function deleteDmFocusedEntity() {
+  const entityUid = getDmFocusEntityUid();
+  if (!entityUid) return;
+  if (
+    typeof isEditMode === 'function' &&
+    isEditMode() &&
+    window.EditMode &&
+    typeof window.EditMode.findFixtureForEntityUid === 'function'
+  ) {
+    // In campaign edit mode, removing a fixture rewrites the map YAML and is
+    // handled (and persisted) by edit_mode.js.
+    const fixture = window.EditMode.findFixtureForEntityUid(entityUid);
+    if (fixture && typeof window.EditMode.removeFixture === 'function') {
+      window.EditMode.removeFixture(fixture, { skipConfirm: true });
+      return;
+    }
+  }
+  ajaxPost('/delete_entity', { entity_uid: entityUid }, (data) => {
+    if (data && data.status === 'ok') {
+      pushDmDeleteUndo({ entity_uid: data.entity_uid || entityUid });
+      // The server emits refresh_map; clear the bar if it was open for it.
+      if (typeof closeCenterActionBar === 'function') closeCenterActionBar();
+    } else {
+      console.warn('Failed to delete entity:', data && data.error);
+    }
+  }, true);
+}
+
+function undoDmDelete() {
+  if (!dmDeleteUndoStack.length) return;
+  const top = dmDeleteUndoStack[dmDeleteUndoStack.length - 1];
+  ajaxPost('/undo_delete_entity', { entity_uid: top.entity_uid }, (data) => {
+    if (data && data.status === 'ok') {
+      dmDeleteUndoStack.pop();
+      // Re-focus the restored token so the DM stays on it.
+      if (typeof switchPOV === 'function') {
+        switchPOV(data.entity_uid, typeof globalCanvas !== 'undefined' ? globalCanvas : null);
+      }
+    } else if (data && data.status === 'empty') {
+      dmDeleteUndoStack.pop();
+    } else {
+      console.warn('Failed to undo entity delete:', data && data.error);
+    }
+  }, true);
+}
+
+// Test-only exposure (engine.test.js runs engine.js in a VM sandbox).
+const DmDeleteUndo = {
+  pushUndo: pushDmDeleteUndo,
+  undo: undoDmDelete,
+  deleteFocused: deleteDmFocusedEntity,
+  focusedEntityUid: getDmFocusEntityUid,
+  hotkeyActive: dmDeleteHotkeyActive,
+  stack: () => dmDeleteUndoStack.slice(),
+  limit: DM_DELETE_UNDO_LIMIT,
+};
+window.DmDeleteUndo = DmDeleteUndo;
+
 function shouldSuppressSoundtrackOnClick(target) {
   if (isTypingIntoField(target) || isTypingIntoField(document.activeElement)) {
     return true;
@@ -2349,7 +2453,11 @@ function deliverConversationPayload(messagePayload, resolve) {
     }
   } else if (targets && Array.isArray(targets) && targets.includes(currentPovEntity) && !$dialogPanel.is(':visible')) {
     console.log('Message directed to POV entity, but dialog panel not open:', message);
-    showDialogTriggerBubble(entity_id, message, bubbleOptions);
+    if (typeof window.showDialogTriggerBubble === 'function') {
+      window.showDialogTriggerBubble(entity_id, message, bubbleOptions);
+    } else {
+      Chat.showConversationBubble(entity_id, message, bubbleOptions);
+    }
   } else {
     Chat.showConversationBubble(entity_id, message, bubbleOptions);
   }
@@ -2828,6 +2936,16 @@ class EventQueue {
           resolve();
           break;
         }
+        case "autosave_error": {
+          // Autosave failures are only surfaced to the DM (the server also only
+          // emits this event to DM sockets). Show a dismissible error toaster
+          // with the full error details.
+          try {
+            showAutosaveErrorToaster((data && data.message) || data || {});
+          } catch (e) { console.warn('Failed to show autosave_error toaster', e, data); }
+          resolve();
+          break;
+        }
         case "message_spell_link": {
           try {
             const text = (data && data.message) || 'Message link opened. Whisper in Local Chat.';
@@ -3265,6 +3383,31 @@ class EventQueue {
           $("#end-battle").hide();
           resolve();
           break;
+        case "legendary_phase": {
+          const info = data.message || {};
+          $("body").attr("data-legendary-phase", info.id || "");
+          // The open bar was rendered for a normal turn; reopening it shows legendary options.
+          if (actionBarState.visible && actionBarState.activeEntityUid === info.id) {
+            closeCenterActionBar();
+          }
+          const remaining = info.remaining !== undefined ? ` (${info.remaining} remaining)` : "";
+          showMapToast(`${info.label || "A legendary creature"} can take a legendary action${remaining}.`, null, info.id, 6000);
+          refreshTurn();
+          refreshTurnOrder();
+          resolve();
+          break;
+        }
+        case "legendary_phase_end": {
+          const info = data.message || {};
+          $("body").attr("data-legendary-phase", "");
+          if (actionBarState.visible && actionBarState.activeEntityUid === info.id) {
+            closeCenterActionBar();
+          }
+          refreshTurn();
+          refreshTurnOrder();
+          resolve();
+          break;
+        }
         case "reaction":
           Utils.ajaxGet("/reaction", {}, (dataHtml) => {
             $("#reaction-modal .reaction-content").html(dataHtml);
@@ -4442,6 +4585,57 @@ function showMapToast(text, position, sourceEntityId = null, durationMs = 10000,
     attemptMount();
   } catch (e) {
     console.warn('showMapToast failed', e, { text, position, sourceEntityId, durationMs });
+  }
+}
+
+// DM-only error toaster for autosave failures. The server emits an
+// ``autosave_error`` message (with full error details) to logged-in DMs when a
+// background autosave fails; this renders a dismissible, auto-expiring toaster
+// so the DM can see exactly what went wrong without digging through server logs.
+function showAutosaveErrorToaster(msg) {
+  try {
+    if (typeof isDmUser === 'function' && !isDmUser()) {
+      return; // Defensive: players should never see autosave errors.
+    }
+    const m = (msg && typeof msg === 'object') ? msg : {};
+    const title = String(m.title || 'Autosave failed');
+    const errorType = String(m.error_type || '').trim();
+    const error = String(m.error || 'unknown error');
+    const targetFile = String(m.target_file || '').trim();
+    const saveDir = String(m.save_dir || '').trim();
+    const traceback = String(m.traceback || '').trim();
+
+    const details = [];
+    if (errorType) details.push(`Type: ${errorType}`);
+    details.push(error);
+    if (targetFile) details.push(`Target: ${targetFile}`);
+    if (saveDir) details.push(`Save dir: ${saveDir}`);
+
+    const $container = $('.toast-container');
+    if (!$container.length) {
+      $('body').append('<div class="toast-container"></div>');
+    }
+    const $toast = $('<div class="toast-message toast-message-error"></div>');
+    $toast.append(
+      $('<div class="toast-error-title"></div>').text(title)
+    );
+    $toast.append(
+      $('<div class="toast-error-details"></div>').text(details.join('\n'))
+    );
+    if (traceback) {
+      $toast.append(
+        $('<pre class="toast-error-traceback"></pre>').text(traceback)
+      );
+    }
+    const $close = $('<button type="button" class="toast-error-close" title="Dismiss">&times;</button>');
+    $close.on('click', () => { $toast.fadeOut(200, () => $toast.remove()); });
+    $toast.append($close);
+    $('.toast-container').append($toast);
+    // Autosave errors are important: keep them up much longer than normal toasts.
+    setTimeout(() => { $toast.fadeOut(800, () => $toast.remove()); }, 60000);
+    console.error('Autosave failed:', m);
+  } catch (e) {
+    console.warn('showAutosaveErrorToaster failed', e, msg);
   }
 }
 
@@ -7021,64 +7215,254 @@ $(document).ready(() => {
     }
   });
 
-  // Handle create new map tile
-  $("#mapModal").on("click", "#create-new-map", function () {
-    // simple prompt for map name
-    let mapName = window.prompt("Enter a name for the new map (letters, numbers, underscores):", "new_map");
-    if (!mapName) return;
-    mapName = (mapName || "").trim().toLowerCase().replace(/[^a-z0-9_\-]/g, "_");
-    if (!mapName) {
-      alert("Invalid map name.");
-      return;
-    }
-    let width = parseInt(window.prompt("Map width (tiles)", "16"), 10);
-    let height = parseInt(window.prompt("Map height (tiles)", "8"), 10);
-    if (isNaN(width) || isNaN(height)) { width = 16; height = 8; }
-    width = Math.max(2, Math.min(100, width));
-    height = Math.max(2, Math.min(100, height));
-    let mapSet = window.prompt("Add to map set id (blank = current/root, or a new id for an adhoc scene):", "");
-    mapSet = (mapSet || "").trim().toLowerCase().replace(/[^a-z0-9_\-]/g, "_");
-    ajaxPost(
-      "/create_map",
-      { name: mapName, width, height, map_set: mapSet },
-      (data) => {
-        if (data && data.error) {
-          alert(data.error);
-          return;
+  // --- Create New Map (unified form modal: name, size, map set, description, illumination, image) ---
+  const NewMapForm = {
+    $modal: null,
+    $form: null,
+    $name: null,
+    $width: null,
+    $height: null,
+    $illum: null,
+    $illumValue: null,
+    $set: null,
+    $setLabelGroup: null,
+    $setLabel: null,
+    $description: null,
+    $image: null,
+    $dropzone: null,
+    $placeholder: null,
+    $preview: null,
+    $clearBtn: null,
+    $error: null,
+    $submitBtn: null,
+    previewUrl: null,
+
+    init() {
+      this.$modal = $("#newMapModal");
+      this.$form = $("#new-map-form");
+      this.$name = $("#new-map-name");
+      this.$width = $("#new-map-width");
+      this.$height = $("#new-map-height");
+      this.$illum = $("#new-map-illumination");
+      this.$illumValue = $("#new-map-illumination-value");
+      this.$set = $("#new-map-set");
+      this.$setLabelGroup = $("#new-map-set-label-group");
+      this.$setLabel = $("#new-map-set-label");
+      this.$description = $("#new-map-description");
+      this.$image = $("#new-map-image");
+      this.$dropzone = $("#new-map-dropzone");
+      this.$placeholder = $("#new-map-image-placeholder");
+      this.$preview = $("#new-map-image-preview");
+      this.$clearBtn = $("#new-map-image-clear");
+      this.$error = $("#new-map-error");
+      this.$submitBtn = $("#new-map-submit");
+
+      this.$form.on("submit", (e) => {
+        e.preventDefault();
+        this.submit();
+      });
+
+      this.$illum.on("input", () => this.syncIllum());
+      this.$set.on("change", () => this.syncSet());
+      this.$image.on("change", () => this.syncPreview());
+
+      $("#new-map-image-browse").on("click", (e) => {
+        e.preventDefault();
+        this.$image.trigger("click");
+      });
+      this.$clearBtn.on("click", () => this.clearImage());
+
+      // Drag & drop into the dropzone
+      this.$dropzone.on("dragover", (e) => {
+        e.preventDefault();
+        this.$dropzone.addClass("is-dragover");
+      });
+      this.$dropzone.on("dragleave", () => {
+        this.$dropzone.removeClass("is-dragover");
+      });
+      this.$dropzone.on("drop", (e) => {
+        e.preventDefault();
+        this.$dropzone.removeClass("is-dragover");
+        const file = e.originalEvent && e.originalEvent.dataTransfer && e.originalEvent.dataTransfer.files[0];
+        if (file && (file.type || "").indexOf("image/") === 0) {
+          try {
+            this.$image[0].files = e.originalEvent.dataTransfer.files;
+          } catch (err) {
+            // Fallback: some browsers block assigning DataTransfer; skip
+            return;
+          }
+          this.syncPreview();
         }
-        // Add the new tile to the grid if not present
-        const $grid = $("#map-grid");
-        if ($grid.length && $grid.find(`.map-card[data-map-name='${mapName}']`).length === 0) {
-          const tileHtml = `
-            <div class="map-card" data-map-name="${mapName}">
-              <div class="upload-overlay">
-                <button class="btn btn-xs btn-default upload-map-bg" title="Upload background" data-map-name="${mapName}">
-                  <span class="glyphicon glyphicon-upload"></span>
-                </button>
-                <button class="btn btn-xs btn-danger delete-map" title="Delete map" data-map-name="${mapName}">
-                  <span class="glyphicon glyphicon-trash"></span>
-                </button>
-                <input type="file" class="map-bg-input" data-map-name="${mapName}" accept="image/*" style="display:none;" />
-              </div>
-              <img class="map-thumb" src="/assets/maps/${mapName}.png" alt="${mapName}" onerror="this.onerror=null;this.src='/static/info.png';">
-              <div class="map-name">${mapName}</div>
-            </div>`;
-          $(tileHtml).insertBefore($("#create-new-map"));
-        }
-        // Switch to the new map
-        resetViewport();
-        Utils.switchMap(mapName, globalCanvas, () => {
-          createGlobalCanvas();
-          // Center on POV entity after map loads
-          setTimeout(() => {
-            try {
-              const povEntity = Chat.getCurrentPovEntity();
-              if (povEntity) centerOnEntityId(povEntity);
-            } catch (e) { }
-          }, 100);
-        });
+      });
+    },
+
+    open() {
+      this.reset();
+      this.$modal.modal("show");
+    },
+
+    reset() {
+      this.$form[0].reset();
+      this.$name.val("new_map");
+      this.$width.val(16);
+      this.$height.val(8);
+      this.$illum.val(100);
+      this.syncIllum();
+      this.$set.val("");
+      this.syncSet();
+      this.clearImage();
+      this.$error.hide().empty();
+      this.$name.next(".help-block").hide();
+      this.$submitBtn.prop("disabled", false);
+    },
+
+    syncIllum() {
+      this.$illumValue.text(`${this.$illum.val()}%`);
+    },
+
+    syncSet() {
+      if (this.$set.val() === "__new__") {
+        this.$setLabelGroup.show();
+      } else {
+        this.$setLabelGroup.hide();
       }
-    );
+    },
+
+    syncPreview() {
+      const file = this.$image[0] && this.$image[0].files[0];
+      if (this.previewUrl) {
+        URL.revokeObjectURL(this.previewUrl);
+        this.previewUrl = null;
+      }
+      if (file) {
+        this.previewUrl = URL.createObjectURL(file);
+        this.$preview.attr("src", this.previewUrl).show();
+        this.$placeholder.hide();
+        this.$clearBtn.show();
+      } else {
+        this.$preview.hide();
+        this.$placeholder.show();
+        this.$clearBtn.hide();
+      }
+    },
+
+    clearImage() {
+      this.$image.val("");
+      this.syncPreview();
+    },
+
+    showError(msg) {
+      this.$error.text(msg).show();
+      this.$submitBtn.prop("disabled", false);
+    },
+
+    submit() {
+      const nameRaw = (this.$name.val() || "").trim();
+      const name = nameRaw.toLowerCase().replace(/[^a-z0-9_\-]/g, "_");
+      if (!name) {
+        this.$name.next(".help-block").show();
+        this.showError("Invalid map name. Use letters, numbers, underscores or dashes.");
+        return;
+      }
+      let width = parseInt(this.$width.val(), 10);
+      let height = parseInt(this.$height.val(), 10);
+      if (isNaN(width) || isNaN(height)) { width = 16; height = 8; }
+      width = Math.max(2, Math.min(100, width));
+      height = Math.max(2, Math.min(100, height));
+
+      const formData = new FormData();
+      formData.append("name", name);
+      formData.append("width", width);
+      formData.append("height", height);
+      const description = (this.$description.val() || "").trim();
+      if (description) formData.append("description", description);
+      formData.append("illumination", String(parseInt(this.$illum.val(), 10) / 100));
+
+      const setVal = this.$set.val();
+      if (setVal === "__new__") {
+        const raw = (this.$setLabel.val() || "").trim();
+        const setId = raw.toLowerCase().replace(/[^a-z0-9_\-]/g, "_");
+        if (setId) {
+          formData.append("map_set", setId);
+          formData.append("map_set_label", raw || setId);
+        }
+      } else if (setVal) {
+        formData.append("map_set", setVal);
+      }
+
+      const file = this.$image[0] && this.$image[0].files[0];
+      if (file) formData.append("image", file);
+
+      this.$submitBtn.prop("disabled", true);
+      $.ajax({
+        url: "/create_map",
+        type: "POST",
+        data: formData,
+        processData: false,
+        contentType: false,
+        success: (data) => {
+          this.$submitBtn.prop("disabled", false);
+          if (data && data.error) {
+            this.showError(data.error);
+            return;
+          }
+          this.finish(name);
+        },
+        error: (jqXHR) => {
+          this.$submitBtn.prop("disabled", false);
+          let msg = "Failed to create map";
+          try {
+            const parsed = jqXHR.responseJSON;
+            if (parsed && parsed.error) msg = parsed.error;
+          } catch (e) { /* non-JSON error body */ }
+          this.showError(msg);
+        }
+      });
+    },
+
+    finish(mapName) {
+      this.$modal.modal("hide");
+      // Add the new tile to the grid if not present
+      const $existing = $(`.map-card[data-map-name='${mapName}']`);
+      if ($existing.length === 0) {
+        const tileHtml = `
+          <div class="map-card" data-map-name="${mapName}">
+            <div class="upload-overlay">
+              <button class="btn btn-xs btn-default upload-map-bg" title="Upload background" data-map-name="${mapName}">
+                <span class="glyphicon glyphicon-upload"></span>
+              </button>
+              <button class="btn btn-xs btn-danger delete-map" title="Delete map" data-map-name="${mapName}">
+                <span class="glyphicon glyphicon-trash"></span>
+              </button>
+              <input type="file" class="map-bg-input" data-map-name="${mapName}" accept="image/*" style="display:none;" />
+            </div>
+            <img class="map-thumb" src="/assets/maps/${mapName}.png?ts=${Date.now()}" alt="${mapName}" onerror="this.onerror=null;this.src='/static/info.png';">
+            <div class="map-name">${mapName}</div>
+          </div>`;
+        $(tileHtml).insertBefore($("#create-new-map"));
+      } else {
+        // Refresh thumbnail (a fresh background may have been uploaded just now)
+        $existing.find(".map-thumb").attr("src", `/assets/maps/${mapName}.png?ts=${Date.now()}`);
+      }
+      // Switch to the new map
+      resetViewport();
+      Utils.switchMap(mapName, globalCanvas, () => {
+        createGlobalCanvas();
+        // Center on POV entity after map loads
+        setTimeout(() => {
+          try {
+            const povEntity = Chat.getCurrentPovEntity();
+            if (povEntity) centerOnEntityId(povEntity);
+          } catch (e) { }
+        }, 100);
+      });
+    }
+  };
+
+  // Handle create new map tile: open the unified create-map form
+  NewMapForm.init();
+  $("#mapModal").on("click", "#create-new-map", function () {
+    NewMapForm.open();
   });
 
   // Trigger file chooser for upload button
@@ -7198,6 +7582,11 @@ $(document).ready(() => {
       }
     }
     const $tile = $(this);
+    if (multiTargetMode) {
+      addMultiTargetFromTile($tile);
+      e.stopPropagation();
+      return;
+    }
     const targetCoords = resolveStackTargetCoords($tile);
     const pathCoords = resolveStackPathCoords($tile);
     const coordsx = targetMode ? targetCoords.x : pathCoords.x;
@@ -7551,6 +7940,38 @@ $(document).ready(() => {
     }
     window.open(`info?id=${encodeURIComponent(entityUid)}`, '_blank');
   });
+
+  $('#floating-entity-portraits').on('click', '.portrait-quick-action[data-portrait-action="sidekick-follow"]', function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const $btn = $(this);
+    if ($btn.data('busy')) {
+      return;
+    }
+    const entityUid = $btn.data('entityUid') || $btn.attr('data-entity-uid');
+    if (!entityUid) {
+      return;
+    }
+    $btn.data('busy', true).css('opacity', 0.5);
+    ajaxPost('/party/sidekick_follow', { entity_uid: entityUid }, (resp) => {
+      const autoFollow = resp && resp.success !== false && resp.auto_follow !== undefined
+        ? !!resp.auto_follow
+        : $btn.attr('data-auto-follow') !== 'true';
+      applySidekickFollowState($btn, autoFollow);
+      if (typeof Utils !== 'undefined' && Utils.refreshPortraits) {
+        Utils.refreshPortraits();
+      }
+    }, true);
+    setTimeout(() => $btn.removeData('busy').css('opacity', ''), 600);
+  });
+
+  function applySidekickFollowState($btn, autoFollow) {
+    $btn.toggleClass('is-on', !!autoFollow);
+    $btn.attr('data-auto-follow', autoFollow ? 'true' : 'false');
+    $btn.attr('title', autoFollow
+      ? 'Auto-follow is ON - click to stop following the party'
+      : 'Auto-follow is OFF - click to follow the party');
+  }
 
   // Highlight tile info or draw movement data on hover.
   $(".tiles-container").on("mouseenter", ".tile", function () {
@@ -7996,23 +8417,32 @@ $(document).ready(() => {
     e.stopPropagation();
   });
 
-  $(".tiles-container").on("click", ".add-to-target", function (e) {
-    const $tile = $(this).closest(".tile");
+  function addMultiTargetFromTile($tile) {
+    const $btn = $tile.find(".add-to-target").first();
+    if (!$btn.length || !$btn.is(":visible")) return false;
     const entity_uid = $tile.data("coords-id");
     const coordsx = $tile.data("coords-x");
     const coordsy = $tile.data("coords-y");
-    if (!multiTargetList.includes(entity_uid) || !multiTargetModeUnique) {
-      if (multiTargetList.length < max_targets) {
-        multiTargetList.push(entity_uid);
-        if (multiTargetModeUnique) $(this).hide();
-        drawLine(globalCtx, source, { x: coordsx, y: coordsy }, {
-          lineWidth: 3,
-          withArrow: false,
-          randomCurve: true,
-        });
-        updateMultiTargetBar();
-      }
+    if (multiTargetList.includes(entity_uid) && multiTargetModeUnique) return false;
+    if (multiTargetList.length >= max_targets) return false;
+    multiTargetList.push(entity_uid);
+    if (multiTargetModeUnique) {
+      $btn.hide();
+    } else {
+      const count = multiTargetList.filter((id) => id === entity_uid).length;
+      $btn.addClass("is-selected").attr("data-count", count);
     }
+    drawLine(globalCtx, source, { x: coordsx, y: coordsy }, {
+      lineWidth: 3,
+      withArrow: false,
+      randomCurve: true,
+    });
+    updateMultiTargetBar();
+    return true;
+  }
+
+  $(".tiles-container").on("click", ".add-to-target", function (e) {
+    addMultiTargetFromTile($(this).closest(".tile"));
     e.stopPropagation();
   });
 
@@ -8443,6 +8873,7 @@ $(document).ready(() => {
   // NPC drag and drop functionality
   let draggedNPC = null;
   let draggedObject = null;
+  let draggedPCSheet = null;
 
   $("#npc-list").on("dragstart", ".npc-item", function (e) {
     draggedNPC = $(this).data("npc-type");
@@ -8472,12 +8903,13 @@ $(document).ready(() => {
   // Battlefield drop zone functionality — resolve tile from pointer, not event target
   // (avoids -1 offsets when the map is panned/zoomed or the drag hotspot is top-left).
   $(".tiles-container").on("dragover", function (e) {
-    if (!(draggedNPC || draggedObject || $('body').hasClass('object-drag-active') || $('body').hasClass('notebook-map-drag-active'))) {
+    if (!(draggedNPC || draggedObject || $('body').hasClass('object-drag-active') || $('body').hasClass('pc-drag-active') || $('body').hasClass('notebook-map-drag-active'))) {
       return;
     }
     e.preventDefault();
     if (e.originalEvent.dataTransfer) {
-      e.originalEvent.dataTransfer.dropEffect = $('body').hasClass('notebook-map-drag-active') ? 'copy' : 'copy';
+      // Must be permitted by the source's effectAllowed, or the browser never fires `drop`.
+      e.originalEvent.dataTransfer.dropEffect = $('body').hasClass('pc-drag-active') ? 'move' : 'copy';
     }
 
     const hit = tileCoordsFromClientPoint(e.originalEvent.clientX, e.originalEvent.clientY);
@@ -8491,7 +8923,7 @@ $(document).ready(() => {
       return;
     }
 
-    if (draggedNPC && hit.$tile.find(".entity").length > 0) {
+    if ((draggedNPC || $('body').hasClass('pc-drag-active')) && hit.$tile.find(".entity").length > 0) {
       return;
     }
     hit.$tile.addClass("battlefield-drop-zone drag-over");
@@ -8601,6 +9033,9 @@ $(document).ready(() => {
           if (isEditMode()) {
             // In edit mode, persist to campaign YAML
             const payload = { entity_uid: draggedData, x, y };
+            if (draggedPCSheet) {
+              payload.sheet = draggedPCSheet;
+            }
             if (mapName) {
               payload.map_name = mapName;
             }
@@ -8664,21 +9099,29 @@ $(document).ready(() => {
       return;
     }
 
+    const titleCase = (value) => String(value || '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (ch) => ch.toUpperCase());
+
     pcs.forEach((pc) => {
-      const classInfo = pc.class_and_level.length > 0 ? `Lvl ${pc.class_and_level[0][1] || '?'} ${pc.class_and_level[0][0] || 'Unknown'}` : 'Unknown Class';
+      const classes = (pc.class_and_level || [])
+        .map(([klass, level]) => `${titleCase(klass || 'Unknown')} ${level || '?'}`);
+      const classInfo = classes.length > 0 ? classes.join(' / ') : 'Unknown Class';
+      const raceLabel = titleCase(pc.race || 'Unknown');
 
       const $pcItem = $(`
-        <div class="pc-item" draggable="true" data-entity-uid="${pc.entity_uid}" title="${pc.race} ${classInfo}">
+        <div class="pc-item" draggable="true" data-entity-uid="${pc.entity_uid}" title="${raceLabel} · ${classInfo}">
           <img class="pc-item-image" src="/assets/${pc.token_image}" alt="${pc.name}" onerror="this.onerror=null;this.src='/static/assets/token_player.png'">
           <div class="pc-item-info">
             <div class="pc-item-name">${pc.label}</div>
-            <div class="pc-item-type">${pc.race} ${classInfo}</div>
+            <div class="pc-item-type">${raceLabel} · ${classInfo}</div>
           </div>
         </div>
       `);
 
       // Add drag event handlers for PCs
       $pcItem.on('dragstart', (e) => {
+        draggedPCSheet = pc.sheet || null;
         e.originalEvent.dataTransfer.setData('text/plain', pc.entity_uid);
         e.originalEvent.dataTransfer.effectAllowed = 'move';
         $(e.currentTarget).addClass('dragging');
@@ -8693,6 +9136,7 @@ $(document).ready(() => {
       });
 
       $pcItem.on('dragend', (e) => {
+        draggedPCSheet = null;
         $(e.currentTarget).removeClass('dragging');
         $('body').removeClass('pc-drag-active');
         $(".tile").removeClass("battlefield-drop-zone drag-over empty-tile-highlight");
@@ -9373,6 +9817,7 @@ $(document).ready(() => {
         targetModeMaxRange =
           data.range_max !== undefined ? data.range_max : data.range;
         if (data.target_hints) {
+          $(".add-to-target").removeClass("is-selected").removeAttr("data-count");
           data.target_hints.forEach((value) => {
             $(`.tile[data-coords-id="${value}"] .add-to-target`).show();
           });
@@ -9959,6 +10404,27 @@ $(document).ready(() => {
           console.log("Cancelling keyboard movement");
           resetKeyboardMovement();
         }
+      }
+    }
+  });
+
+  // DM Delete / Ctrl+Z hotkeys: delete the focused entity and undo the last
+  // deletion. Registered after the movement handler so hotkey binding
+  // (Backspace/Delete with a pending binding) is never interrupted.
+  $(document).on('keydown.dmEntityDelete', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+      if (dmDeleteHotkeyActive() && dmDeleteUndoStack.length) {
+        e.preventDefault();
+        e.stopPropagation();
+        undoDmDelete();
+      }
+      return;
+    }
+    if (e.key === 'Delete' && !e.ctrlKey && !e.metaKey && !e.shiftKey && dmDeleteHotkeyActive()) {
+      if (getDmFocusEntityUid()) {
+        e.preventDefault();
+        e.stopPropagation();
+        deleteDmFocusedEntity();
       }
     }
   });
@@ -11268,6 +11734,7 @@ $(document).ready(() => {
     });
     Chat.showConversationBubble(entity_id, message, bubbleOptions);
   }
+  window.showDialogTriggerBubble = showDialogTriggerBubble;
 
   // Add a waiting indicator to the dialog chat
   function addWaitingIndicator() {

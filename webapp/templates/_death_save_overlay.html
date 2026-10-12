@@ -1,0 +1,29 @@
+{% set ds = tile.get('death_saves') %}
+{% if ds %}
+  <div class="death-save-token-badge{% if ds.stable %} is-stable{% endif %}"
+       title="{{ tile.death_save_tooltip }}"
+       aria-label="{{ tile.death_save_tooltip }}">
+    {% if ds.stable %}<i class="glyphicon glyphicon-heart"></i>{% else %}{{ ds.successes }}/{{ ds.failures }}{% endif %}
+  </div>
+  <div class="death-save-overlay{% if ds.stable %} is-stable{% endif %}" aria-hidden="true">
+    <div class="death-save-overlay__panel">
+      {% if ds.stable %}
+        <div class="death-save-overlay__title">Stable</div>
+      {% else %}
+        <div class="death-save-overlay__title">Death Saves</div>
+        <div class="death-save-overlay__row">
+          <span class="death-save-overlay__label">S</span>
+          {% for i in range(ds.target) %}
+            <span class="death-save-pip is-success{% if i < ds.successes %} is-filled{% endif %}"></span>
+          {% endfor %}
+        </div>
+        <div class="death-save-overlay__row">
+          <span class="death-save-overlay__label">F</span>
+          {% for i in range(ds.target) %}
+            <span class="death-save-pip is-failure{% if i < ds.failures %} is-filled{% endif %}"></span>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+{% endif %}

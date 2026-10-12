@@ -45,6 +45,8 @@ from natural20.utils.target_validation import (
     validation_response_payload,
 )
 
+from webapp.ai_config import combat_llm_provider_for
+
 from .helpers.auth_utils import logged_in, user_role
 from .helpers.pvp import autofill_pvp_battle_turn_order
 from .helpers.journal_utils import _record_narration_for_pcs
@@ -98,7 +100,8 @@ def _validate_opposing_groups(battle):
     This prevents accidental "friendly fire only" battles where every combatant
     belongs to the same non-hostile group (e.g. all PCs with no enemies).
     """
-    for entity in battle.combat_order:
+    # combat_order is only populated by battle.start(), so check the roster.
+    for entity in list(battle.entities.keys()):
         try:
             opponents = battle.opponents_of(entity)
             if opponents:
@@ -109,6 +112,27 @@ def _validate_opposing_groups(battle):
         "Roll Initiative requires at least one opposing entity group. "
         "Add enemies to the battle or assign different groups."
     )
+
+
+def _battle_maps_for(current_game, entities):
+    """Maps hosting the combatants (falls back to the game's default battle map)."""
+    maps = []
+    for entity in entities:
+        for battle_map in (getattr(current_game, 'maps', None) or {}).values():
+            try:
+                hosts = entity in battle_map.entities or (
+                    battle_map.entity_by_uid(entity.entity_uid) is not None
+                )
+            except Exception:
+                hosts = False
+            if hosts and battle_map not in maps:
+                maps.append(battle_map)
+                break
+    if not maps:
+        default_map = current_game.get_current_battle_map()
+        if default_map is not None:
+            maps.append(default_map)
+    return maps
 
 
 def _hide_cache_key(current_game, entity, battle, battle_map):
@@ -178,36 +202,37 @@ def stop_battle():
 def start_battle_with_initiative():
     if not get_current_game().trigger_event('start_battle'):
 
-        battle_map = get_current_game().get_current_battle_map()
+        current_game = get_current_game()
 
         if not request.json or 'battle_turn_order' not in request.json:
             return jsonify(error='No entities in turn order'), 400
 
-        battle = Battle(get_game_session(), battle_map, animation_log_enabled=True)
-        get_current_game().set_current_battle(battle)
-
         battle_turn_order = autofill_pvp_battle_turn_order(request.json['battle_turn_order'])
-        print(battle_turn_order)
+        combatants = []
         for param_item in battle_turn_order:
-            entity = get_current_game().get_entity_by_uid(param_item['id'])
+            entity = current_game.get_entity_by_uid(param_item['id'])
+            if entity is None:
+                return jsonify(error=f"Unknown combatant: {param_item['id']}"), 400
+            combatants.append((param_item, entity))
 
+        battle = Battle(
+            get_game_session(),
+            _battle_maps_for(current_game, [entity for _item, entity in combatants]),
+            animation_log_enabled=True,
+        )
+
+        for param_item, entity in combatants:
             ctrl_kind = param_item.get('controller')
             if ctrl_kind == 'ai':
                 controller = GenericController(get_game_session())
             elif ctrl_kind == 'llm':
-                # Battle 'llm' controllers use the dedicated battle provider
-                # (BATTLE_LLM_PROVIDER, e.g. JEV/System One) when configured,
-                # otherwise the DM prose provider.
-                _handler = get_llm_handler()
-                _battle_fn = getattr(_handler, 'battle_llm_provider', None)
-                _provider = _battle_fn() if callable(_battle_fn) else _handler.current_provider
-                controller = LlmMcpController(get_game_session(), llm_provider=_provider)
+                # Per-NPC AI settings profile -> combat default -> battle provider -> DM provider.
+                controller = LlmMcpController(
+                    get_game_session(),
+                    llm_provider=combat_llm_provider_for(get_llm_handler(), entity),
+                )
             else:
-                controller = get_current_game().get_controller_for_entity(entity)
-
-            if controller is None:
-                controller = web_controllers = WebController(get_game_session(), None)
-                web_controllers.add_user("dm")
+                controller = current_game.controller_registry.manual_controller_for_entity(entity)
 
             controller.register_handlers_on(entity)
             battle.add(entity, param_item['group'], controller=controller)
@@ -218,6 +243,7 @@ def start_battle_with_initiative():
         except ValueError as e:
             return jsonify(error=str(e)), 400
 
+        current_game.set_current_battle(battle)
         battle.start()
         try:
             get_current_game().play_battle_music(battle)
@@ -233,10 +259,19 @@ def start_battle_with_initiative():
 def end_turn():
     battle = get_current_game().get_current_battle()
 
+    if battle and battle.legendary_phase:
+        if not controller_of(battle.legendary_phase, session.get('username')):
+            return jsonify(status='error', message='Waiting for a legendary action.'), 409
+        get_current_game().advance_legendary_phase(battle)
+        return jsonify(status='ok', legendary_phase=battle.legendary_phase)
+
     end_turn_state = True
     try:
         battle.end_turn()
         end_turn_state = False
+        get_current_game().push_end_of_turn_animations(battle)
+        if get_current_game().begin_legendary_phase(battle):
+            return jsonify(status='ok', legendary_phase=battle.legendary_phase)
         battle.next_turn()
         continue_game()
         return jsonify(status='ok')
@@ -269,13 +304,18 @@ def get_turn_order():
 @battle_bp.route('/next_turn', methods=['POST'])
 def next_turn():
     battle = get_current_game().get_current_battle()
+    if battle and battle.legendary_phase:
+        get_current_game().advance_legendary_phase(battle)
+        return jsonify(status='ok', legendary_phase=battle.legendary_phase)
     if battle:
         with get_current_game().game_state_lock:
             current_turn = battle.current_turn()
             if get_current_game().waiting_for_user_input():
                 get_current_game().set_waiting_for_user_input(False)
-                current_turn.resolve_trigger('end_of_turn')
                 battle.end_turn()
+                get_current_game().push_end_of_turn_animations(battle)
+                if get_current_game().begin_legendary_phase(battle):
+                    return jsonify(status='ok', legendary_phase=battle.legendary_phase)
                 battle.next_turn()
                 if battle.battle_ends():
                     get_current_game().end_current_battle()
@@ -366,6 +406,8 @@ def get_hiding_spots():
     if entity is None:
         return jsonify(error="Entity not found"), 404
     battle_map = current_game.get_map_for_entity(entity)
+    if battle_map is None:
+        return jsonify(error="Entity is not currently on a map"), 409
 
     cache_key = _hide_cache_key(current_game, entity, battle, battle_map)
     _t_cache = time.perf_counter()
@@ -612,6 +654,8 @@ def get_target():
         action.using = opts.get('using')
         action.npc_action = opts.get('npc_action', None)
         action.thrown = opts.get('thrown', False)
+        if battle and battle.in_legendary_phase(entity):
+            action.legendary_action = True
         action.target = target_entity
 
         adv_mod, adv_info, attack_mod = action.compute_advantage_info(battle)
@@ -794,11 +838,7 @@ def handle_reaction():
             battle.commit(handler.action)
         get_socketio().emit('message', {'type': 'dismiss_reaction', 'message': {}})
 
-        # reaction was during a players end step, in that case we need to start the next turn
-        if get_current_game().end_turn_state:
-            get_current_game().end_turn_state = False
-            battle.next_turn()
-
+        # Resumes mid-turn, or (end_turn_state) moves on to the next turn.
         get_current_game().schedule_after_reaction()
     except AsyncReactionHandler as e:
         for _, entity, valid_actions in e.resolve():
@@ -1199,6 +1239,8 @@ def action():
             action.using = opts.get('using')
             action.npc_action = opts.get('npc_action', None)
             action.thrown = opts.get('thrown', False)
+            if battle and battle.in_legendary_phase(entity):
+                action.legendary_action = True
             _ctx['phase_build_ms'] += (time.perf_counter() - _t_build) * 1000.0
 
             stack = getattr(battle_map, 'map_stack', None)
@@ -1582,6 +1624,7 @@ def action():
         return jsonify(status='bardic_inspiration_prompt', entity_id=getattr(e.entity, 'entity_uid', None))
     except AsyncReactionHandler as e:
         get_logger().info(f"AsyncReactionHandler during action: {e}")
+        get_current_game().end_turn_state = False
         for battle, entity, valid_actions in e.resolve():
             valid_actions_str = [[str(action.uid), str(action), action] for action in valid_actions]
             get_current_game().set_waiting_for_reaction_input([entity, e, e.resolve(), valid_actions_str])
@@ -1850,6 +1893,8 @@ def get_targets_at_position():
             action.using = opts.get('using')
             action.npc_action = opts.get('npc_action', None)
             action.thrown = opts.get('thrown', False)
+            if battle and battle.in_legendary_phase(entity):
+                action.legendary_action = True
             
             # Check each thing at the position
             for thing in things_at_position:

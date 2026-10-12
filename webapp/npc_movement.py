@@ -302,6 +302,44 @@ class NpcMovementHelper:
         if source == destination:
             return None
 
+        # Fast path: the A* below can only get "stuck at the actor's tile" when
+        # the actor has no traversable neighbor at all (with door navigation, a
+        # door object on an adjacent square still counts as traversable).  If
+        # any adjacent square is passable or holds a door, the route cannot be
+        # fully blocked, so skip the A* entirely — this is the common case for
+        # follow ticks and avoids a full path search on every 6s tick.
+        sx, sy = source
+        max_x, max_y = battle_map.size
+        has_open_neighbor = False
+        for nx in range(max(0, sx - 1), min(max_x, sx + 2)):
+            for ny in range(max(0, sy - 1), min(max_y, sy + 2)):
+                if (nx, ny) == (sx, sy):
+                    continue
+                try:
+                    if battle_map.bidirectionally_passable(
+                        actor,
+                        nx,
+                        ny,
+                        (sx, sy),
+                        None,
+                        False,
+                        ignore_opposing=True,
+                    ):
+                        has_open_neighbor = True
+                        break
+                    for obj in battle_map.objects_at(nx, ny):
+                        if self._is_door_object(obj):
+                            has_open_neighbor = True
+                            break
+                except Exception:
+                    continue
+                if has_open_neighbor:
+                    break
+            if has_open_neighbor:
+                break
+        if has_open_neighbor:
+            return None
+
         path_compute = PathCompute(None, battle_map, actor, ignore_opposing=True)
         path = path_compute.compute_path(
             source[0],
@@ -500,13 +538,18 @@ class NpcMovementHelper:
         actor: Entity,
         target_info: Dict[str, Any],
         distance_ft: int = 5,
+        max_steps: Optional[int] = None,
     ):
         if actor is None or not target_info:
             return None
 
         kind = target_info.get('kind')
         if kind == 'square':
-            return self._build_move_to_square(actor, target_info.get('square'))
+            return self._build_move_to_square(
+                actor,
+                target_info.get('square'),
+                max_steps=max_steps,
+            )
         if kind == 'annotation':
             from natural20.map_annotations import annotation_anchor_square
 
@@ -524,6 +567,7 @@ class NpcMovementHelper:
                         obj,
                         distance_ft=distance_ft,
                         door_navigation=self.should_use_door_navigation(actor, target_info),
+                        max_steps=max_steps,
                     )
             square = self._immediate_landmark_square(actor, target_info)
             return self._build_move_to_square(
@@ -531,6 +575,7 @@ class NpcMovementHelper:
                 square,
                 door_navigation=self.should_use_door_navigation(actor, target_info),
                 battle_map=battle_map,
+                max_steps=max_steps,
             )
         if kind in ('entity', 'object'):
             # Entity follow/approach often routes through doors (stairs, guest rooms).
@@ -540,6 +585,7 @@ class NpcMovementHelper:
                 target_info.get('target'),
                 distance_ft=distance_ft,
                 door_navigation=entity_door_nav,
+                max_steps=max_steps,
             )
         return None
 
@@ -590,6 +636,7 @@ class NpcMovementHelper:
         *,
         door_navigation: bool = False,
         battle_map=None,
+        max_steps: Optional[int] = None,
     ):
         if actor is None or square is None:
             return None
@@ -656,7 +703,7 @@ class NpcMovementHelper:
         if not trimmed_path or len(trimmed_path) < 2:
             return None
 
-        return self._finalize_move_action(actor, trimmed_path)
+        return self._finalize_move_action(actor, trimmed_path, max_steps=max_steps)
 
     def _immediate_entity_square(
         self,
@@ -703,6 +750,58 @@ class NpcMovementHelper:
         portal_x, portal_y = int(segment_path[-1][0]), int(segment_path[-1][1])
         return self._resolve_reachable_square(actor, battle_map, (portal_x, portal_y))
 
+    def _follow_step_budget(self, actor: Entity, battle_map, distance_ft: int = 5) -> int:
+        """Grid squares an auto-follow task may cover in one step.
+
+        Follow ticks run on a slow cadence (``goal_turn_seconds``), so commit
+        up to one round of movement (full speed) per tick instead of a single
+        square.  The move stays bounded: the path is computed toward the
+        *nearest* square within ``distance_ft`` of the target, and
+        ``MoveAction.resolve`` trims to the entity's movement budget anyway.
+        """
+        try:
+            speed_ft = int(actor.available_movement(None) or 0)
+        except Exception:
+            speed_ft = 0
+        feet_per_grid = getattr(battle_map, 'feet_per_grid', 5) or 5
+        full_round_squares = max(1, speed_ft // feet_per_grid) if speed_ft > 0 else 1
+        # Never commit more than enough squares to cross the gap plus the
+        # follow buffer (e.g. 10 ft away at 5 ft/speed → 2 squares, not 4).
+        gap_squares = max(1, int(round(distance_ft / float(feet_per_grid))) + 1)
+        return max(1, min(full_round_squares, gap_squares))
+
+    def _candidate_squares_around(
+        self,
+        actor: Entity,
+        battle_map,
+        target_pos: Tuple[int, int],
+        distance_ft: int,
+    ) -> List[Tuple[int, int]]:
+        """Placeable squares within ``distance_ft`` of the target.
+
+        Scans only the bounding box around the target whose radius covers the
+        requested distance (plus one square of slack), instead of the whole
+        map.  On a 40x30 map this is a few dozen squares rather than 1200.
+        """
+        feet_per_grid = getattr(battle_map, 'feet_per_grid', 5) or 5
+        radius = int(distance_ft / float(feet_per_grid)) + 1
+        radius = max(1, radius)
+        max_x, max_y = battle_map.size
+
+        tx, ty = int(target_pos[0]), int(target_pos[1])
+        candidate_positions: List[Tuple[int, int]] = []
+        for pos_x in range(max(0, tx - radius), min(max_x, tx + radius + 1)):
+            for pos_y in range(max(0, ty - radius), min(max_y, ty + radius + 1)):
+                if not battle_map.placeable(actor, pos_x, pos_y, squeeze=False):
+                    continue
+                # Euclidean square distance (matches Map.distance semantics).
+                candidate_distance_ft = (
+                    ((pos_x - tx) ** 2 + (pos_y - ty) ** 2) ** 0.5
+                ) * feet_per_grid
+                if candidate_distance_ft <= distance_ft:
+                    candidate_positions.append((pos_x, pos_y))
+        return candidate_positions
+
     def _build_move_toward_target(
         self,
         actor: Entity,
@@ -710,6 +809,7 @@ class NpcMovementHelper:
         distance_ft: int = 5,
         *,
         door_navigation: bool = False,
+        max_steps: Optional[int] = None,
     ):
         if actor is None or target is None:
             return None
@@ -734,6 +834,7 @@ class NpcMovementHelper:
                 portal_square,
                 door_navigation=door_navigation,
                 battle_map=battle_map,
+                max_steps=max_steps,
             )
         if target_pos is None:
             return None
@@ -742,25 +843,37 @@ class NpcMovementHelper:
         if current_distance_ft <= distance_ft:
             return None
 
-        candidate_positions = []
-        for pos_x in range(battle_map.size[0]):
-            for pos_y in range(battle_map.size[1]):
-                if not battle_map.placeable(actor, pos_x, pos_y, squeeze=False):
-                    continue
-                try:
-                    candidate_distance_ft = battle_map.distance(
-                        actor,
-                        target,
-                        entity_1_pos=(pos_x, pos_y),
-                        entity_2_pos=target_pos,
-                    ) * feet_per_grid
-                except Exception:
-                    continue
-                if candidate_distance_ft <= distance_ft:
-                    candidate_positions.append((pos_x, pos_y))
+        if max_steps is None or int(max_steps) <= 1:
+            # Default (LLM errands / single-step): commit one square per step.
+            step_budget = 1
+        else:
+            # Follow tasks: up to one round of movement per tick, capped by the
+            # caller's explicit max_steps so we never overshoot the buffer zone.
+            step_budget = max(
+                1,
+                min(
+                    self._follow_step_budget(actor, battle_map, distance_ft),
+                    int(max_steps),
+                ),
+            )
+
+        candidate_positions = self._candidate_squares_around(
+            actor, battle_map, target_pos, distance_ft
+        )
 
         if not candidate_positions:
-            return None
+            # No placeable square within the follow buffer; step toward the
+            # target directly (single square) so the NPC keeps closing the gap.
+            source_x, source_y = battle_map.position_of(actor)
+            trimmed_path = self._greedy_step_toward(
+                actor,
+                battle_map,
+                (source_x, source_y),
+                target_pos,
+            )
+            if not trimmed_path or len(trimmed_path) < 2:
+                return None
+            return self._finalize_move_action(actor, trimmed_path, max_steps=step_budget)
 
         source_x, source_y = battle_map.position_of(actor)
         path_compute = PathCompute(None, battle_map, actor, ignore_opposing=True)
@@ -781,70 +894,56 @@ class NpcMovementHelper:
                 best_path = path
 
         if best_destination is None or best_path is None:
-            if door_navigation:
-                return None
-            paths = path_compute.compute_paths_to_multiple_destinations(
-                source_x,
-                source_y,
-                candidate_positions,
-                door_navigation=True,
-            )
-            for destination, path in paths.items():
-                if not path or len(path) < 2:
-                    continue
-                if best_path is None or len(path) < len(best_path):
-                    best_destination = destination
-                    best_path = path
+            if not door_navigation:
+                paths = path_compute.compute_paths_to_multiple_destinations(
+                    source_x,
+                    source_y,
+                    candidate_positions,
+                    door_navigation=True,
+                )
+                for destination, path in paths.items():
+                    if not path or len(path) < 2:
+                        continue
+                    if best_path is None or len(path) < len(best_path):
+                        best_destination = destination
+                        best_path = path
 
         if best_destination is None or best_path is None:
-            if door_navigation:
-                trimmed_path = self._greedy_step_toward(
-                    actor,
-                    battle_map,
-                    (source_x, source_y),
-                    target_pos,
-                )
-                if trimmed_path and len(trimmed_path) >= 2:
-                    return self._finalize_move_action(actor, trimmed_path)
-            return None
-
-        trimmed_path = path_compute.compute_path(
-            source_x,
-            source_y,
-            best_destination[0],
-            best_destination[1],
-            available_movement_cost=actor.available_movement(None),
-            door_navigation=door_navigation,
-        )
-        if (not trimmed_path or len(trimmed_path) < 2) and not door_navigation:
-            trimmed_path = path_compute.compute_path(
-                source_x,
-                source_y,
-                best_destination[0],
-                best_destination[1],
-                available_movement_cost=actor.available_movement(None),
-                door_navigation=True,
-            )
-        if (not trimmed_path or len(trimmed_path) < 2) and door_navigation:
             trimmed_path = self._greedy_step_toward(
                 actor,
                 battle_map,
                 (source_x, source_y),
-                best_destination,
+                target_pos,
             )
-        if not trimmed_path or len(trimmed_path) < 2:
+            if not trimmed_path or len(trimmed_path) < 2:
+                return None
+            return self._finalize_move_action(actor, trimmed_path, max_steps=step_budget)
+
+        # ``best_path`` is the full source→candidate route from the multi-dest
+        # A*; trim it to the step budget instead of re-running single-dest A*.
+        # (MoveAction.resolve re-trims to the entity's real movement budget.)
+        trimmed_path = best_path[: step_budget + 1]
+        if len(trimmed_path) < 2:
             return None
 
-        return self._finalize_move_action(actor, trimmed_path)
+        return self._finalize_move_action(actor, trimmed_path, max_steps=step_budget)
 
-    def _finalize_move_action(self, actor: Entity, trimmed_path):
+    def _finalize_move_action(self, actor: Entity, trimmed_path, max_steps: Optional[int] = None):
         if not trimmed_path or len(trimmed_path) < 2:
+            return None
+        if max_steps is not None and int(max_steps) > 1:
+            # Multi-square step (follow mode): commit the whole trimmed path
+            # in one action instead of a single tile per tick.
+            step_path = [list(point) for point in trimmed_path[: int(max_steps) + 1]]
+        else:
+            step_path = [
+                list(trimmed_path[0]),
+                list(trimmed_path[1]),
+            ]
+        if len(step_path) < 2:
             return None
         action = MoveAction(self.game_session, actor, 'move')
-        action.move_path = [
-            list(trimmed_path[0]),
-            list(trimmed_path[1]),
-        ]
+        action.move_path = step_path
         return action
 
     def movement_snapshot(self, actor: Entity, task: Dict[str, Any]) -> str:
@@ -1199,6 +1298,14 @@ class NpcMovementManager:
                             task['attempts'] = task.get('attempts', 0) + 1
                             task['next_run_at'] = time.time() + self.manager.goal_turn_seconds
                             task['updated_at_game_time'] = self.manager.game_session.game_time
+
+            # Keep sidekick auto-follow tasks aligned (recreates tasks that
+            # were abandoned, retargets after party/POV changes).
+            try:
+                from webapp.sidekick_follow import sync_sidekick_auto_follows
+                sync_sidekick_auto_follows(self.manager)
+            except Exception as exc:
+                self.manager.logger.debug("Sidekick auto-follow sync skipped: %s", exc)
 
             self.manager._movement_thread_stop.wait(self.manager.goal_poll_interval)
 

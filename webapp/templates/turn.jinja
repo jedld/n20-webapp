@@ -1,4 +1,26 @@
-{% if battle.current_turn() %}
+{% set legendary_entity = battle.legendary_phase_entity() if battle.legendary_phase_entity is defined else none %}
+{% if legendary_entity %}
+    {% set entity = legendary_entity %}
+    {% set turn_entity = battle.current_turn() %}
+    {% if controller_of(entity.entity_uid, username) %}
+        <img class="current-turn-img legendary-phase-img" src="/assets/{{ entity.token_image() }}" style="max-width: 75px;">
+        <div class="legendary-phase-info">
+            <span class="legendary-phase-tag">Legendary Action</span>
+            {% if turn_entity %}<small>after {{ turn_entity.label() }}'s turn</small>{% endif %}
+        </div>
+        <button class="btn btn-warning" id="player-end-turn" data-legendary-phase="1" style="pointer-events: auto">End Legendary Action</button>
+        <div class="indicator-container">
+            <div class="indicator legendary" title="Legendary actions remaining" data-toggle="tooltip" data-placement="top">
+                <span>{{ entity.total_legendary_actions(battle) or 0 }} LA</span>
+            </div>
+        </div>
+    {% else %}
+    <div class="current-turn-information">
+        <img class="current-turn-img legendary-phase-img" src="/assets/{{ entity.token_image() }}" style="max-width: 75px; margin-right: 10px;">
+        <p class="lead" style="margin: 0;">{{ entity.label() }} is taking a legendary action&hellip;</p>
+    </div>
+    {% endif %}
+{% elif battle.current_turn() %}
     {% set entity = battle.current_turn() %}
     
     {% if  controller_of(entity.entity_uid, username) %}
@@ -14,6 +36,11 @@
         <div class="indicator movement" style="background-color: teal;" title="Movement" data-toggle="tooltip" data-placement="top">
             <span>{{ entity.available_movement(battle) }}ft</span>
         </div>
+        {% if entity.legendary_actions is defined and entity.legendary_actions %}
+        <div class="indicator legendary" title="Legendary actions (used after other creatures' turns)" data-toggle="tooltip" data-placement="top">
+            <span>{{ entity.total_legendary_actions(battle) or 0 }} LA</span>
+        </div>
+        {% endif %}
         {% if entity.max_ki|default(0) %}
         <div class="indicator ki" style="background-color: #b07d00;" title="Ki Points" data-toggle="tooltip" data-placement="top">
             <span>{{ entity.ki_count or 0 }}/{{ entity.max_ki }} Ki</span>

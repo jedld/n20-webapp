@@ -10,18 +10,30 @@ if [ -f "$WEBAPP_DIR/.env" ]; then
 fi
 
 EDIT_MODE=0
-if [ -n "$1" ] && [ "$1" = "--edit" ]; then
-    # Optional: after a DM logs in, that session starts in campaign edit mode.
-    # Does not skip login or grant DM to other users.
-    EDIT_MODE=1
-    shift
-fi
-if [ -n "$1" ]; then
-    TEMPLATE_DIR="$1"
+RESET_SAVES=0
+# Optional flags (accepted in any position):
+#   --edit   DM sessions start in campaign edit mode after login.
+#   --reset  wipe persisted save state at boot (saves, logs, notebook, NPC memories).
+# The first non-flag argument is the campaign directory (or slug).
+CAMPAIGN_ARG=""
+for arg in "$@"; do
+    case "$arg" in
+        --edit)  EDIT_MODE=1 ;;
+        --reset) RESET_SAVES=1 ;;
+        *)
+            if [ -z "$CAMPAIGN_ARG" ]; then
+                CAMPAIGN_ARG="$arg"
+            fi
+            ;;
+    esac
+done
+if [ -n "$CAMPAIGN_ARG" ]; then
+    TEMPLATE_DIR="$CAMPAIGN_ARG"
 else
     TEMPLATE_DIR="${TEMPLATE_DIR:-../natural_20.py/templates}"
 fi
 export N20_EDIT_MODE="$EDIT_MODE"
+export N20_RESET_SAVES="$RESET_SAVES"
 
 PORT="${FLASK_RUN_PORT:-${PORT:-5001}}"
 export FLASK_RUN_PORT="$PORT"

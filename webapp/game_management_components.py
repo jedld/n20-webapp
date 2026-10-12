@@ -279,8 +279,18 @@ class GameEntityRegistry:
         _name, battle_map = self._default_map_for_user(username)
         return battle_map
 
+    def _iter_maps_active_set_first(self):
+        search_order = list(self._iter_maps_in_active_set())
+        seen = {id(m) for _, m in search_order}
+        for name, map_obj in (self.manager.maps or {}).items():
+            if id(map_obj) not in seen:
+                search_order.append((name, map_obj))
+        return search_order
+
     def get_map_for_entity(self, entity):
-        for _name, map_obj in self._iter_maps_in_active_set():
+        # Must search the same maps as get_entity_by_uid, which also finds
+        # entities on maps outside the active map set.
+        for _name, map_obj in self._iter_maps_active_set_first():
             if isinstance(entity, str):
                 mapped_entity = map_obj.entity_by_uid(entity)
             else:
@@ -295,11 +305,7 @@ class GameEntityRegistry:
         # Prefer the live token object stored on the active map set over a stale
         # registry copy so heals, inventory changes, and battle commits mutate
         # what the UI is rendering.
-        search_order = list(self._iter_maps_in_active_set())
-        seen = {id(m) for _, m in search_order}
-        for name, map_obj in (self.manager.maps or {}).items():
-            if id(map_obj) not in seen:
-                search_order.append((name, map_obj))
+        search_order = self._iter_maps_active_set_first()
         for _name, map_obj in search_order:
             for map_entity in map_obj.entities.keys():
                 if str(getattr(map_entity, 'entity_uid', '')) == uid:
@@ -402,32 +408,57 @@ class GameControllerRegistry:
         self.manager.web_controllers[entity] = controller
         return controller
 
-    def effective_npc_combat_controller(self):
+    def manual_controller_for_entity(self, entity):
+        """Manual WebController for ``entity``; the DM drives it when no user is assigned."""
+        controller = self.get_controller_for_entity(entity)
+        if controller is None:
+            controller = WebController(self.manager.game_session, None)
+            self.manager.web_controllers[entity] = controller
+        if hasattr(controller, 'get_users') and not any(controller.get_users() or []):
+            controller.add_user('dm')
+        return controller
+
+    def effective_npc_combat_controller(self, entity=None):
+        """'ai' (deterministic), 'llm' or 'manual' — per-NPC AI settings first, then the default."""
         if self.manager.force_llm_npc_combat:
             return 'llm'
+        if entity is not None:
+            from webapp.ai_config import entity_combat_controller
+            configured = entity_combat_controller(entity)
+            if configured:
+                return configured
         return self.manager.npc_controller
 
-    def _build_controller_by_kind(self, kind):
+    def _configured_entity_controller(self, entity):
+        """Controller kind set specifically for this NPC/sidekick (not the general default)."""
+        from webapp.ai_config import get_ai_config
+        config = get_ai_config()
+        if config is None or entity is None:
+            return None
+        value, source = config.entity_setting(entity, 'combat', 'controller')
+        if source in ('default', 'unset'):
+            return None
+        return value
+
+    def _build_controller_by_kind(self, kind, entity=None):
         kind = (kind or '').lower()
         if kind == 'manual':
+            if entity is not None:
+                return self.manual_controller_for_entity(entity)
             controller = WebController(self.manager.game_session, None)
             controller.add_user('dm')
             return controller
         if kind == 'ai':
             return GenericController(self.manager.game_session)
         if kind == 'llm':
-            # Battle 'llm' controllers prefer the dedicated battle provider
-            # (BATTLE_LLM_PROVIDER, e.g. JEV/System One) when configured,
-            # otherwise they fall back to the DM prose provider.
+            # Per-NPC AI settings profile -> combat default -> battle provider
+            # (BATTLE_LLM_PROVIDER, e.g. JEV) -> DM provider.
             try:
-                from webapp.app import llm_handler as current_llm_handler  # type: ignore
-                battle_provider_fn = getattr(
-                    current_llm_handler, 'battle_llm_provider', None
-                )
-                if callable(battle_provider_fn):
-                    provider = battle_provider_fn()
-                else:
-                    provider = getattr(current_llm_handler, 'current_provider', None)
+                # Never import webapp.app here: under `python -m webapp.app` that
+                # loads a second app instance with its own (non-JEV) handler.
+                from webapp.blueprints.helpers.runtime_state import get_llm_handler
+                from webapp.ai_config import combat_llm_provider_for
+                provider = combat_llm_provider_for(get_llm_handler(), entity)
             except Exception:
                 provider = None
             controller_class = LlmMcpController
@@ -438,12 +469,16 @@ class GameControllerRegistry:
         return None
 
     def build_combat_controller_for_entity(self, entity, controller_kind=None):
-        explicit = self._build_controller_by_kind(controller_kind)
+        explicit = self._build_controller_by_kind(controller_kind, entity)
         if explicit is not None:
             return explicit
 
         if isinstance(entity, PlayerCharacter):
             return self.ensure_web_controller_for_entity(entity)
+        if not self.manager.force_llm_npc_combat:
+            configured = self._build_controller_by_kind(self._configured_entity_controller(entity), entity)
+            if configured is not None:
+                return configured
         try:
             from natural20.sidekick import is_in_party_sidekick, sidekick_owners
             if is_in_party_sidekick(self.manager.game_session, entity) and sidekick_owners(
@@ -454,16 +489,22 @@ class GameControllerRegistry:
             pass
         if entity.familiar():
             return self.ensure_web_controller_for_entity(entity.owner) or self.get_controller_for_entity(entity.owner)
+        if isinstance(getattr(entity, 'owner', None), PlayerCharacter):
+            controller = self.get_controller_for_entity(entity)
+            if controller is None:
+                controller = WebController(self.manager.game_session, None)
+                for username in self.entity_owners(entity):
+                    controller.add_user(username)
+                self.manager.web_controllers[entity] = controller
+            return self.manual_controller_for_entity(entity)
 
-        npc_controller = self.effective_npc_combat_controller()
+        npc_controller = self.effective_npc_combat_controller(entity)
 
         if npc_controller == 'manual':
-            web_controllers = WebController(self.manager.game_session, None)
-            web_controllers.add_user('dm')
-            return web_controllers
+            return self.manual_controller_for_entity(entity)
 
         if npc_controller == 'llm':
-            built = self._build_controller_by_kind('llm')
+            built = self._build_controller_by_kind('llm', entity)
             if built is not None:
                 return built
 
@@ -505,6 +546,14 @@ class ShortTermGoalManager:
 
         goal_text = (goal_text or '').strip()
         if not goal_text:
+            return None
+
+        from webapp.ai_config import entity_tasks_enabled
+        if not entity_tasks_enabled(entity):
+            self.manager.logger.info(
+                "Short-term goal for %s skipped: tasks disabled in AI settings",
+                getattr(entity, 'entity_uid', entity),
+            )
             return None
 
         goal_id = str(entity.entity_uid)

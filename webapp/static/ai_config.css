@@ -1,0 +1,128 @@
+/* DM Console > AI Settings panel (ai_config.js) */
+.ai-config {
+  padding-top: 10px;
+}
+
+.ai-config-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-config-toolbar label {
+  margin: 0;
+}
+
+.ai-config-toolbar .ai-config-scope {
+  width: auto;
+}
+
+.ai-config-path {
+  flex: 1 1 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.ai-config-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.ai-config-legend {
+  margin: 6px 0 2px;
+  font-size: 12px;
+}
+
+.ai-config-status {
+  min-height: 18px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.ai-config-subnav {
+  margin-bottom: 10px;
+}
+
+.ai-config-body {
+  max-height: 55vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.ai-config-body h5 {
+  margin-top: 14px;
+  font-weight: 600;
+  border-bottom: 1px solid #e5e5e5;
+  padding-bottom: 4px;
+}
+
+.ai-config-field {
+  margin-bottom: 8px;
+}
+
+.ai-config-field label {
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.ai-config-field .help-block {
+  font-size: 11px;
+  margin: 2px 0 0;
+}
+
+.ai-config-profile .panel-heading {
+  padding: 6px 10px;
+}
+
+.ai-config-profile .panel-heading small {
+  margin: 0 6px;
+}
+
+.ai-config-profile .panel-body {
+  padding: 8px 10px 4px;
+}
+
+.ai-config-disable {
+  font-size: 12px;
+  margin-right: 8px;
+}
+
+.ai-config-test-result {
+  font-size: 12px;
+  min-height: 4px;
+}
+
+.ai-config-add-profile .help-block {
+  display: block;
+  font-size: 11px;
+}
+
+.ai-config-npc-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ai-config-npc-table-wrap {
+  overflow-x: auto;
+}
+
+.ai-config-npc-table td,
+.ai-config-npc-table th {
+  font-size: 12px;
+  vertical-align: top !important;
+}
+
+.ai-config-npc-table select {
+  min-width: 110px;
+}
+
+.ai-config-resolved {
+  font-size: 10px;
+  color: #777;
+  margin-top: 2px;
+}

@@ -2,6 +2,7 @@
 import atexit
 import logging
 import os
+import sys
 import threading
 import time
 
@@ -46,6 +47,7 @@ from webapp.blueprints.helpers.llm_init import (
     register_game_context_functions,
 )
 from webapp.blueprints.helpers.perf import register_perf_instrumentation
+from webapp.ai_config import configure_ai
 from webapp.blueprints.helpers.runtime_state import register_globals
 from webapp.blueprints.helpers.special_effects import (
     filter_effect_payload,
@@ -92,6 +94,18 @@ def _env_flag(name, default=False):
     if value is None:
         return default
     return str(value).strip().lower() not in {'0', 'false', 'no', 'off', 'disabled'}
+
+
+def _reset_saves_requested(argv=None):
+    """True when the process should wipe persisted save state at boot.
+
+    Honors the ``--reset`` CLI flag (e.g. ``./start_web.sh campaign --reset``)
+    or the ``N20_RESET_SAVES`` environment variable (set by start_web.sh).
+    """
+    if _env_flag('N20_RESET_SAVES', False):
+        return True
+    argv = sys.argv if argv is None else argv
+    return any(arg == '--reset' for arg in argv[1:])
 
 
 app = Flask(__name__, static_folder='static', static_url_path='/')
@@ -183,6 +197,7 @@ DEFAULT_NPC_CONTROLLER = _campaign['DEFAULT_NPC_CONTROLLER']
 CONTROLLERS = _campaign['CONTROLLERS']
 AUTOSAVE = _campaign['AUTOSAVE']
 DEFER_PLAYER_SPAWN = _campaign['DEFER_PLAYER_SPAWN']
+RESET_SAVES = _reset_saves_requested()
 EXTENSIONS = _campaign['EXTENSIONS']
 MAP_PADDING = _campaign['MAP_PADDING']
 
@@ -222,6 +237,7 @@ current_game = GameManagement(
     system_logger=logger,
     soundtrack=SOUNDTRACKS,
     defer_player_spawn=DEFER_PLAYER_SPAWN,
+    reset_saves=RESET_SAVES,
 )
 
 _pvp_cfg = index_data.get('pvp_teams') or {}
@@ -243,13 +259,14 @@ N20_BOOT_INFO = {
 }
 os.environ.setdefault('N20_BOOT_ID', N20_BOOT_INFO['boot_id'])
 logger.info(
-    "[Boot] natural20 webapp ready boot_id=%s pid=%s ppid=%s werkzeug_child=%s template=%s autosave=%s",
+    "[Boot] natural20 webapp ready boot_id=%s pid=%s ppid=%s werkzeug_child=%s template=%s autosave=%s reset_saves=%s",
     N20_BOOT_INFO['boot_id'],
     N20_BOOT_INFO['pid'],
     N20_BOOT_INFO['ppid'],
     N20_BOOT_INFO['werkzeug_run_main'],
     LEVEL,
     AUTOSAVE,
+    RESET_SAVES,
 )
 
 
@@ -332,9 +349,10 @@ i18n.set('locale', 'en')
 for extension in EXTENSIONS:
     extension.init(app, current_game, game_session)
 
-llm_handler = initialize_llm_from_env(LLMHandler)
-configure_npc_provider_from_environment(llm_handler)
-configure_battle_provider_from_environment(llm_handler)
+llm_handler = LLMHandler()
+# Providers + NPC/combat/task AI settings: campaign .ai.yaml -> webapp .ai.yaml -> env vars.
+current_game.ai_legacy_npc_controller = index_data.get('npc_default_controller')
+configure_ai(llm_handler, current_game, game_session)
 register_game_context_functions(llm_handler, game_context_provider, _mcp_registry, _mcp_context)
 llm_conversation_handler = LLMConversationController(llm_handler)
 entity_rag_handler = EntityRAGHandler(game_session, current_game)
@@ -2799,7 +2817,6 @@ def next_turn():
             current_turn = battle.current_turn()
             if current_game.waiting_for_user_input():
                 current_game.set_waiting_for_user_input(False)
-                current_turn.resolve_trigger('end_of_turn')
                 battle.end_turn()
                 battle.next_turn()
                 if battle.battle_ends():
@@ -3398,6 +3415,12 @@ def action_type_to_class(action_type):
     elif action_type == 'EmergenceAction':
         from natural20.actions.shell_defense_action import EmergenceAction
         return EmergenceAction
+    elif action_type == 'SummonCreaturesAction':
+        from natural20.actions.summon_creatures_action import SummonCreaturesAction
+        return SummonCreaturesAction
+    elif action_type == 'DismissSummonsAction':
+        from natural20.actions.summon_creatures_action import DismissSummonsAction
+        return DismissSummonsAction
     else:
         raise ValueError(f"Unknown action type {action_type}")
 
@@ -3607,11 +3630,7 @@ def handle_reaction():
             battle.commit(handler.action)
         socketio.emit('message', {'type': 'dismiss_reaction', 'message': {}})
 
-        # reaction was during a players end step, in that case we need to start the next turn
-        if current_game.end_turn_state:
-            current_game.end_turn_state = False
-            battle.next_turn()
-
+        # Resumes mid-turn, or (end_turn_state) moves on to the next turn.
         current_game.schedule_after_reaction()
     except AsyncReactionHandler as e:
         for _, entity, valid_actions in e.resolve():

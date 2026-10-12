@@ -762,6 +762,7 @@ def edit_place_entity():
                 entity_uid=str(entity_uid),
                 x=x,
                 y=y,
+                sheet=data.get("sheet"),
             )
         else:
             return jsonify({"success": False, "error": "npc_type or entity_uid is required"}), 400

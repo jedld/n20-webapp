@@ -18,6 +18,7 @@ from natural20.entity import Entity
 from natural20.player_character import PlayerCharacter
 from natural20.utils.conversation import entity_label
 
+from webapp.ai_config import entity_tasks_enabled
 from webapp.npc_background_llm import resolve_background_llm_enabled, npc_autonomous_loops_enabled
 
 logger = logging.getLogger(__name__)
@@ -519,7 +520,7 @@ def run_long_rest_npc_simulation(
     if game.get_current_battle() is not None:
         return {'skipped': True, 'reason': 'battle_active'}
 
-    npcs = iter_dialog_npcs(game)
+    npcs = [npc for npc in iter_dialog_npcs(game) if entity_tasks_enabled(npc)]
     loops = int(cfg.get('loops_per_npc') or _DEFAULT_LOOPS)
     range_ft = int(cfg.get('conversation_range_ft') or _DEFAULT_RANGE_FT)
     npc_prompt_template = None

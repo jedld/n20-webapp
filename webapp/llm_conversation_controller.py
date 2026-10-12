@@ -358,12 +358,16 @@ class LLMConversationController:
                 budget_report.get('compacted'),
                 format_llm_context_log(context_summary),
             )
+            entity_uid, _sep, task_kind = str(conversation_id).partition(':')
             response_content = self._effective_send_message(
                 messages,
                 {
                     'response_mode': 'conversation',
                     'log_label': f'npc_reply:{conversation_id}',
                     'skip_continuation': True,
+                    # "<uid>:goal|movement|environment|long_rest*" ids are autonomous tasks.
+                    'entity_uid': entity_uid,
+                    'ai_role': 'task' if task_kind else 'conversation',
                 },
             )
             elapsed_ms = (time.monotonic() - started) * 1000.0

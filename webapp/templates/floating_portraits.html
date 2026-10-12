@@ -1,5 +1,16 @@
 {% macro portrait_quick_actions(entity) %}
+{% set sidekick_state = (sidekick_follow or {}).get(entity.entity_uid) if sidekick_follow is defined else none %}
 <div class="portrait-quick-actions hover-only" aria-label="Portrait actions">
+  {% if sidekick_state and sidekick_state.can_control %}
+  <button type="button"
+          class="portrait-quick-action portrait-quick-action-sidekick-follow{% if sidekick_state.auto_follow %} is-on{% endif %}"
+          title="{% if sidekick_state.auto_follow %}Auto-follow is ON - click to stop following the party{% else %}Auto-follow is OFF - click to follow the party{% endif %}"
+          data-portrait-action="sidekick-follow"
+          data-entity-uid="{{ entity.entity_uid }}"
+          data-auto-follow="{{ 'true' if sidekick_state.auto_follow else 'false' }}">
+    <span class="glyphicon glyphicon-road" aria-hidden="true"></span>
+  </button>
+  {% endif %}
   <button type="button"
           class="portrait-quick-action"
           title="{% if entity.is_npc() %}Stat block{% else %}Character sheet{% if entity.__class__.__name__ == 'PlayerCharacter' %} &amp; journal{% endif %}{% endif %}"

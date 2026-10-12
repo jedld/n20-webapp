@@ -20,6 +20,7 @@ from webapp.long_rest_npc_simulation import (
     build_long_rest_system_context,
     iter_dialog_npcs,
 )
+from webapp.ai_config import entity_tasks_enabled, get_ai_config
 from webapp.npc_background_llm import resolve_background_llm_enabled, npc_autonomous_loops_enabled
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,17 @@ def load_npc_environment_tick_config(game_session) -> Dict[str, Any]:
     if not isinstance(block, dict):
         block = {}
 
-    env_enabled = os.environ.get('N20_NPC_ENV_TICKS', '1').strip().lower()
-    enabled = block.get('enabled', env_enabled not in ('0', 'false', 'no', 'off'))
+    env_enabled = os.environ.get('N20_NPC_ENV_TICKS', '1').strip().lower() not in ('0', 'false', 'no', 'off')
+    config = get_ai_config()
+    if config is not None:
+        enabled, _source = config.resolve(
+            'tasks.environment_ticks',
+            legacy=lambda: block.get('enabled'),
+            env=lambda: env_enabled,
+            default=True,
+        )
+    else:
+        enabled = block.get('enabled', env_enabled)
     enabled = bool(enabled) and npc_autonomous_loops_enabled(game_session)
 
     return {
@@ -47,6 +57,8 @@ def _npc_eligible(entity: Entity) -> bool:
     if entity is None or isinstance(entity, PlayerCharacter):
         return False
     if not getattr(entity, 'dialog', False):
+        return False
+    if not entity_tasks_enabled(entity):
         return False
     try:
         if hasattr(entity, 'conscious') and not entity.conscious():

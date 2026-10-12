@@ -31,6 +31,87 @@ window.TTSPlayer = (function () {
     var _pendingAutoplayReplyIds = new Set();
     var _pendingStreamStarts = [];
     var _playbackIdleWaiters = [];
+    var _foreignReplyIds = new Set();
+
+    // One browser may have several VTT tabs for the same login (e.g. a DM
+    // watching multiple POVs); each tab receives the same reply, so only the
+    // tab that wins the localStorage claim voices it.
+    var _tabId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    var CLAIM_PREFIX = 'n20.tts.claim.';
+    var CLAIM_TTL_MS = 120000;
+    var CLAIM_SETTLE_MS = 80;
+
+    function readReplyClaim(replyKey) {
+        try {
+            var raw = window.localStorage.getItem(CLAIM_PREFIX + replyKey);
+            if (!raw) {
+                return null;
+            }
+            var parts = String(raw).split('|');
+            if (Date.now() - (parseInt(parts[1], 10) || 0) > CLAIM_TTL_MS) {
+                return null;
+            }
+            return parts[0];
+        } catch (e) {
+            return undefined;
+        }
+    }
+
+    function pruneReplyClaims() {
+        try {
+            var storage = window.localStorage;
+            var now = Date.now();
+            for (var i = storage.length - 1; i >= 0; i--) {
+                var key = storage.key(i);
+                if (!key || key.indexOf(CLAIM_PREFIX) !== 0) {
+                    continue;
+                }
+                var ts = parseInt(String(storage.getItem(key) || '').split('|')[1], 10) || 0;
+                if (now - ts > CLAIM_TTL_MS) {
+                    storage.removeItem(key);
+                }
+            }
+        } catch (e) {}
+    }
+
+    /**
+     * Calls back with true when this tab should voice ``replyKey``.
+     */
+    function claimReplyForThisTab(replyKey, callback) {
+        if (!replyKey) {
+            callback(true);
+            return;
+        }
+        var owner = readReplyClaim(replyKey);
+        if (owner === undefined || owner === _tabId) {
+            callback(true);
+            return;
+        }
+        if (owner) {
+            callback(false);
+            return;
+        }
+        try {
+            pruneReplyClaims();
+            window.localStorage.setItem(CLAIM_PREFIX + replyKey, _tabId + '|' + Date.now());
+        } catch (e) {
+            callback(true);
+            return;
+        }
+        setTimeout(function () {
+            var winner = readReplyClaim(replyKey);
+            callback(winner === undefined || winner === null || winner === _tabId);
+        }, CLAIM_SETTLE_MS);
+    }
+
+    function yieldReplyToOtherTab(replyKey) {
+        if (!replyKey) {
+            return;
+        }
+        _foreignReplyIds.add(replyKey);
+        markReplyPlayed(replyKey);
+        delete _deferredStreamBuffers[replyKey];
+    }
 
     function unlockAudioForPlayback() {
         _userGestureUnlocked = true;
@@ -353,16 +434,29 @@ window.TTSPlayer = (function () {
         if (!_enabled || !shouldStreamAutoplay()) {
             return;
         }
-        if (isPlaybackActive()) {
-            _pendingStreamStarts.push(data);
+        var replyKey = replyId ? String(replyId) : '';
+        if (replyKey && _foreignReplyIds.has(replyKey)) {
             return;
         }
-        beginStreamStart(data);
+        claimReplyForThisTab(replyKey, function (won) {
+            if (!won) {
+                yieldReplyToOtherTab(replyKey);
+                return;
+            }
+            if (isPlaybackActive()) {
+                _pendingStreamStarts.push(data);
+                return;
+            }
+            beginStreamStart(data);
+        });
     }
 
     function onStreamChunk(data) {
         data = data || {};
         var replyId = data.reply_id || data.replyId;
+        if (replyId && _foreignReplyIds.has(String(replyId))) {
+            return;
+        }
         var stream = replyId ? _streams[replyId] : null;
         if (!stream || stream.ended || !data.pcm_b64) {
             if (replyId && data.pcm_b64) {
@@ -483,10 +577,17 @@ window.TTSPlayer = (function () {
             teardownStream(replyId, activeStream);
         }
         markReplyPlayed(replyId);
-        onNPCSpeech(Object.assign({}, data, {
+        var speech = Object.assign({}, data, {
             audio_url: audioUrl,
             audioUrl: audioUrl,
-        }));
+        });
+        claimReplyForThisTab(replyKey, function (won) {
+            if (won) {
+                onNPCSpeech(speech);
+            } else {
+                yieldReplyToOtherTab(replyKey);
+            }
+        });
         return true;
     }
 
@@ -497,6 +598,10 @@ window.TTSPlayer = (function () {
         var audioUrl = data.audio_url || data.audioUrl;
         var chunksPlayed = stream ? stream.chunksReceived : 0;
 
+        if (replyId && _foreignReplyIds.has(String(replyId))) {
+            applyTtsReadyUi(data);
+            return;
+        }
         if (!stream) {
             bufferStreamEnd(data);
             applyTtsReadyUi(data);

@@ -24,6 +24,8 @@ def test_game_loop_emits_turn_state_before_manual_handoff():
     gm = GameManagement.__new__(GameManagement)
     gm.logger = MagicMock()
     gm.socketio = MagicMock()
+    gm._render_epoch = 0
+    gm._render_epoch_by_user = {}
     gm.battle = battle
     gm.get_current_battle = MagicMock(return_value=battle)
     gm.ai_loop = MagicMock(side_effect=ManualControl())

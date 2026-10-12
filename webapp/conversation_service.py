@@ -4182,6 +4182,44 @@ class ConversationService:
             response_payload['replies'] = http_replies
         return response_payload, 200
 
+    def handle_npc_kill_reaction(
+        self,
+        npc,
+        victim,
+        note: str,
+        *,
+        conversation_system_prompt=None,
+    ):
+        """Let a dialog NPC speak in character right after it kills a PC."""
+        if npc is None or victim is None or not str(note or '').strip():
+            return {'success': False, 'error': 'missing_entities'}, 400
+        if callable(getattr(npc, 'dead', None)) and npc.dead():
+            return {'success': False, 'error': 'npc_dead'}, 200
+        if callable(getattr(npc, 'conscious', None)) and not npc.conscious():
+            return {'success': False, 'error': 'npc_unconscious'}, 200
+
+        self.inject_npc_llm_system_note(getattr(npc, 'entity_uid', None), note)
+        prompt_template = conversation_system_prompt or self._npc_system_prompt_template()
+        http_replies = []
+        owners = self.entity_owners(victim) or []
+        npc_turn = self._run_single_npc_reply_turn(
+            npc,
+            victim,
+            prompt_template,
+            llm_conversation_handler=self.llm_conversation_handler,
+            http_replies=http_replies,
+            normalized_requesting_username=self._normalize_username(owners[0] if owners else None),
+            inject_system_messages=[note],
+            npc_initiated=True,
+        )
+
+        response_payload = {'success': True, 'notified': True}
+        if npc_turn is None:
+            response_payload['npc_reply_failed'] = True
+        if http_replies:
+            response_payload['replies'] = http_replies
+        return response_payload, 200
+
     def handle_npc_steal_detected(
         self,
         npc,

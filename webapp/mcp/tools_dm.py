@@ -561,7 +561,8 @@ def register(registry: ToolRegistry) -> None:
     @tool(
         registry,
         name='dm.remove_entity',
-        description='Remove an entity from its current map (does not delete its registry record).',
+        description='Remove an entity from its current map (does not delete its registry record). '
+                    'Removals are recorded so they can be restored with dm.undo_remove_entity.',
         input_schema={
             'type': 'object',
             'required': ['entity_uid'],
@@ -575,12 +576,38 @@ def register(registry: ToolRegistry) -> None:
         if battle_map is None:
             raise tool_error('Entity is not currently on any map')
         try:
-            battle_map.remove(ent)
+            from ..blueprints.helpers.entity_delete_undo import remove_entity_with_undo
+            entry = remove_entity_with_undo(context.current_game, ent, battle_map, 'dm')
         except Exception as exc:
             raise tool_error(f'Failed to remove entity: {exc}')
         context.log_dm(f"DM removed {ent.label()} from {battle_map.name}")
         context.emit_refresh()
         return {'entity_uid': entity_uid, 'map': battle_map.name}
+
+    @tool(
+        registry,
+        name='dm.undo_remove_entity',
+        description='Undo the most recent dm.remove_entity: re-places the token on its original '
+                    'square (nearest free square if occupied), restores battle membership and '
+                    'initiative when it was removed mid-battle, and restores the DM POV if needed. '
+                    'Pass entity_uid to only undo when it matches the most recent removal.',
+        input_schema={
+            'type': 'object',
+            'properties': {'entity_uid': {'type': 'string'}},
+        },
+        category='dm',
+    )
+    def undo_remove_entity(context: MCPContext, entity_uid: Optional[str] = None):
+        from ..blueprints.helpers.entity_delete_undo import undo_entity_delete
+        try:
+            payload, status = undo_entity_delete(context.current_game, context.game_session, 'dm', entity_uid)
+        except Exception as exc:
+            raise tool_error(f'Failed to undo entity removal: {exc}')
+        if status != 200 or payload.get('status') != 'ok':
+            raise tool_error(payload.get('error') or 'Nothing to undo')
+        context.log_dm(f"DM undid removal of {payload['name']} ({payload['entity_uid']})")
+        context.emit_refresh()
+        return payload
 
     @tool(
         registry,
@@ -989,18 +1016,14 @@ def register(registry: ToolRegistry) -> None:
                 ctrl = GenericController(context.game_session)
             elif kind == 'llm':
                 from natural20.llm_controller import LlmMcpController
-                # Prefer the dedicated battle provider (BATTLE_LLM_PROVIDER,
-                # e.g. JEV/System One) when configured, else the DM provider.
+                # Per-NPC AI settings profile -> combat default -> battle provider -> DM provider.
                 try:
                     from webapp.blueprints.helpers.runtime_state import get_llm_handler
                     _handler = get_llm_handler()
                 except Exception:
                     _handler = None
-                _battle_fn = getattr(_handler, 'battle_llm_provider', None)
-                if callable(_battle_fn):
-                    _provider = _battle_fn()
-                else:
-                    _provider = getattr(_handler, 'current_provider', None)
+                from webapp.ai_config import combat_llm_provider_for
+                _provider = combat_llm_provider_for(_handler, ent) if _handler is not None else None
                 ctrl = LlmMcpController(context.game_session, llm_provider=_provider)
             else:
                 raise tool_error("kind must be 'manual', 'ai' or 'llm'")
@@ -1329,6 +1352,62 @@ def register(registry: ToolRegistry) -> None:
             f"value={lighting.get('illumination')}"
         )
         return lighting
+
+    @tool(
+        registry,
+        name='dm.ai_config',
+        description='AI settings (.ai.yaml): providers, combat controllers, NPC conversation/task AI. '
+                    'op: get | save (replace a whole layer with `config`) | set_npc (per-NPC override '
+                    'keyed by entity_uid or npc type; omit `settings` to clear) | reload. '
+                    'scope: campaign (default) | webapp. API keys are masked on read.',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {'type': 'string', 'enum': ['get', 'save', 'set_npc', 'reload']},
+                'scope': {'type': 'string', 'enum': ['campaign', 'webapp']},
+                'config': {'type': 'object'},
+                'key': {'type': 'string'},
+                'settings': {'type': 'object'},
+            },
+        },
+        category='dm',
+    )
+    def ai_config_tool(
+        context: MCPContext,
+        op: str,
+        scope: Optional[str] = None,
+        config: Optional[dict] = None,
+        key: Optional[str] = None,
+        settings: Optional[dict] = None,
+    ):
+        from webapp import ai_config as ai_cfg
+        from webapp.blueprints.helpers.runtime_state import get_llm_handler
+
+        op = (op or '').strip().lower()
+        scope = scope or 'campaign'
+        handler = get_llm_handler()
+        game = context.current_game
+        active = ai_cfg.get_ai_config()
+        if active is None:
+            raise tool_error('AI configuration is not initialized')
+        try:
+            if op == 'get':
+                pass
+            elif op == 'save':
+                ai_cfg.save_and_apply(handler, game, scope, config or {})
+            elif op == 'set_npc':
+                ai_cfg.set_entity_override(active, scope, key, settings)
+            elif op == 'reload':
+                active.reload()
+                ai_cfg.reapply(handler, game)
+            else:
+                raise tool_error('op must be one of: get, save, set_npc, reload')
+        except ValueError as exc:
+            raise tool_error(str(exc))
+        if op != 'get':
+            context.log_dm(f"DM AI config {op} scope={scope}")
+        return ai_cfg.config_payload(game, handler)
 
     @tool(
         registry,
@@ -1966,17 +2045,19 @@ def register(registry: ToolRegistry) -> None:
         registry,
         name='dm.sidekick',
         description='Manage party sidekick NPCs. '
-                    'op: list | join | leave | assign_owner. '
+                    'op: list | join | leave | assign_owner | auto_follow. '
                     'join converts an NPC into an in-party sidekick (player-controlled). '
                     'leave drops them back to a regular AI NPC (hostile=true for enemies). '
-                    'assign_owner sets player usernames who control movement/actions.',
+                    'assign_owner sets player usernames who control movement/actions. '
+                    'auto_follow toggles out-of-combat following of the focused (POV) '
+                    'character (enabled=true/false).',
         input_schema={
             'type': 'object',
             'required': ['op'],
             'properties': {
                 'op': {
                     'type': 'string',
-                    'enum': ['list', 'join', 'leave', 'assign_owner'],
+                    'enum': ['list', 'join', 'leave', 'assign_owner', 'auto_follow'],
                 },
                 'entity_uid': {'type': 'string'},
                 'owners': {
@@ -1989,6 +2070,7 @@ def register(registry: ToolRegistry) -> None:
                 'sidekick_level': {'type': 'integer'},
                 'role': {'type': 'string'},
                 'force': {'type': 'boolean'},
+                'enabled': {'type': 'boolean', 'description': 'auto_follow: enable (true) or disable (false) auto-follow'},
             },
         },
         category='dm',
@@ -1997,12 +2079,19 @@ def register(registry: ToolRegistry) -> None:
                  owners: Optional[List[str]] = None, owner: Optional[str] = None,
                  hostile: bool = False, sidekick_class: Optional[str] = None,
                  sidekick_level: Optional[int] = None, role: Optional[str] = None,
-                 force: bool = False):
-        from natural20.sidekick import iter_in_party_sidekicks, sidekick_records, sidekick_owners
+                 force: bool = False, enabled: bool = True):
+        from natural20.sidekick import (
+            is_auto_follow_sidekick,
+            is_in_party_sidekick,
+            iter_in_party_sidekicks,
+            sidekick_records,
+            sidekick_owners,
+        )
         from webapp.blueprints.helpers.sidekick_control import (
             assign_owners_and_control,
             join_party_and_control,
             leave_party_and_control,
+            set_auto_follow_and_control,
         )
         session = context.game_session
         if session is None:
@@ -2015,6 +2104,7 @@ def register(registry: ToolRegistry) -> None:
                     'name': entity.label() if hasattr(entity, 'label') else str(entity),
                     'owners': sidekick_owners(session, entity),
                     'group': getattr(entity, 'group', None),
+                    'auto_follow': is_auto_follow_sidekick(session, entity),
                 })
             return {'sidekicks': listed, 'records': sidekick_records(session)}
         if not entity_uid:
@@ -2045,9 +2135,16 @@ def register(registry: ToolRegistry) -> None:
                 context.log_dm(f"DM assigned owners {owner_list} to {ent.label()}")
                 context.emit_refresh()
                 return {'entity_uid': entity_uid, 'record': rec}
+            if op == 'auto_follow':
+                if not is_in_party_sidekick(session, ent):
+                    raise tool_error('entity is not an in-party sidekick')
+                rec = set_auto_follow_and_control(ent, bool(enabled))
+                context.log_dm(f"DM set auto-follow {'on' if enabled else 'off'} for {ent.label()}")
+                context.emit_refresh()
+                return {'entity_uid': entity_uid, 'record': rec}
         except ValueError as exc:
             raise tool_error(str(exc)) from exc
-        raise tool_error('op must be one of: list, join, leave, assign_owner')
+        raise tool_error('op must be one of: list, join, leave, assign_owner, auto_follow')
 
 
 def _recalc_lights(context: MCPContext) -> None:

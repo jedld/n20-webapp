@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or 'Manage Users' }}</title>
+  <link href="/libs/bootstrap/3.3.7/css/bootstrap.min.css" rel="stylesheet">
+  <script src="/libs/jquery/jquery-3.2.1.min.js"></script>
+  <script src="/libs/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+  <style>
+    body { padding: 20px; }
+    .user-list, .character-list { max-height: 60vh; overflow-y: auto; }
+    .badge-dm { background-color: #8e44ad; }
+    .badge-player { background-color: #337ab7; }
+    .badge-connected { background-color: #28a745; }
+    .badge-offline { background-color: #777; }
+    .role-checks label { margin-right: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h3>Manage Users</h3>
+
+    <div class="panel panel-default">
+      <div class="panel-heading">Add Login</div>
+      <div class="panel-body">
+        <form id="add-user-form" class="form-inline">
+          <div class="form-group">
+            <label for="new-username">Username:</label>
+            <input type="text" id="new-username" class="form-control" placeholder="e.g. gomerin" pattern="[a-z][a-z0-9_\-]{0,31}" title="1-32 characters: lowercase letters, digits, underscore, hyphen">
+          </div>
+          <div class="form-group">
+            <label for="new-password">Password:</label>
+            <input type="password" id="new-password" class="form-control" placeholder="password" required>
+          </div>
+          <div class="form-group role-checks">
+            <label class="checkbox-inline"><input type="checkbox" id="new-role-player" checked> player</label>
+            <label class="checkbox-inline"><input type="checkbox" id="new-role-dm"> dm</label>
+          </div>
+          <button type="submit" class="btn btn-primary">Add</button>
+          <span id="add-user-status" class="text-muted" style="margin-left:10px;"></span>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel panel-default">
+      <div class="panel-heading">Logins & Roles</div>
+      <div class="panel-body user-list">
+        <table class="table table-striped" id="users-table">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Roles</th>
+              <th>Connection</th>
+              <th>Characters</th>
+              <th style="min-width:220px;">Edit</th>
+              <th style="width:80px;">Delete</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <button id="refresh-users" class="btn btn-default">Refresh</button>
+        <span id="users-status" class="text-muted" style="margin-left:10px;"></span>
+      </div>
+    </div>
+
+    <div class="panel panel-default">
+      <div class="panel-heading">Player Character Assignment</div>
+      <div class="panel-body character-list">
+        <p class="text-muted">
+          Assign a selectable character to a login. Assigning spawns the character on the
+          player's starting map and switches their view to it.
+        </p>
+        <table class="table table-striped" id="characters-table">
+          <thead>
+            <tr>
+              <th>Character</th>
+              <th>Description</th>
+              <th>Assigned To</th>
+              <th style="width:220px;">Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <a href="/" class="btn btn-link">Back to Game</a>
+  </div>
+
+<script>
+var usersData = null;
+
+function rolesPayload() {
+  var roles = [];
+  if ($('#new-role-player').is(':checked')) roles.push('player');
+  if ($('#new-role-dm').is(':checked')) roles.push('dm');
+  return roles;
+}
+
+function setStatus(selector, text, isError) {
+  var $el = $(selector);
+  $el.text(text);
+  $el.toggleClass('text-danger', !!isError);
+  $el.toggleClass('text-muted', !isError);
+}
+
+function loadUsers() {
+  $.getJSON('/admin/users', function(resp) {
+    if (resp && resp.success === false) {
+      setStatus('#users-status', resp.error || 'Failed to load users', true);
+      return;
+    }
+    usersData = resp || { users: [], selectable_characters: [] };
+    renderUsers();
+    renderCharacters();
+  }).fail(function(xhr) {
+    setStatus('#users-status', 'Failed to load users: ' + (xhr.responseJSON && xhr.responseJSON.error || xhr.statusText), true);
+  });
+}
+
+function renderUsers() {
+  var tbody = $('#users-table tbody');
+  tbody.empty();
+  (usersData.users || []).forEach(function(user) {
+    var tr = $('<tr>');
+    tr.append($('<td class="filename">').text(user.username));
+
+    var rolesTd = $('<td>');
+    (user.roles || []).forEach(function(role) {
+      var cls = role === 'dm' ? 'badge badge-dm' : 'badge badge-player';
+      rolesTd.append($('<span>').addClass(cls).text(role).append(' '));
+    });
+    tr.append(rolesTd);
+
+    var connTd = $('<td>');
+    connTd.append($('<span>').addClass('badge').addClass(user.connected ? 'badge-connected' : 'badge-offline').text(user.connected ? 'connected' : 'offline'));
+    tr.append(connTd);
+
+    tr.append($('<td>').text((user.assigned_characters || []).join(', ') || '—'));
+
+    var editTd = $('<td>');
+    var pw = $('<input type="password" class="form-control input-sm" placeholder="new password">');
+    var chkPlayer = $('<input type="checkbox" class="edit-role">').val('player');
+    var chkDm = $('<input type="checkbox" class="edit-role">').val('dm');
+    (user.roles || []).forEach(function(role) {
+      if (role === 'player') chkPlayer.prop('checked', true);
+      if (role === 'dm') chkDm.prop('checked', true);
+    });
+    var saveBtn = $('<button type="button" class="btn btn-xs btn-primary">Save</button>');
+    saveBtn.click(function() {
+      var newRoles = [];
+      saveBtn.closest('tr').find('.edit-role').each(function() {
+        if ($(this).prop('checked')) newRoles.push($(this).val());
+      });
+      if (newRoles.length === 0) {
+        alert('A login needs at least one role (player and/or dm).');
+        return;
+      }
+      var payload = { op: 'update', username: user.username, roles: newRoles };
+      var pwVal = pw.val();
+      if (pwVal) payload.password = pwVal;
+      setStatus('#users-status', 'Saving ' + user.username + ' ...');
+      $.ajax({ url: '/admin/users', method: 'POST', contentType: 'application/json', data: JSON.stringify(payload) })
+        .done(function() { setStatus('#users-status', ''); loadUsers(); })
+        .fail(function(xhr) {
+          setStatus('#users-status', 'Error: ' + (xhr.responseJSON && xhr.responseJSON.error || xhr.statusText), true);
+        });
+    });
+    editTd.append(pw).append(' ').append(chkPlayer).append(' player ').append(chkDm).append(' dm ').append(saveBtn);
+    tr.append(editTd);
+
+    var delTd = $('<td>');
+    var delBtn = $('<button type="button" class="btn btn-xs btn-danger">Delete</button>');
+    delBtn.click(function() {
+      if (!confirm('Delete login "' + user.username + '"? Any character assignments for this login are removed.')) return;
+      $.ajax({ url: '/admin/users', method: 'POST', contentType: 'application/json', data: JSON.stringify({ op: 'delete', username: user.username }) })
+        .done(function() { setStatus('#users-status', 'Deleted ' + user.username + '.'); loadUsers(); })
+        .fail(function(xhr) {
+          setStatus('#users-status', 'Error: ' + (xhr.responseJSON && xhr.responseJSON.error || xhr.statusText), true);
+        });
+    });
+    delTd.append(delBtn);
+    tr.append(delTd);
+
+    tbody.append(tr);
+  });
+}
+
+function renderCharacters() {
+  var tbody = $('#characters-table tbody');
+  tbody.empty();
+  (usersData.selectable_characters || []).forEach(function(character) {
+    var tr = $('<tr>');
+    tr.append($('<td class="filename">').text(character.character_uid));
+    tr.append($('<td>').text(character.description || '—'));
+    var controllers = character.controllers || [];
+    tr.append($('<td>').text(controllers.length ? controllers.join(', ') : 'unassigned'));
+
+    var actionTd = $('<td>');
+    if (character.taken) {
+      controllers.forEach(function(username) {
+        var unassignBtn = $('<button type="button" class="btn btn-xs btn-default">Unassign ' + username + '</button>');
+        unassignBtn.click(function() {
+          if (!confirm('Unassign ' + username + ' from ' + character.character_uid + '?')) return;
+          $.ajax({ url: '/admin/users', method: 'POST', contentType: 'application/json', data: JSON.stringify({ op: 'unassign_character', username: username, character_uid: character.character_uid, spawn: false }) })
+            .done(function() { setStatus('#users-status', 'Unassigned.'); loadUsers(); })
+            .fail(function(xhr) {
+              setStatus('#users-status', 'Error: ' + (xhr.responseJSON && xhr.responseJSON.error || xhr.statusText), true);
+            });
+        });
+        actionTd.append(unassignBtn).append(' ');
+      });
+    } else {
+      var assignBtn = $('<button type="button" class="btn btn-xs btn-primary">Assign…</button>');
+      assignBtn.click(function() {
+        var username = prompt('Assign ' + character.character_uid + ' to login:');
+        if (!username) return;
+        username = username.trim().toLowerCase();
+        if (!/^[a-z][a-z0-9_\-]{0,31}$/.test(username)) {
+          alert('Username must be 1-32 characters: lowercase letters, digits, underscore, hyphen.');
+          return;
+        }
+        if (!confirm('Assign ' + character.character_uid + ' to "' + username + '" and spawn them?')) return;
+        $.ajax({ url: '/admin/users', method: 'POST', contentType: 'application/json', data: JSON.stringify({ op: 'assign_character', username: username, character_uid: character.character_uid, spawn: true }) })
+          .done(function() { setStatus('#users-status', 'Assigned ' + character.character_uid + ' to ' + username + '.'); loadUsers(); })
+          .fail(function(xhr) {
+            setStatus('#users-status', 'Error: ' + (xhr.responseJSON && xhr.responseJSON.error || xhr.statusText), true);
+          });
+      });
+      actionTd.append(assignBtn);
+    }
+    tr.append(actionTd);
+    tbody.append(tr);
+  });
+}
+
+$('#add-user-form').submit(function(e) {
+  e.preventDefault();
+  var username = $('#new-username').val().trim().toLowerCase();
+  var password = $('#new-password').val();
+  var roles = rolesPayload();
+  if (!/^[a-z][a-z0-9_\-]{0,31}$/.test(username)) {
+    setStatus('#add-user-status', 'Username must be 1-32 characters: lowercase letters, digits, underscore, hyphen.', true);
+    return;
+  }
+  if (!password) {
+    setStatus('#add-user-status', 'Password is required.', true);
+    return;
+  }
+  if (roles.length === 0) {
+    setStatus('#add-user-status', 'Select at least one role (player and/or dm).', true);
+    return;
+  }
+  setStatus('#add-user-status', 'Adding ...');
+  $.ajax({ url: '/admin/users', method: 'POST', contentType: 'application/json', data: JSON.stringify({ op: 'create', username: username, password: password, roles: roles }) })
+    .done(function(resp) {
+      if (resp && resp.success === false) {
+        setStatus('#add-user-status', resp.error || 'Failed to add user.', true);
+        return;
+      }
+      setStatus('#add-user-status', 'Added ' + username + '.');
+      $('#add-user-form')[0].reset();
+      $('#new-role-player').prop('checked', true);
+      $('#new-role-dm').prop('checked', false);
+      loadUsers();
+    })
+    .fail(function(xhr) {
+      setStatus('#add-user-status', 'Error: ' + (xhr.responseJSON && xhr.responseJSON.error || xhr.statusText), true);
+    });
+});
+
+$('#refresh-users').click(loadUsers);
+
+$(function() { loadUsers(); });
+</script>
+</body>
+</html>

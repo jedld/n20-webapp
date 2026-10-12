@@ -181,6 +181,15 @@
     "rule": "/admin/manage_saves"
   },
   {
+    "endpoint": "dm.admin_manage_users",
+    "methods": [
+      "GET",
+      "HEAD",
+      "OPTIONS"
+    ],
+    "rule": "/admin/manage_users"
+  },
+  {
     "endpoint": "dm.admin_activate_map_set",
     "methods": [
       "OPTIONS",
@@ -402,6 +411,47 @@
       "POST"
     ],
     "rule": "/ai/clear-history"
+  },
+  {
+    "endpoint": "ai.ai_config_get",
+    "methods": [
+      "GET",
+      "HEAD",
+      "OPTIONS"
+    ],
+    "rule": "/ai/config"
+  },
+  {
+    "endpoint": "ai.ai_config_save",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/ai/config"
+  },
+  {
+    "endpoint": "ai.ai_config_npc",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/ai/config/npc"
+  },
+  {
+    "endpoint": "ai.ai_config_reload",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/ai/config/reload"
+  },
+  {
+    "endpoint": "ai.ai_config_test",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/ai/config/test"
   },
   {
     "endpoint": "ai.ai_get_context",
@@ -2111,6 +2161,14 @@
     "rule": "/party/invite"
   },
   {
+    "endpoint": "navigation.party_sidekick_follow",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/party/sidekick_follow"
+  },
+  {
     "endpoint": "compute_path",
     "methods": [
       "GET",
@@ -2697,6 +2755,14 @@
       "OPTIONS"
     ],
     "rule": "/turn_order"
+  },
+  {
+    "endpoint": "dm.undo_delete_entity",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/undo_delete_entity"
   },
   {
     "endpoint": "dm.unequip",

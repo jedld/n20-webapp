@@ -1,11 +1,13 @@
 {
   "files": {
+    "ai_config.js": "ai_config.min.js",
     "combat-log.js": "combat-log.min.js",
     "dm_notes.js": "dm_notes.min.js",
     "edit_mode.js": "edit_mode.min.js",
     "edit_properties.js": "edit_properties.min.js",
     "effects.js": "effects.min.js",
     "engine.js": "engine.min.js",
+    "grapple_links.js": "grapple_links.min.js",
     "inert-polyfill.js": "inert-polyfill.min.js",
     "map_annotations_edit.js": "map_annotations_edit.min.js",
     "map_graph.js": "map_graph.min.js",
@@ -23,18 +25,21 @@
     "js/chat.js": "js/chat.min.js",
     "js/local_conversation.js": "js/local_conversation.min.js",
     "js/tts_player.js": "js/tts_player.min.js",
+    "ai_config.css": "ai_config.min.css",
     "journal.css": "journal.min.css",
     "notebook.css": "notebook.min.css",
     "sheet.css": "sheet.min.css",
     "styles.css": "styles.min.css"
   },
   "versions": {
+    "ai_config.min.js": "db4bf5dba5",
     "combat-log.min.js": "a8e282849c",
     "dm_notes.min.js": "a9c23e4e5d",
     "edit_mode.min.js": "33eb5aceda",
     "edit_properties.min.js": "9567e2667f",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "f606e6ff8b",
+    "engine.min.js": "a944a584bc",
+    "grapple_links.min.js": "8c0dfdfd0a",
     "inert-polyfill.min.js": "fcce9c44c6",
     "map_annotations_edit.min.js": "a395fef84a",
     "map_graph.min.js": "28b3146478",
@@ -51,12 +56,13 @@
     "js/character_builder_images.min.js": "cb752ad32e",
     "js/chat.min.js": "5d89a28f5f",
     "js/local_conversation.min.js": "d47a766b54",
-    "js/tts_player.min.js": "099096b5fb",
+    "js/tts_player.min.js": "2f65467b56",
+    "ai_config.min.css": "3d5f64451e",
     "journal.min.css": "51ba4e37df",
     "notebook.min.css": "e5ebb9b378",
     "sheet.min.css": "780b514172",
-    "styles.min.css": "6df9af5464"
+    "styles.min.css": "a20248f11a"
   },
-  "generatedAt": "2026-08-19T05:19:21.203Z",
-  "buildVersion": "f212ccde68a5"
+  "generatedAt": "2026-10-12T09:42:15.971Z",
+  "buildVersion": "c1f77e632b10"
 }

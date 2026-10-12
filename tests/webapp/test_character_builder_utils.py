@@ -377,9 +377,9 @@ class TestCharacterBuilderUtils(unittest.TestCase):
         with patch.object(self.mod.os.path, 'isdir', return_value=True):
             with patch.object(self.mod.os.path, 'exists', side_effect=exists_side_effect):
                 with patch.object(self.mod.os, 'listdir', return_value=['test_character.yml']):
-                    mock_file = mock_open()
-                    mock_file.return_value.__enter__ = lambda self: self
-                    mock_file.return_value.read.return_value = 'entity_uid: test-character\nname: Test Character\n'
+                    # read_data (not read.return_value): yaml.safe_load reads in chunks
+                    # until EOF, so a constant read() return loops and grows memory forever.
+                    mock_file = mock_open(read_data='entity_uid: test-character\nname: Test Character\n')
                     with patch('builtins.open', mock_file):
                         result = self.mod._resolve_character_yaml_path('test character')
                         self.assertIsNotNone(result)

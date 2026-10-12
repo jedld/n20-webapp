@@ -168,7 +168,9 @@ const expose = new vm.Script(`({
   renderMoveQuickAction: (typeof renderMoveQuickAction !== 'undefined') ? renderMoveQuickAction : undefined,
   executeMoveQuickAction: (typeof executeMoveQuickAction !== 'undefined') ? executeMoveQuickAction : undefined,
   updateCoordsBox: (typeof updateCoordsBox !== 'undefined') ? updateCoordsBox : undefined,
-  appendTeleporterHoverHint: (typeof appendTeleporterHoverHint !== 'undefined') ? appendTeleporterHoverHint : undefined
+  appendTeleporterHoverHint: (typeof appendTeleporterHoverHint !== 'undefined') ? appendTeleporterHoverHint : undefined,
+  DmDeleteUndo: (typeof DmDeleteUndo !== 'undefined') ? DmDeleteUndo : undefined,
+  actionBarState: (typeof actionBarState !== 'undefined') ? actionBarState : undefined
 })`);
 const Engine = expose.runInContext(context);
 
@@ -1435,5 +1437,84 @@ describe('engine.js basic behavior', () => {
     expect(hit).toEqual(expect.objectContaining({ x: 6, y: 0 }));
 
     global.$ = orig$;
+  });
+});
+
+describe('DM Delete / Ctrl+Z (DmDeleteUndo)', () => {
+  const $ = global.$;
+
+  afterEach(() => {
+    global.$ = $;
+  });
+
+  function setBodyRole(role, povUid = null) {
+    global.$ = (sel) => {
+      if (sel === 'body') {
+        return {
+          attr: (name) => {
+            if (name === 'data-role') return role;
+            if (name === 'data-pov-entity') return povUid;
+            return null;
+          },
+          data: () => null,
+        };
+      }
+      return $(sel);
+    };
+  }
+
+  test('exposes the DmDeleteUndo surface', () => {
+    expect(typeof Engine.DmDeleteUndo).toBe('object');
+    expect(typeof Engine.DmDeleteUndo.pushUndo).toBe('function');
+    expect(typeof Engine.DmDeleteUndo.hotkeyActive).toBe('function');
+    expect(typeof Engine.DmDeleteUndo.focusedEntityUid).toBe('function');
+    expect(typeof Engine.DmDeleteUndo.stack).toBe('function');
+    expect(Engine.DmDeleteUndo.limit).toBe(20);
+  });
+
+  test('hotkeyActive requires the DM role and no typing target', () => {
+    setBodyRole('dm');
+    expect(Engine.DmDeleteUndo.hotkeyActive()).toBe(true);
+
+    setBodyRole('player');
+    expect(Engine.DmDeleteUndo.hotkeyActive()).toBe(false);
+
+    setBodyRole(['player']);
+    expect(Engine.DmDeleteUndo.hotkeyActive()).toBe(false);
+
+    setBodyRole(['dm', 'player']);
+    expect(Engine.DmDeleteUndo.hotkeyActive()).toBe(true);
+  });
+
+  test('focusedEntityUid prefers the action-bar entry over the POV entity', () => {
+    setBodyRole('dm', 'pov-1');
+    expect(Engine.DmDeleteUndo.focusedEntityUid()).toBe('pov-1');
+
+    const bar = Engine.actionBarState;
+    const savedVisible = bar.visible;
+    const savedUid = bar.activeEntityUid;
+    bar.visible = true;
+    bar.activeEntityUid = 'npc-42';
+    try {
+      expect(Engine.DmDeleteUndo.focusedEntityUid()).toBe('npc-42');
+    } finally {
+      bar.visible = savedVisible;
+      bar.activeEntityUid = savedUid;
+    }
+  });
+
+  test('pushUndo caps the stack at the limit, newest first', () => {
+    for (let i = 1; i <= 25; i++) {
+      Engine.DmDeleteUndo.pushUndo({ entity_uid: `npc-${i}` });
+    }
+    const stack = Engine.DmDeleteUndo.stack();
+    expect(stack).toHaveLength(20);
+    // Oldest five entries were dropped.
+    expect(stack[0].entity_uid).toBe('npc-6');
+    expect(stack[stack.length - 1].entity_uid).toBe('npc-25');
+    // Pushing junk is ignored.
+    Engine.DmDeleteUndo.pushUndo(null);
+    Engine.DmDeleteUndo.pushUndo({});
+    expect(Engine.DmDeleteUndo.stack()).toHaveLength(20);
   });
 });

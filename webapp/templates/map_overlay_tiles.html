@@ -150,9 +150,9 @@
               <i class="glyphicon glyphicon-comment"></i>
             </div>
             {% endif %}
-            <div class="entity" data-id="{{ tile['id'] }}" data-label="{{ tile.get('label', '')|e }}">
-              {% set entity_size = tile.get('entity_size', 'medium') %}
-              {% set multiplier = 2 if entity_size == 'large' else 1 %}
+            {% set entity_size = tile.get('entity_size', 'medium') %}
+            {% set multiplier = 2 if entity_size == 'large' else 1 %}
+            <div class="entity{% if tile.get('grappled') %} is-grappled{% endif %}" data-id="{{ tile['id'] }}" data-label="{{ tile.get('label', '')|e }}" data-token-squares="{{ multiplier }}"{% if tile.get('grappled_by') %} data-grappled-by='{{ tile.grappled_by|tojson }}'{% endif %}{% if tile.get('grappling') %} data-grappling='{{ tile.grappling|tojson }}'{% endif %}>
               {% set image_size_px = tile_size_px * multiplier %}
               {% if tile.get('is_flying') %}
               <div class="flying-entity-wrapper" style="transform: {{ transform_for(tile) }};">
@@ -180,6 +180,8 @@
                   {{ tile['team_group'] }}
                 </div>
               {% endif %}
+              {% include '_grapple_token_badge.html' %}
+              {% include '_death_save_overlay.html' %}
               <div class="effect">
                 {% for effect in tile.get('effects', []) %}
                   <img src="{{ url_for('static', filename='assets/effect/' ~ effect|lower ~ '.png') }}"

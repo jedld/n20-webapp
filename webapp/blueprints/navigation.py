@@ -3,7 +3,7 @@
 Extracted from webapp/app.py.
 Routes: /, /command, /reload_map, /response, /focus, /switch_map,
         /path, /path/cost_map, /jump_info, /refresh-portraits,
-        /update, /map_state, /mark_note_read
+        /update, /map_state, /mark_note_read, /party/invite, /party/sidekick_follow
 """
 import json
 import os
@@ -736,6 +736,7 @@ def compute_path():
         tuple(accumulated_path),
         bool(allow_stack_descent),
         dest_map_name or '',
+        getattr(battle, 'legendary_phase', None) or '',
     )
     user_key = session.get('username') or 'anonymous'
     proc_cache = _PATH_RESPONSE_CACHE.setdefault(user_key, OrderedDict())
@@ -936,6 +937,7 @@ def path_cost_map():
         str(getattr(entity, 'entity_uid', None) or ''),
         int(source_x),
         int(source_y),
+        getattr(battle, 'legendary_phase', None) or '',
     )
 
     _t_cache = time.perf_counter()
@@ -1559,3 +1561,53 @@ def party_invite():
         requesting_username=username,
     )
     return jsonify(payload), status
+
+
+@navigation_bp.route('/party/sidekick_follow', methods=['POST'], endpoint='party_sidekick_follow')
+def party_sidekick_follow():
+    """Toggle auto-follow for an in-party sidekick (owner or DM).
+
+    Backs the follow toggle shown on hover in the lower-left portrait dock.
+    Only the sidekick's assigned owners (or the DM) may change it.
+    """
+    if not logged_in():
+        return jsonify(error='Not logged in'), 401
+    data = request.get_json(silent=True) or request.form or {}
+    entity_uid = data.get('entity_uid') or data.get('entity_id')
+    if not entity_uid:
+        return jsonify(error='entity_uid is required'), 400
+    current_game = get_current_game()
+    game_session = get_game_session()
+    username = session.get('username')
+    entity = current_game.get_entity_by_uid(entity_uid) if entity_uid else None
+    if entity is None:
+        return jsonify(error='Entity not found'), 404
+    from natural20.sidekick import (
+        is_auto_follow_sidekick,
+        is_in_party_sidekick,
+        sidekick_owners,
+    )
+    from webapp.blueprints.helpers.sidekick_control import set_auto_follow_and_control
+    if not is_in_party_sidekick(game_session, entity):
+        return jsonify(error='entity is not an in-party sidekick'), 400
+    is_dm = 'dm' in user_role()
+    owners = sidekick_owners(game_session, entity)
+    name = str(username or '').strip().lower()
+    if not is_dm and name not in owners:
+        return jsonify(error='You do not control this companion'), 403
+    enabled = not is_auto_follow_sidekick(game_session, entity) if 'enabled' not in data else bool(data.get('enabled'))
+    try:
+        rec = set_auto_follow_and_control(entity, enabled)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    try:
+        current_game.bump_render_epoch(username=username)
+        get_socketio().emit('message', {'type': 'refresh_map'})
+    except Exception:
+        pass
+    return jsonify(
+        success=True,
+        entity_uid=entity_uid,
+        auto_follow=bool(rec.get('auto_follow')),
+        record=rec,
+    )

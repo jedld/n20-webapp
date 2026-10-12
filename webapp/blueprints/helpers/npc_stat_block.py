@@ -655,6 +655,9 @@ def build_npc_stat_block(entity) -> dict[str, Any]:
     for raw in props.get('legendary_actions') or getattr(entity, 'legendary_actions', None) or []:
         formatted = format_npc_action(raw)
         if formatted.get('name'):
+            cost = raw.get('cost') if isinstance(raw, dict) else None
+            if isinstance(cost, int) and cost > 1:
+                formatted['name'] = f"{formatted['name']} (Costs {cost} Actions)"
             legendary.append(formatted)
 
     reactions = []

@@ -512,3 +512,6 @@ def register_battle_end_hook_handlers(conversation_service, record_narration_fn=
 
     attach_battle_end_hooks(conversation_service, record_narration_fn=record_narration_fn)
     attach_battle_combat_recap()
+
+    from webapp.npc_kill_reaction import attach_npc_kill_reactions
+    attach_npc_kill_reactions(conversation_service)

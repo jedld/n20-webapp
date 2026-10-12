@@ -101,7 +101,8 @@ def register(registry: ToolRegistry) -> None:
         description='Execute a non-movement action for an entity. Engine performs '
                     'auto-targeting via autobuild. Pass a target entity uid in `target` '
                     'and free-form options in `opts` (e.g. spell name, at_level, '
-                    'knock_unconscious=true for melee knockout). '
+                    'knock_unconscious=true for melee knockout, grapple_instead=true for '
+                    'NPC attacks with a grapple_instead option). '
                     'For doors and map objects, use action_type "InteractAction" (or omit '
                     'it and set opts.action to "open", "close", etc.). '
                     'InteractAction with `target` uses the DungeonMaster actor (same as '
@@ -230,8 +231,8 @@ def register(registry: ToolRegistry) -> None:
         if not built:
             raise tool_error('No valid action could be built (no legal targets/options)')
         action = built[0]
-        if opts.get('knock_unconscious') and hasattr(action, 'knock_unconscious'):
-            action.knock_unconscious = True
+        from webapp.blueprints.helpers.action_utils import apply_knock_unconscious_opt
+        apply_knock_unconscious_opt(action, opts)
         try:
             _with_dm_mcp_privileges(ent, lambda: context.current_game.commit_and_update('dm', action, [ent]))
         except Exception as exc:
@@ -291,7 +292,8 @@ def register(registry: ToolRegistry) -> None:
     @tool(
         registry,
         name='actions.end_turn',
-        description='End the current entity\'s turn (advance battle to the next combatant).',
+        description='End the current entity\'s turn (advance battle to the next combatant). '
+                    'During a legendary action phase this ends the legendary action instead.',
         input_schema={'type': 'object', 'properties': {}},
         category='actions',
     )
@@ -299,6 +301,13 @@ def register(registry: ToolRegistry) -> None:
         battle = _safe(lambda: context.current_game.get_current_battle())
         if battle is None:
             raise tool_error('No active battle')
+        if getattr(battle, 'legendary_phase', None):
+            ended = battle.legendary_phase
+            context.current_game.advance_legendary_phase(battle)
+            return {'ended_legendary_phase_uid': ended,
+                    'legendary_phase_uid': battle.legendary_phase,
+                    'current_uid': _safe(lambda: battle.current_turn().entity_uid),
+                    'round': getattr(battle, 'round', None)}
         before = _safe(lambda: battle.current_turn().entity_uid)
         try:
             battle.next_turn()

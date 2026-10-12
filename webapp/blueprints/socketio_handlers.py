@@ -3,7 +3,7 @@
 Call ``register_socketio_handlers(socketio)`` once after globals are
 registered so handlers can use ``runtime_state`` accessors.
 """
-from flask import request, session
+from flask import request
 from flask_socketio import emit
 
 from .helpers.effects import emit_active_effects_for_client
@@ -28,7 +28,8 @@ def register_socketio_handlers(socketio):
         if ws:
             current_game = get_current_game()
             sids = current_game.username_to_sid.get(username, [])
-            sids.append(ws)
+            if ws not in sids:
+                sids.append(ws)
             current_game.username_to_sid[username] = sids
             get_logger().info(f"open connection {ws} for {username}")
             emit('info', {'type': 'info', 'message': ''})
@@ -70,11 +71,12 @@ def register_socketio_handlers(socketio):
         # python-socketio may pass a disconnect reason; keep it optional for older versions.
         _ = reason
         ws = request.sid
-        username = session.get('username')
-        if ws and username:
-            current_game = get_current_game()
-            sids = current_game.username_to_sid.get(username, [])
+        if not ws:
+            return
+        current_game = get_current_game()
+        # The socket may have registered under a name other than the Flask
+        # session's (or the session may be gone), so drop it everywhere.
+        for username, sids in list((current_game.username_to_sid or {}).items()):
             if ws in sids:
-                sids.remove(ws)
-                current_game.username_to_sid[username] = sids
+                current_game.username_to_sid[username] = [sid for sid in sids if sid != ws]
                 get_logger().info(f"close connection {ws} for {username}")

@@ -130,6 +130,7 @@ def notify_party_membership(entity, action: str, record=None, *, hostile: bool =
     name = _entity_label(entity)
     uid = str(getattr(entity, 'entity_uid', '') or '')
     owners = list((record or {}).get('owners') or [])
+    auto_follow = bool((record or {}).get('auto_follow'))
     if action == 'join':
         text = f'{name} joined the party.'
     elif action == 'leave':
@@ -138,6 +139,8 @@ def notify_party_membership(entity, action: str, record=None, *, hostile: bool =
             if hostile
             else f'{name} left the party.'
         )
+    elif action == 'auto_follow':
+        text = f'{name} will now auto-follow the party.' if auto_follow else f'{name} stopped auto-following.'
     else:
         text = f'{name} is now a party companion.'
 
@@ -157,6 +160,7 @@ def notify_party_membership(entity, action: str, record=None, *, hostile: bool =
             'owners': owners,
             'text': text,
             'hostile': bool(hostile),
+            'auto_follow': auto_follow,
         },
     }
     try:
@@ -180,6 +184,17 @@ def notify_party_membership(entity, action: str, record=None, *, hostile: bool =
             pass
 
 
+def _sync_auto_follow(current_game=None, entity=None) -> None:
+    """Realign auto-follow tasks after a party membership change."""
+    try:
+        from webapp.sidekick_follow import sync_sidekick_auto_follows
+        game = current_game or get_current_game()
+        if game is not None:
+            sync_sidekick_auto_follows(game)
+    except Exception:
+        pass
+
+
 def join_party_and_control(entity, owners: Optional[Iterable[str]] = None, *,
                            notify: bool = True, **kwargs):
     session = get_game_session()
@@ -187,6 +202,7 @@ def join_party_and_control(entity, owners: Optional[Iterable[str]] = None, *,
     register_sidekick_control(entity, record.get('owners') or owners)
     if notify:
         notify_party_membership(entity, 'join', record)
+    _sync_auto_follow(entity=entity)
     return record
 
 
@@ -202,6 +218,7 @@ def leave_party_and_control(entity, *, hostile: bool = False, notify: bool = Tru
             pass
     if notify:
         notify_party_membership(entity, 'leave', record, hostile=hostile)
+    _sync_auto_follow(entity=entity)
     return record
 
 
@@ -211,6 +228,30 @@ def assign_owners_and_control(entity, owners: Iterable[str], *, notify: bool = T
     register_sidekick_control(entity, record.get('owners') or owners)
     if notify:
         notify_party_membership(entity, 'assign_owner', record)
+    _sync_auto_follow(entity=entity)
+    return record
+
+
+def set_auto_follow_and_control(entity, enabled: bool, *, notify: bool = True):
+    """Toggle sidekick auto-follow and realign follow tasks.
+
+    Returns the updated sidekick record, or raises ``ValueError`` when the
+    entity is not an in-party sidekick.
+    """
+    from natural20.sidekick import is_in_party_sidekick, set_auto_follow
+
+    session = get_game_session()
+    if not is_in_party_sidekick(session, entity):
+        raise ValueError('entity is not an in-party sidekick')
+    record = set_auto_follow(session, entity, enabled)
+    current_game = get_current_game()
+    _sync_auto_follow(current_game=current_game, entity=entity)
+    if notify:
+        notify_party_membership(
+            entity,
+            'auto_follow',
+            record,
+        )
     return record
 
 
@@ -229,6 +270,7 @@ def restore_sidekick_controllers(current_game=None):
         owners = sidekick_owners(session, entity)
         register_sidekick_control(entity, owners, current_game=game)
         applied.append(getattr(entity, 'entity_uid', None))
+    _sync_auto_follow(current_game=game)
     return applied
 
 

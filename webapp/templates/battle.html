@@ -2,7 +2,9 @@
   {% set is_current = entity == battle.current_turn() %}
   {% set is_dead = entity.dead() %}
   {% set is_first_in_round = loop.first and current_turn_index == 0 %}
-  <div class="turn-order-item row {% if is_current %}active{% endif %} {% if is_dead %}turn-order-dead{% endif %} {% if is_first_in_round %}top-of-round{% endif %}"
+  {% set is_legendary = battle.legendary_phase and battle.legendary_phase == entity.entity_uid %}
+  <div class="turn-order-item row {% if is_current %}active{% endif %} {% if is_dead %}turn-order-dead{% endif %} {% if is_first_in_round %}top-of-round{% endif %} {% if is_legendary %}legendary-phase{% endif %}"
+        {% if is_legendary %}title="Taking a legendary action"{% endif %}
         data-id="{{ entity.entity_uid }}"
         {% if 'dm' in role %}draggable="true"{% endif %}>
     {% if 'dm' in role %}

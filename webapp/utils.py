@@ -20,6 +20,7 @@ import logging
 from mutagen.mp3 import MP3
 from natural20.utils.serialization import Serialization
 import gzip
+import shutil
 import threading
 import queue
 from natural20.action import Action, AsyncReactionHandler, BardicInspirationPrompt
@@ -556,7 +557,8 @@ class GameManagement:
                  autosave = False,
                  auto_battle=True,
                  system_logger=None,  soundtrack=None,
-                 defer_player_spawn=False):
+                 defer_player_spawn=False,
+                 reset_saves=False):
         """
         Initialize the game management
 
@@ -567,6 +569,9 @@ class GameManagement:
         :param tile_px: the tile pixel size
         :param controllers: the controllers
         :param auto_battle: whether to auto battle
+        :param reset_saves: when True, wipe persisted save state at boot
+            (save files, campaign logs, notebook, NPC memories) so the
+            campaign starts fresh (``--reset`` startup flag).
         """
         self.map_location = map_location
         self.other_maps = other_maps
@@ -669,6 +674,14 @@ class GameManagement:
             self.save_dir = tmpdir
             self.logger.warning(f"SAVE_DIR not writable. Falling back to {self.save_dir}")
 
+        # --reset startup flag: wipe persisted state BEFORE the sqlite DBs
+        # are opened and before any save autoload so the boot starts fresh.
+        if reset_saves:
+            try:
+                self._wipe_save_state()
+            except Exception:
+                self.logger.exception("--reset: failed to clear persisted save state")
+
         self.campaign_log_db = CampaignLogDB(
             os.path.join(self.save_dir, 'campaign_logs.sqlite')
         )
@@ -679,6 +692,11 @@ class GameManagement:
         )
         from natural20.npc_memory_store import NpcMemoryStore
         self.npc_memory_store = NpcMemoryStore(getattr(self.game_session, 'root_path', '.'))
+        if reset_saves:
+            try:
+                self._clear_npc_memory_files()
+            except Exception:
+                self.logger.exception("--reset: failed to clear NPC memory files")
         if self.output_logger:
             try:
                 snapshot = self.campaign_log_db.combat_log_snapshot(1000)
@@ -757,8 +775,6 @@ class GameManagement:
                     self.current_soundtrack = track
             self.soundtracks = loaded_soundtracks
         self._setup_controllers()
-        if self.defer_player_spawn:
-            self._defer_all_players()
         if autosave:
             # Build an initial save list from files present
             available_files = []
@@ -789,6 +805,10 @@ class GameManagement:
                         print(f"Loading save {save_file} {index}")
                         # Prefer loading by filename to avoid index/position ambiguity
                         self.load_save(filename=save_file)
+        # Defer after any autosave restore so players respawn at their saved
+        # positions instead of stale copies from the campaign YAML.
+        if self.defer_player_spawn:
+            self._defer_all_players()
 
     def _setup_controllers(self):
         self.controller_registry.setup_controllers()
@@ -839,6 +859,15 @@ class GameManagement:
     def set_pov_entity_for_user(self, username, entity):
         self.entity_registry.set_pov_entity_for_user(username, entity)
         self.bump_render_epoch(username=username)
+        self._sync_sidekick_auto_follows()
+
+    def _sync_sidekick_auto_follows(self):
+        """Realign sidekick auto-follow tasks after a POV (focus) change."""
+        try:
+            from webapp.sidekick_follow import sync_sidekick_auto_follows
+            sync_sidekick_auto_follows(self)
+        except Exception as exc:
+            self.logger.debug("Sidekick auto-follow sync skipped: %s", exc)
 
     def switch_map_for_user(self, username, map_name):
         self.entity_registry.switch_map_for_user(username, map_name)
@@ -1053,6 +1082,8 @@ class GameManagement:
             if current_name == map_name:
                 self.current_map_for_user[username] = (map_name, new_map)
         self.entity_registry.respawn_deferred_on_map(map_name)
+        # /update caches rendered tiles per epoch; edits must invalidate them.
+        self.bump_render_epoch()
         return new_map
 
     def ensure_user_entities_spawned(self, username):
@@ -1119,10 +1150,67 @@ class GameManagement:
         self.socketio.emit('message', {'type': 'move', 'message': {'animation_log': _coalesce_animation_log(self.battle.get_animation_logs())}})
         self.battle.clear_animation_logs()
 
+    def push_end_of_turn_animations(self, battle=None):
+        """Emit animations queued during ``Battle.end_turn`` (legendary
+        actions resolve there) so they play before the next turn starts."""
+        battle = battle or self.get_current_battle()
+        if battle is None:
+            return
+        # Legendary actions and end-of-turn effects mutate the board outside
+        # commit_and_update(); without a new epoch /update serves stale tiles.
+        self.bump_render_epoch()
+        if not battle.get_animation_logs():
+            return
+        # No trailing refresh_map: the client refreshes tiles once the walk
+        # finishes, and an early refresh removes the in-flight sprite.
+        self.socketio.emit('message', {'type': 'move', 'message': {'animation_log': _coalesce_animation_log(battle.get_animation_logs())}})
+        battle.clear_animation_logs()
+
+    def begin_legendary_phase(self, battle=None) -> bool:
+        """Open the next manually controlled legendary action window queued
+        by ``Battle.end_turn``. Returns True when the battle should pause for
+        the player instead of advancing to the next turn."""
+        battle = battle or self.get_current_battle()
+        if battle is None or battle.battle_ends():
+            return False
+        entity = battle.begin_legendary_phase()
+        if entity is None:
+            return False
+        self.socketio.emit('message', {
+            'type': 'legendary_phase',
+            'message': {
+                'id': entity.entity_uid,
+                'label': entity.label(),
+                'remaining': entity.total_legendary_actions(battle),
+            },
+        })
+        self.emit_current_turn_state()
+        return True
+
+    def advance_legendary_phase(self, battle=None) -> None:
+        """Close the open legendary window and move on: the next queued
+        legendary creature, else the next turn in initiative order."""
+        battle = battle or self.get_current_battle()
+        if battle is None:
+            return
+        ended_uid = battle.legendary_phase
+        battle.end_legendary_phase()
+        if ended_uid:
+            self.socketio.emit('message', {'type': 'legendary_phase_end', 'message': {'id': ended_uid}})
+        if self.begin_legendary_phase(battle):
+            return
+        if battle.battle_ends():
+            self.end_current_battle()
+            return
+        battle.next_turn()
+        self.schedule_continue_game_loop()
+
     def emit_current_turn_state(self):
         battle = self.get_current_battle()
         if not battle:
             return
+        # Start-of-turn effects (regeneration, death saves) change HP markers.
+        self.bump_render_epoch()
         self.socketio.emit('message', {
             'type': 'initiative',
             'message': {'index': battle.current_turn_index}
@@ -1216,24 +1304,8 @@ class GameManagement:
     def _after_reaction_background(self) -> None:
         try:
             with self.game_state_lock:
-                self.ai_loop()
-                self.game_loop()
+                self.resume_after_reaction()
             self.emit_post_game_loop_updates(battle_start=False)
-        except ManualControl:
-            self.logger.info("waiting for user to end turn.")
-        except AsyncReactionHandler as e:
-            entity = None
-            for _, ent, valid_actions in e.resolve():
-                entity = ent
-                valid_actions_str = [
-                    [str(action.uid), str(action), action] for action in valid_actions
-                ]
-                self.waiting_for_reaction = [ent, e, e.resolve(), valid_actions_str]
-            if entity is not None:
-                self.socketio.emit('message', {
-                    'type': 'reaction',
-                    'message': {'id': entity.entity_uid, 'reaction': e.reaction_type},
-                })
         except Exception:
             self.logger.exception("post-reaction game loop failed")
         finally:
@@ -1256,8 +1328,8 @@ class GameManagement:
     def get_available_maps(self):
         return list(self.maps.keys())
 
-    def effective_npc_combat_controller(self):
-        return self.controller_registry.effective_npc_combat_controller()
+    def effective_npc_combat_controller(self, entity=None):
+        return self.controller_registry.effective_npc_combat_controller(entity)
 
     def build_combat_controller_for_entity(self, entity, controller_kind=None):
         return self.controller_registry.build_combat_controller_for_entity(
@@ -1573,62 +1645,112 @@ class GameManagement:
         return self.controller_registry.entities_owned_by(entity)
 
     def game_loop(self):
-        battle = self.get_current_battle()
+        """Run turns from the start of the current combatant's turn until a
+        human must act, a reaction is pending, or the battle ends."""
         try:
-            while True:
-                # Start turn and prepare entity
-                battle.start_turn()
-                current_turn = battle.current_turn()
-                current_turn.reset_turn(battle)
-                self.emit_current_turn_state()
-
-                if battle.battle_ends():
-                    break
-
-                # Skip turns for dead or unconscious entities
-                while (current_turn.dead() or current_turn.unconscious()) and not battle.battle_ends():
-                    current_turn.resolve_trigger('end_of_turn')
-                    battle.end_turn()
-                    battle.next_turn()
-
-                    battle.start_turn()
-                    current_turn = battle.current_turn()
-                    current_turn.reset_turn(battle)
-                    self.emit_current_turn_state()
-
-                if battle.battle_ends():
-                    break
-
-                # Process AI actions
-                self.ai_loop()
-                current_turn.resolve_trigger('end_of_turn')
-
-                if battle.battle_ends():
-                    break
-
-                # End turn and update environment
-                battle.end_turn()
-                self.loop_environment()
-                battle.next_turn()
-
-            self.end_current_battle()
+            self._run_turns()
         except ManualControl:
             self.logger.info("waiting for user to end turn.")
         except AsyncReactionHandler as e:
-            # An async reaction (e.g., opportunity attack) was triggered.
-            # Hand the player a chance to respond before continuing.
-            entity = None
-            for _, ent, valid_actions in e.resolve():
-                entity = ent
-                valid_actions_str = [
-                    [str(action.uid), str(action), action] for action in valid_actions
-                ]
-                self.waiting_for_reaction = [ent, e, e.resolve(), valid_actions_str]
-            if entity is not None:
-                self.socketio.emit('message', {
-                    'type': 'reaction',
-                    'message': {'id': entity.entity_uid, 'reaction': e.reaction_type},
-                })
+            self._await_reaction(e)
+
+    def _run_turns(self):
+        battle = self.get_current_battle()
+        while True:
+            if battle.battle_ends():
+                break
+            battle.skip_dead_turns()
+
+            self.end_turn_state = False
+            battle.start_turn()
+            current_turn = battle.current_turn()
+            current_turn.reset_turn(battle)
+            self.emit_current_turn_state()
+
+            if battle.battle_ends():
+                break
+
+            # Unconscious creatures only roll their death save (start_turn).
+            if not (current_turn.dead() or current_turn.unconscious()):
+                self.ai_loop()
+                if battle.battle_ends():
+                    break
+
+            if self._finish_turn(battle):
+                return
+        self.end_current_battle()
+
+    def _finish_turn(self, battle) -> bool:
+        """End the current turn (legendary actions resolve here) and advance.
+
+        Returns True when play must pause for a manual legendary action phase.
+        A reaction raised while the turn is ending leaves ``end_turn_state``
+        set so the resumed flow skips straight to the next turn.
+        """
+        self.end_turn_state = True
+        battle.end_turn()
+        self.push_end_of_turn_animations(battle)
+        self.loop_environment()
+        return self._advance_after_end_of_turn(battle)
+
+    def _advance_after_end_of_turn(self, battle) -> bool:
+        self.end_turn_state = False
+        if battle.battle_ends():
+            return False
+        if self.begin_legendary_phase(battle):
+            return True
+        battle.next_turn()
+        return False
+
+    def _await_reaction(self, e):
+        """Hand a pending async reaction (Shield, opportunity attack, ...) to
+        the player; play resumes from ``resume_after_reaction``."""
+        entity = None
+        for _, ent, valid_actions in e.resolve():
+            entity = ent
+            valid_actions_str = [
+                [str(action.uid), str(action), action] for action in valid_actions
+            ]
+            self.waiting_for_reaction = [ent, e, e.resolve(), valid_actions_str]
+        if entity is not None:
+            self.socketio.emit('message', {
+                'type': 'reaction',
+                'message': {'id': entity.entity_uid, 'reaction': e.reaction_type},
+            })
+
+    def resume_after_reaction(self):
+        """Continue combat after a reaction resolved, from where it paused.
+
+        Mid-turn: the active combatant finishes its turn (AI keeps acting, a
+        human keeps control). End of turn: the turn already ended, so go
+        straight to the next combatant instead of replaying the turn.
+        """
+        battle = self.get_current_battle()
+        if battle is None:
+            return
+        try:
+            if battle.legendary_phase:
+                return
+            if battle.battle_ends():
+                self.end_turn_state = False
+                self.end_current_battle()
+                return
+            if not self.end_turn_state:
+                current = battle.current_turn()
+                if not (current.dead() or current.unconscious()):
+                    self.ai_loop()
+                    if battle.battle_ends():
+                        self.end_current_battle()
+                        return
+                if self._finish_turn(battle):
+                    return
+            elif self._advance_after_end_of_turn(battle):
+                return
+            self._run_turns()
+        except ManualControl:
+            self.logger.info("waiting for user to end turn.")
+        except AsyncReactionHandler as e:
+            self._await_reaction(e)
 
     def _default_combat_controller_for_entity(self, entity):
         """Pick a safe default when no explicit controller kind was requested."""
@@ -1746,6 +1868,55 @@ class GameManagement:
                 lock = threading.RLock()
                 self.map_state_locks[map_key] = lock
             return lock
+
+    def _wipe_save_state(self) -> list:
+        """Delete all persisted save state under ``save_dir`` (for ``--reset``).
+
+        Removes save files (``save_*.yml[.gz]``), ``last_save.txt``, per-save
+        log/read-notes snapshots (``*.log.json`` / ``*.read_notes.json``), the
+        campaign-logs and notebook sqlite databases, and the notebook file
+        attachments directory. Must run before the sqlite DB objects are
+        opened so they start empty. Returns the list of removed paths.
+        """
+        removed = []
+        if not self.save_dir or not os.path.isdir(self.save_dir):
+            return removed
+        for fname in list(os.listdir(self.save_dir)):
+            path = os.path.join(self.save_dir, fname)
+            delete = False
+            if os.path.isfile(path):
+                if fname.startswith('save_') and (fname.endswith('.yml') or fname.endswith('.yml.gz')):
+                    delete = True
+                elif fname in ('last_save.txt',):
+                    delete = True
+                elif fname.endswith('.log.json') or fname.endswith('.read_notes.json'):
+                    delete = True
+                elif fname in ('campaign_logs.sqlite', 'notebook.sqlite'):
+                    delete = True
+                elif fname == '.write_test':
+                    delete = True
+            elif os.path.isdir(path) and fname == 'notebook_files':
+                delete = True
+            if delete:
+                try:
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+                    removed.append(fname)
+                except OSError as exc:
+                    self.logger.warning(f"--reset: could not delete {path}: {exc}")
+        # Reset in-memory save bookkeeping so nothing stale is autoloaded.
+        self.save_states = []
+        self.current_save_index = 0
+        if removed:
+            self.logger.info(
+                f"--reset: cleared persisted save state in {self.save_dir} "
+                f"({len(removed)} item(s): {', '.join(sorted(removed))})"
+            )
+        else:
+            self.logger.info(f"--reset: no persisted save state found in {self.save_dir}")
+        return removed
 
     def reset_campaign_logs(self, *, clear_live_conversation_buffers: bool = False) -> Dict[str, int]:
         """Wipe persisted campaign logs (combat, chat, DM assistant, journals)."""
@@ -1892,14 +2063,25 @@ class GameManagement:
         except Exception as e:
             # Fallback to synchronous save if queueing fails
             self.logger.warning(f"Falling back to sync save due to queue error: {e}")
-            self.save_game(name=name)
+            try:
+                self.save_game(name=name)
+            except Exception as save_exc:
+                # Autosave is best-effort: surface the failure to the DM (toaster)
+                # and keep the original exception propagating to the caller.
+                try:
+                    self.logger.exception(f"Sync autosave fallback failed: {save_exc}")
+                except Exception:
+                    pass
+                self._emit_autosave_error(save_exc, name=name)
+                raise
 
     def _save_worker(self):
         """Background worker that processes save requests, coalescing bursts."""
         while True:
+            name = None  # default so the except handler below is always safe
+            stop_after = False
             try:
                 name = self._save_queue.get()  # block
-                stop_after = False
                 if name is self._SAVE_SENTINEL:
                     # Nothing pending before sentinel, exit immediately
                     break
@@ -1920,9 +2102,87 @@ class GameManagement:
                     break
             except Exception as e:
                 try:
-                    self.logger.error(f"Async save failed: {e}")
+                    self.logger.exception(f"Async save failed: {e}")
                 except Exception:
                     pass
+                # Surface autosave failures to the DM with full error details so a
+                # broken autosave is visible in the VTT instead of only in logs.
+                try:
+                    self._emit_autosave_error(e, name=name)
+                except Exception:
+                    try:
+                        self.logger.exception("Failed to emit autosave_error to DM")
+                    except Exception:
+                        pass
+                if stop_after:
+                    # The sentinel was consumed while draining: stop the worker
+                    # even though this save failed (e.g. shutdown flush).
+                    break
+
+    def _dm_usernames(self):
+        """Return usernames of logged-in accounts holding the DM role."""
+        dm_names = []
+        try:
+            from webapp.blueprints.helpers.runtime_state import get_logins
+            for login in get_logins() or []:
+                try:
+                    if 'dm' in (login.get('role') or []):
+                        name = login.get('name')
+                        if name:
+                            dm_names.append(str(name))
+                except Exception:
+                    continue
+        except Exception:
+            # runtime_state not registered (e.g., standalone/tests): fall back to
+            # the conventional 'dm' username prefix used elsewhere in the webapp.
+            try:
+                for username in (self.username_to_sid or {}).keys():
+                    if username and str(username).lower().startswith('dm'):
+                        dm_names.append(str(username))
+            except Exception:
+                pass
+        return dm_names
+
+    def _emit_autosave_error(self, exc: Exception, name: Optional[str] = None):
+        """Emit an ``autosave_error`` SocketIO message to logged-in DMs.
+
+        The payload carries the full error details (exception type, message,
+        traceback, target save file, save directory) so the client can render
+        a dismissible error toaster for the DM.
+        """
+        socketio = getattr(self, 'socketio', None)
+        if socketio is None:
+            return
+        try:
+            dm_names = self._dm_usernames()
+            if not dm_names:
+                return
+            sids = []
+            for username in dm_names:
+                sids.extend((self.username_to_sid or {}).get(str(username), []))
+            if not sids:
+                return
+            import traceback as _traceback
+            tb = ''.join(_traceback.format_exception(type(exc), exc, exc.__traceback__))
+            payload = {
+                'type': 'autosave_error',
+                'message': {
+                    'title': 'Autosave failed',
+                    'error_type': type(exc).__name__,
+                    'error': str(exc) or repr(exc),
+                    'traceback': tb[-4000:],
+                    'target_file': name if name else 'autosave',
+                    'save_dir': getattr(self, 'save_dir', None),
+                    'autosave': bool(getattr(self, 'autosave', False)),
+                },
+            }
+            socketio.emit('message', payload, to=sids)
+        except Exception:
+            # Emitting must never break the save worker itself.
+            try:
+                self.logger.exception("Failed to emit autosave_error to DM")
+            except Exception:
+                pass
 
     def _prepare_save(self, name: Optional[str]):
         """Prepare YAML string and decide target filename/index under lock."""
@@ -2369,6 +2629,15 @@ class GameManagement:
                     pass
                 return False
 
+        legendary_turn = bool(treat_as_battle and battle.in_legendary_phase(action.source))
+        if legendary_turn:
+            from natural20.utils.legendary_actions import prepare_legendary_phase_action
+            error = prepare_legendary_phase_action(action.source, battle, action)
+            if error:
+                if not suppress_ui:
+                    self.socketio.emit('message', {'type': 'message_toaster', 'message': error})
+                return {'status': 'error', 'message': error}
+
         if treat_as_battle:
             # Strict global locking while in battle
             with self.game_state_lock:
@@ -2598,6 +2867,15 @@ class GameManagement:
         # Any committed action can alter rendered state (tokens, visibility,
         # doors, effects, HP markers), so bump epoch once per successful commit.
         self.bump_render_epoch(username=username)
+
+        if (
+            legendary_turn
+            and self.get_current_battle() is battle
+            and battle.in_legendary_phase(action.source)
+        ):
+            # One legendary action per window (SRD); play it, then move on.
+            self.push_end_of_turn_animations(battle)
+            self.advance_legendary_phase(battle)
 
         if self.autosave:
             self.save_game_async()

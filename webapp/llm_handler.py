@@ -1307,6 +1307,8 @@ class LLMHandler:
         self.current_provider = None
         self.npc_provider = None
         self.battle_provider = None
+        # Optional callable(context) -> provider for per-NPC conversation/task overrides.
+        self.npc_provider_resolver = None
         self.game_context_functions = {}
         self.conversation_history = []
         self.session_logger = SessionLogger()  # Create session logger
@@ -1535,6 +1537,15 @@ class LLMHandler:
         active_provider = self.current_provider
         if is_npc_conversation and self.npc_provider is not None:
             active_provider = self.npc_provider
+        resolver = getattr(self, 'npc_provider_resolver', None)
+        if is_npc_conversation and resolver is not None and (context or {}).get('entity_uid'):
+            try:
+                override = resolver(context)
+            except Exception as exc:
+                logger.warning("[LLMHandler] per-NPC provider resolution failed: %s", exc)
+                override = None
+            if override is not None:
+                active_provider = override
         if isinstance(message, list):
             if not is_npc_conversation:
                 self.conversation_history = message

@@ -19,6 +19,7 @@ from .helpers.runtime_state import (
 )
 from .helpers.asset_utils import resolve_asset_category_file, webapp_static_root
 from .helpers.auth_utils import user_role
+from natural20.map_set import is_valid_map_set_id, slug_map_set_id
 
 assets_bp = Blueprint('assets', __name__)
 
@@ -145,10 +146,18 @@ def get_asset(asset_name):
 
 @assets_bp.route('/create_map', methods=['POST'], endpoint='create_map')
 def create_map():
-    """Create a new empty map in the current game's maps folder and register it.
-    Expects form data: name (map id). Creates:
-      - assets/maps/<name>.yml (basic empty map)
-      - assets/maps/<name>.png (placeholder image)
+    """Create a new map in the current game's maps folder and register it.
+    Expects form data (multipart supported):
+      - name (map id)
+      - width / height (optional, tiles; clamped to 2..100)
+      - description (optional)
+      - illumination (optional, 0..1; default 1.0)
+      - map_set / map_set_label (optional)
+      - image (optional file upload) — saved as the map's background PNG and
+        recorded as ``background_image`` in the map YAML
+    Creates:
+      - maps/<name>.yml (basic map)
+      - assets/maps/<name>.png (uploaded image or generated placeholder)
     """
     logger = get_logger()
     game_session = get_game_session()
@@ -169,6 +178,15 @@ def create_map():
         width = max(2, min(width, 100))
         height = max(2, min(height, 100))
 
+        # Description + illumination (optional map attributes)
+        description = (request.form.get('description') or '').strip() or f'Empty map {name}'
+        illum_raw = request.form.get('illumination')
+        try:
+            illumination = float(illum_raw) if illum_raw not in (None, '') else 1.0
+        except ValueError:
+            illumination = 1.0
+        illumination = max(0.0, min(1.0, illumination))
+
         # YAML lives in <root>/maps, PNG lives in <root>/assets/maps
         maps_yml_dir = os.path.join(game_session.root_path, 'maps')
         maps_png_dir = os.path.join(game_session.root_path, 'assets', 'maps')
@@ -181,32 +199,57 @@ def create_map():
         if os.path.exists(yml_path) or os.path.exists(png_path):
             return jsonify(error='Map already exists'), 400
 
-        # Generate a small empty map template
+        uploaded_image = request.files.get('image')
+        has_image = bool(uploaded_image is not None and uploaded_image.filename)
+
+        # Generate the basic map template
         empty_map = {
             'name': name,
-            'description': f'Empty map {name}',
+            'description': description,
             'map': {
-                'illumination': 1.0,
+                'illumination': illumination,
                 'base': ['.' * width for _ in range(height)],
             },
             'legend': {},
             'player': [],
         }
+        if has_image:
+            empty_map['background_image'] = f'{name}.png'
 
         # Save YAML
         with open(yml_path, 'w') as f:
             import yaml as _yaml
             _yaml.safe_dump(empty_map, f, sort_keys=False)
 
-        # Create a placeholder PNG thumbnail
-        img = Image.new('RGB', (max(160, width * 10), max(100, height * 10)), color=(230, 233, 237))
-        d = ImageDraw.Draw(img)
-        d.text((10, 10), name, fill=(90, 90, 90))
-        img.save(png_path)
+        if has_image:
+            # Save the uploaded background image (convert to PNG when possible)
+            try:
+                image = Image.open(uploaded_image.stream).convert('RGBA')
+                image.save(png_path, format='PNG')
+            except Exception:
+                uploaded_image.stream.seek(0)
+                uploaded_image.save(png_path)
+        else:
+            # Create a placeholder PNG thumbnail
+            img = Image.new('RGB', (max(160, width * 10), max(100, height * 10)), color=(230, 233, 237))
+            d = ImageDraw.Draw(img)
+            d.text((10, 10), name, fill=(90, 90, 90))
+            img.save(png_path)
 
         # Optional map set membership (existing set id, or new id to create)
         map_set_id = (request.form.get('map_set') or '').strip().lower()
         new_set_label = (request.form.get('map_set_label') or '').strip()
+        # Slugify early: an empty slug means "no map set" (e.g. the client
+        # sent a label that contains no alphanumerics).
+        map_set_id = slug_map_set_id(map_set_id)
+        if not map_set_id and new_set_label:
+            map_set_id = slug_map_set_id(new_set_label)
+        if map_set_id and not is_valid_map_set_id(map_set_id):
+            return jsonify(error='Invalid map set id'), 400
+        # Pre-create a NEW set with the user-supplied label before
+        # register_map so the label is not overwritten by the default.
+        if map_set_id and game_session.map_sets.get(map_set_id) is None:
+            game_session.map_sets.ensure_set(map_set_id, label=new_set_label or None)
 
         # Register into current session maps if needed
         map_id = name
@@ -216,15 +259,8 @@ def create_map():
             game_session.register_map(map_id, relative_map_ref, map_set=target_set)
             current_game.maps = game_session.maps
         elif target_set:
-            try:
-                from natural20.map_set import slug_map_set_id
-                from webapp.blueprints.helpers.map_sets import assign_map_to_set, create_map_set
-                sid = slug_map_set_id(target_set)
-                if game_session.map_sets.get(sid) is None:
-                    create_map_set(current_game, sid, label=new_set_label or None)
-                assign_map_to_set(current_game, map_id, sid)
-            except ValueError:
-                pass
+            game_session.map_sets.assign_map(map_id, target_set)
+            game_session._link_maps_within_sets()
 
         # Ensure available for switching/reloading
         othermaps[map_id] = relative_map_ref
@@ -232,27 +268,16 @@ def create_map():
 
         # Persist to game.yml so maps load after restart
         try:
-            import yaml as _yaml
-            from natural20.map_set import persist_map_sets_to_game_yml, slug_map_set_id
-            game_yml_path = os.path.join(game_session.root_path, 'game.yml')
-            if os.path.exists(game_yml_path):
-                with open(game_yml_path, 'r') as f:
-                    props = _yaml.safe_load(f) or {}
-            else:
+            from natural20.map_set import persist_map_sets_to_game_yml
+            props = game_session.game_properties
+            if not isinstance(props, dict):
                 props = {}
-            maps_dict = props.get('maps') or {}
+                game_session.game_properties = props
+            maps_dict = props.get('maps')
+            if not isinstance(maps_dict, dict):
+                maps_dict = {}
+                props['maps'] = maps_dict
             maps_dict[map_id] = f'maps/{map_id}'
-            props['maps'] = maps_dict
-            game_session.game_properties = props
-            if map_set_id:
-                sid = slug_map_set_id(map_set_id)
-                if sid:
-                    if game_session.map_sets.get(sid) is None:
-                        game_session.map_sets.ensure_set(
-                            sid, label=new_set_label or sid.replace('_', ' ').title()
-                        )
-                    game_session.map_sets.assign_map(map_id, sid)
-                    game_session._link_maps_within_sets()
             persist_map_sets_to_game_yml(game_session)
         except Exception:
             logger.exception('Failed to persist new map to game.yml')

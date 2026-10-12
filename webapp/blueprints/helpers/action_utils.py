@@ -38,6 +38,7 @@ from natural20.actions.rage_action import RageAction, EndRageAction, RecklessAtt
 from natural20.actions.pickpocket_action import PickpocketAction, PickpocketBonusAction
 from natural20.actions.ready_action import ReadyAction
 from natural20.actions.shell_defense_action import ShellDefenseAction, EmergenceAction
+from natural20.actions.summon_creatures_action import SummonCreaturesAction, DismissSummonsAction
 
 
 _ACTION_TYPE_MAP = {
@@ -88,13 +89,20 @@ _ACTION_TYPE_MAP = {
     'PickpocketBonusAction': PickpocketBonusAction,
     'ShellDefenseAction': ShellDefenseAction,
     'EmergenceAction': EmergenceAction,
+    'SummonCreaturesAction': SummonCreaturesAction,
+    'DismissSummonsAction': DismissSummonsAction,
 }
 
 
 def apply_knock_unconscious_opt(action, opts):
-    """Copy the 5e knockout toggle from a request payload onto an action."""
+    """Copy the 5e knockout toggle (and the NPC grapple-instead option) from a
+    request payload onto an action."""
     if action is None or not opts:
         return
+    if opts.get('grapple_instead') and hasattr(action, 'grapple_instead'):
+        npc_action = getattr(action, 'npc_action', None)
+        if isinstance(npc_action, dict) and npc_action.get('grapple_instead'):
+            action.grapple_instead = True
     if not opts.get('knock_unconscious'):
         return
     if hasattr(action, 'knock_unconscious'):

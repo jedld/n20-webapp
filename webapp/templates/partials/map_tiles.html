@@ -17,6 +17,11 @@
   .map-set-heading.is-active h5::after { content: ' (active)'; font-weight: 400; color: #337ab7; font-size: 12px; }
   .map-card-actions { position: absolute; left: 6px; bottom: 36px; display: flex; gap: 4px; }
   .map-card-actions .btn { padding: 2px 6px; font-size: 11px; }
+  .new-map-dropzone { position: relative; border: 2px dashed #c5cad1; border-radius: 6px; background: #fafbfc; padding: 10px; text-align: center; transition: border-color .15s ease, background .15s ease; }
+  .new-map-dropzone.is-dragover { border-color: #337ab7; background: #eef5fc; }
+  .new-map-dropzone-placeholder { color: #777; font-size: 13px; padding: 14px 0; }
+  .new-map-dropzone img { max-width: 100%; max-height: 220px; margin: 0 auto; display: block; border-radius: 4px; }
+  .new-map-dropzone .btn { margin-top: 8px; }
 </style>
 <div id="map-set-toolbar" style="margin-bottom:10px;">
   <button type="button" class="btn btn-xs btn-default" id="create-new-map-set">New Map Set</button>

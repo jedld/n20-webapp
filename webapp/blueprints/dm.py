@@ -24,6 +24,7 @@ from natural20.web.web_controller import WebController
 
 from .ai import DM_AI_CHAT_SESSION_KEY
 from .helpers.auth_utils import user_role
+from .helpers.entity_delete_undo import remove_entity_with_undo, undo_entity_delete
 from .helpers.npc_spawner_utils import (
     build_available_npc_entry,
     enrich_npc_spawner_entries,
@@ -241,6 +242,16 @@ def admin_manage_saves():
     if 'dm' not in user_role():
         return jsonify(error='Forbidden'), 403
     return render_template('manage_saves.html', title='Manage Saves')
+
+
+@dm_bp.route('/admin/manage_users', methods=['GET'])
+def admin_manage_users():
+    """DM-only: page to manage campaign logins, roles, and PC assignments."""
+    if not session.get('username'):
+        return redirect(url_for('auth.login'))
+    if 'dm' not in user_role():
+        return jsonify(error='Forbidden'), 403
+    return render_template('manage_users.html', title='Manage Users')
 
 
 @dm_bp.route('/admin/effect', methods=['POST'])
@@ -661,6 +672,15 @@ def spawn_object():
         get_logger().error(f"Error spawning object: {str(e)}")
         return jsonify(error=f'Failed to spawn object: {str(e)}'), 500
 
+def _emit_delete_undo_notifications(game):
+    """SocketIO refreshes after a delete / undo (shared by both routes)."""
+    battle = game.get_current_battle()
+    get_socketio().emit('message', {'type': 'initiative',
+                                    'message': {'index': battle.current_turn_index if battle else None}})
+    get_socketio().emit('message', {'type': 'turn', 'message': {}})
+    get_socketio().emit('message', {'type': 'refresh_map'})
+
+
 @dm_bp.route('/delete_entity', methods=['POST'])
 def delete_entity():
     """Delete an entity from the battlefield"""
@@ -692,14 +712,10 @@ def delete_entity():
         
         if not battle_map:
             return jsonify(error='Entity not found on any map'), 404
+        # Capture undo state (position, battle membership, POV) and remove.
+        remove_entity_with_undo(get_current_game(), entity, battle_map, session['username'])
+
         
-        # Remove from battle if it exists
-        battle = get_current_game().get_current_battle()
-        if battle and entity in battle.combat_order:
-            battle.remove(entity, from_map=False)
-        
-        # Remove from map
-        battle_map.remove(entity)
         
         get_logger().info(f"DM {session['username']} deleted entity {entity.label()} ({entity_uid})")
         
@@ -711,6 +727,32 @@ def delete_entity():
     except Exception as e:
         get_logger().error(f"Error deleting entity: {str(e)}")
         return jsonify(error=f'Failed to delete entity: {str(e)}'), 500
+
+
+@dm_bp.route('/undo_delete_entity', methods=['POST'])
+def undo_delete_entity():
+    """DM-only: restore the most recently deleted entity (Ctrl+Z).
+
+    Re-places the token on its map (nearest free square if occupied),
+    re-adds it to the active battle when it was removed mid-battle, and
+    restores the DM's POV if it had been pointing at the deleted entity.
+    """
+    if 'dm' not in user_role():
+        return jsonify(error='Only DMs can undo entity deletions'), 403
+
+    username = session['username']
+    data = request.get_json(silent=True) or {}
+    try:
+        payload, status = undo_entity_delete(
+            get_current_game(), get_game_session(), username, data.get('entity_uid'))
+    except Exception as e:
+        get_logger().error(f"Error undoing entity delete: {str(e)}")
+        return jsonify(error=f'Failed to undo delete: {str(e)}'), 500
+
+    if status == 200 and payload.get('status') == 'ok':
+        get_logger().info(f"DM {username} undid deletion of {payload['name']} ({payload['entity_uid']})")
+        _emit_delete_undo_notifications(get_current_game())
+    return jsonify(payload), status
 
 @dm_bp.route('/move_entity', methods=['POST'])
 def move_entity():
@@ -789,14 +831,18 @@ def available_pcs():
         return jsonify(error='Only DMs can access player characters'), 403
     
     try:
-        # Load all characters from the session
-        characters = get_game_session().load_characters()
-        
-        # Convert to list of dictionaries for JSON response
+        from natural20.map_editor import character_sheet_ref
+
+        game_session = get_game_session()
+        characters = game_session.load_characters_with_paths()
+
         pc_list = []
-        for char in characters:
+        for sheet_path, char in characters:
+            # Sheets without an explicit entity_uid get a random uid per load;
+            # use the file stem so edit-mode placements stay stable.
             pc_list.append({
-                'entity_uid': char.entity_uid,
+                'entity_uid': str(char.properties.get('entity_uid') or sheet_path.stem),
+                'sheet': character_sheet_ref(game_session, sheet_path),
                 'name': char.name,
                 'label': char.label(),
                 'token_image': char.token_image(),
@@ -1495,10 +1541,11 @@ def update_controller():
             engine_controller = GenericController(get_game_session())
         elif new_controller == 'llm':
             from natural20.llm_controller import LlmMcpController
-            _handler = get_llm_handler()
-            _battle_fn = getattr(_handler, 'battle_llm_provider', None)
-            _provider = _battle_fn() if callable(_battle_fn) else _handler.current_provider
-            engine_controller = LlmMcpController(get_game_session(), llm_provider=_provider)
+            from webapp.ai_config import combat_llm_provider_for
+            engine_controller = LlmMcpController(
+                get_game_session(),
+                llm_provider=combat_llm_provider_for(get_llm_handler(), entity),
+            )
 
         if engine_controller and battle:
             engine_controller.register_handlers_on(entity)
@@ -3058,11 +3105,18 @@ def admin_sidekick():
     payload = request.get_json(silent=True) or request.form or {}
     op = str(payload.get('op') or '').strip().lower()
     entity_uid = payload.get('entity_uid') or payload.get('entity_id')
-    from natural20.sidekick import iter_in_party_sidekicks, sidekick_owners, sidekick_records
+    from natural20.sidekick import (
+        is_auto_follow_sidekick,
+        is_in_party_sidekick,
+        iter_in_party_sidekicks,
+        sidekick_owners,
+        sidekick_records,
+    )
     from webapp.blueprints.helpers.sidekick_control import (
         assign_owners_and_control,
         join_party_and_control,
         leave_party_and_control,
+        set_auto_follow_and_control,
     )
     session = get_game_session()
     if op == 'list':
@@ -3072,6 +3126,7 @@ def admin_sidekick():
                 'entity_uid': getattr(entity, 'entity_uid', None),
                 'name': entity.label() if hasattr(entity, 'label') else str(entity),
                 'owners': sidekick_owners(session, entity),
+                'auto_follow': is_auto_follow_sidekick(session, entity),
             })
         return jsonify(success=True, sidekicks=listed, records=sidekick_records(session))
     entity = get_current_game().get_entity_by_uid(entity_uid) if entity_uid else None
@@ -3096,8 +3151,12 @@ def admin_sidekick():
             rec = leave_party_and_control(entity, hostile=bool(payload.get('hostile')))
         elif op == 'assign_owner':
             rec = assign_owners_and_control(entity, owners)
+        elif op == 'auto_follow':
+            if not is_in_party_sidekick(session, entity):
+                return jsonify(error='entity is not an in-party sidekick'), 400
+            rec = set_auto_follow_and_control(entity, bool(payload.get('enabled', True)))
         else:
-            return jsonify(error='op must be list, join, leave, or assign_owner'), 400
+            return jsonify(error='op must be list, join, leave, assign_owner, or auto_follow'), 400
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     try:

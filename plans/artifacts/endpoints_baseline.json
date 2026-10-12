@@ -32,6 +32,26 @@
     "rule": "/ai/clear-history"
   },
   {
+    "endpoint": "ai.ai_config_get",
+    "rule": "/ai/config"
+  },
+  {
+    "endpoint": "ai.ai_config_npc",
+    "rule": "/ai/config/npc"
+  },
+  {
+    "endpoint": "ai.ai_config_reload",
+    "rule": "/ai/config/reload"
+  },
+  {
+    "endpoint": "ai.ai_config_save",
+    "rule": "/ai/config"
+  },
+  {
+    "endpoint": "ai.ai_config_test",
+    "rule": "/ai/config/test"
+  },
+  {
     "endpoint": "ai.ai_get_available_actions",
     "rule": "/ai/available-actions"
   },
@@ -536,6 +556,10 @@
     "rule": "/admin/manage_saves"
   },
   {
+    "endpoint": "dm.admin_manage_users",
+    "rule": "/admin/manage_users"
+  },
+  {
     "endpoint": "dm.admin_npc_conversation_mode",
     "rule": "/admin/npc_conversation_mode"
   },
@@ -722,6 +746,10 @@
   {
     "endpoint": "dm.take_rest",
     "rule": "/rest"
+  },
+  {
+    "endpoint": "dm.undo_delete_entity",
+    "rule": "/undo_delete_entity"
   },
   {
     "endpoint": "dm.unequip",
@@ -1086,6 +1114,10 @@
   {
     "endpoint": "navigation.party_invite",
     "rule": "/party/invite"
+  },
+  {
+    "endpoint": "navigation.party_sidekick_follow",
+    "rule": "/party/sidekick_follow"
   },
   {
     "endpoint": "navigation.path_cost_map",

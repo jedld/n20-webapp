@@ -1,0 +1,7 @@
+{% if tile.get('grapple_tooltip') %}
+  <div class="grapple-token-badge{% if tile.get('grappled') %} is-grappled{% else %} is-grappler{% endif %}"
+       title="{{ tile.grapple_tooltip }}"
+       aria-label="{{ tile.grapple_tooltip }}">
+    <i class="glyphicon glyphicon-link"></i>
+  </div>
+{% endif %}

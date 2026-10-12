@@ -19,6 +19,28 @@ class TestDmBlueprint:
         response = client.get('/admin/saves', follow_redirects=False)
         assert response.status_code in (302, 401, 403)
 
+    def test_manage_users_requires_login(self):
+        client = app.test_client()
+        response = client.get('/admin/manage_users', follow_redirects=False)
+        assert response.status_code in (302, 401, 403)
+
+    def test_manage_users_requires_dm(self):
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess['username'] = 'player'
+        response = client.get('/admin/manage_users')
+        assert response.status_code == 403
+
+    def test_manage_users_renders_for_dm(self):
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess['username'] = 'dm'
+        response = client.get('/admin/manage_users')
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert 'Manage Users' in body
+        assert '/admin/users' in body
+
     def test_available_npcs_requires_dm(self):
         client = app.test_client()
         with client.session_transaction() as sess:

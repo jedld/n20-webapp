@@ -32,10 +32,19 @@ Bundled SRD YAML (spells, items, classes) ships with the **engine** package unde
 ## Run (development)
 
 ```bash
-./start_web.sh [campaign_slug_or_path]
+./start_web.sh [--edit] [--reset] [campaign_slug_or_path]
 ```
 
 Defaults to `../templates` (engine checkout) when no campaign is passed.
+Flags may appear before or after the campaign argument:
+
+- `--edit` — after a DM logs in, that session starts in campaign edit mode.
+- `--reset` — wipe persisted save state at boot: `save_*.yml[.gz]`,
+  `last_save.txt`, per-save log/read-notes snapshots, `campaign_logs.sqlite`,
+  `notebook.sqlite` + `notebook_files/` (under `SAVE_DIR/<game>/`), and NPC
+  memory files (`<campaign>/npc_memories/*.json`). The campaign then boots
+  from YAML templates with no saves to autoload. Also settable via
+  `N20_RESET_SAVES=1`.
 
 Production:
 
