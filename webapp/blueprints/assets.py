@@ -137,6 +137,10 @@ def get_asset(asset_name):
         str(webapp_static_root() / 'assets' / asset_name),
     ]
 
+    category_roots = getattr(game_session, '_category_roots', None)
+    if callable(category_roots):
+        asset_paths.extend(str(root / asset_name) for root in category_roots('assets', include_templates=True))
+
     for file_path in asset_paths:
         if os.path.exists(file_path):
             return send_file(file_path)

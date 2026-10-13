@@ -1,0 +1,26 @@
+{% set entity = waiting_for_reaction[0] %}
+{% set pending = waiting_for_reaction[1].action %}
+{% set pending_spell = (pending.spell_action.properties if pending and pending.spell_action else {}) %}
+<img class="current-turn-img" src="/assets/{{ entity.token_image() }}" style="max-width: 75px;">
+{% if controller_of(entity.entity_uid, username) %}
+<h4>Counterspell?</h4>
+<p>
+    {{ pending.source.label() if pending else 'An enemy' }} is casting
+    <strong>{{ pending_spell.get('label', pending_spell.get('name', 'a spell')) }}</strong>
+    {% if pending and pending.at_level %}(level {{ pending.at_level }}){% else %}(cantrip){% endif %}.
+</p>
+
+{% for reaction_id, label, action in waiting_for_reaction[3] %}
+    <div>
+        <input type="radio" id="{{ reaction_id }}" name="reaction" value="{{ reaction_id }}">
+        <label for="{{ reaction_id }}">Counterspell with a level {{ action.at_level }} slot</label>
+    </div>
+{% endfor %}
+<div>
+    <input type="radio" id="no-reaction" name="reaction" value="no-reaction" checked>
+    <label for="no-reaction">No Reaction</label>
+</div>
+<button type="submit" class="btn btn-primary">Submit Choice</button>
+{% else %}
+<h4>Waiting on a reaction (Counterspell) for {{ entity.name }}.</h4>
+{% endif %}

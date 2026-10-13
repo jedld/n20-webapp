@@ -392,6 +392,9 @@ for blueprint in (assets_bp, auth_bp, ai_bp, navigation_bp, character_bp, battle
 
 register_effect_listeners(_record_narration_for_pcs)
 
+from webapp.combat_callout_phrasing import install_callout_phraser
+install_callout_phraser()
+
 # Load campaign-specific event listeners (if the campaign provides them).
 # Campaigns place a `webapp/custom_listeners.py` file to register custom
 # event listeners on the global ``event_manager``.
@@ -2753,10 +2756,9 @@ def start_battle_with_initiative():
             if ctrl_kind == 'ai':
                 controller = GenericController(game_session)
             elif ctrl_kind == 'llm':
-                # Battle 'llm' controllers use the dedicated battle provider
-                # (BATTLE_LLM_PROVIDER, e.g. JEV/System One) when configured,
-                # otherwise the DM prose provider.
-                controller = LlmMcpController(game_session, llm_provider=llm_handler.battle_llm_provider())
+                # Per-entity AI settings profile -> combat default -> battle provider -> DM provider.
+                from webapp.ai_config import combat_llm_provider_for
+                controller = LlmMcpController(game_session, llm_provider=combat_llm_provider_for(llm_handler, entity))
             else:
                 controller = current_game.get_controller_for_entity(entity)
 
@@ -3421,6 +3423,9 @@ def action_type_to_class(action_type):
     elif action_type == 'DismissSummonsAction':
         from natural20.actions.summon_creatures_action import DismissSummonsAction
         return DismissSummonsAction
+    elif action_type == 'CallLightningBoltAction':
+        from natural20.actions.call_lightning_bolt_action import CallLightningBoltAction
+        return CallLightningBoltAction
     else:
         raise ValueError(f"Unknown action type {action_type}")
 
@@ -4972,7 +4977,8 @@ def update_controller():
             engine_controller = GenericController(game_session)
         elif new_controller == 'llm':
             from natural20.llm_controller import LlmMcpController
-            engine_controller = LlmMcpController(game_session, llm_provider=llm_handler.battle_llm_provider())
+            from webapp.ai_config import combat_llm_provider_for
+            engine_controller = LlmMcpController(game_session, llm_provider=combat_llm_provider_for(llm_handler, entity))
 
         if engine_controller and battle:
             engine_controller.register_handlers_on(entity)

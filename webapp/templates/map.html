@@ -122,6 +122,9 @@
                 <div class="stinking-cloud-marker" aria-hidden="true"
                      style="--stink-seed: '{{ obj['stinking_cloud_marker_seed'] or 'seed' }}';"></div>
               {% endif %}
+              {% if obj['sleet_storm_marker'] %}
+                <div class="sleet-storm-marker" aria-hidden="true"></div>
+              {% endif %}
               {% if obj['tiny_hut_dome'] %}
                 <div class="tiny-hut-dome-marker" aria-hidden="true"
                      data-lighting="{{ obj['tiny_hut_lighting'] or 'default' }}"
@@ -175,11 +178,12 @@
             {% endfor %}
           {% endif %}
           
-          {# --- Render ground items (with randomized positions) --- #}
+          {# --- Render ground items (scattered, stable across re-renders) --- #}
           {% if tile['ground_items'] %}
+            {% set scatter_span = tile_size_px - (tile_size_px // 5) + 1 %}
             {% for item in tile['ground_items'] %}
-              {% set random_x = random.randint(0, tile_size_px - (tile_size_px // 5)) %}
-              {% set random_y = random.randint(0, tile_size_px - (tile_size_px // 5)) %}
+              {% set random_x = ((item|string|length) * 37 + loop.index * 53 + tile['x']|default(0)|int * 11) % scatter_span %}
+              {% set random_y = ((item|string|length) * 23 + loop.index * 71 + tile['y']|default(0)|int * 7) % scatter_span %}
               <div class="item-container"
                    data-id="{{ item }}"
                    data-tooltip="{{ item }}">
@@ -227,6 +231,16 @@
                 <span class="magical-aura-label">{{ aura['label'] }}</span>
               </div>
             {% endfor %}
+          {% endif %}
+
+          {% if tile.get('unseen_presence') %}
+            {% set unseen = tile['unseen_presence'] %}
+            <div class="unseen-presence-marker unseen-presence-{{ unseen['kind'] }}"
+                 data-kind="{{ unseen['kind'] }}"
+                 title="{{ unseen['label'] }}"
+                 aria-label="{{ unseen['label'] }}">
+              <span class="unseen-presence-glyph" aria-hidden="true">?</span>
+            </div>
           {% endif %}
           
           {# --- Render tile without an entity (static tile info) --- #}
@@ -333,7 +347,7 @@
                 </button>
               {% endif %}
               
-              <div class="effect">
+              <div class="effect"{% if tile.get('mirror_images') %} data-mirror-images="{{ tile.mirror_images }}"{% endif %}>
                 {% for effect in tile['effects'] %}
                   <img src="{{ url_for('static', filename='assets/effect/' ~ effect|lower ~ '.png') }}"
                        class="effect-img"

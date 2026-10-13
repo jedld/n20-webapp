@@ -1,3 +1,21 @@
+{% set held_uid = dm_turn_hold|default(none) %}
+{% if 'dm' in role %}
+  <div class="dm-pacing-bar" data-held-uid="{{ held_uid or '' }}">
+    <label class="dm-pacing-label" title="AI combatants wait for you to end their turn, giving you time to narrate">
+      <input type="checkbox" class="dm-pacing-toggle" {% if dm_ends_ai_turns|default(false) %}checked{% endif %}>
+      DM ends AI turns
+    </label>
+    {% if held_uid %}
+      {% set held_entity = battle.current_turn() %}
+      <div class="dm-turn-hold-banner">
+        <span>Waiting for you to end {% if held_entity %}<strong>{{ held_entity.label() }}</strong>'s turn{% else %}the current turn{% endif %}</span>
+        <button type="button" class="btn btn-warning btn-xs end-held-turn" data-id="{{ held_uid }}">End Turn</button>
+      </div>
+    {% endif %}
+  </div>
+{% elif held_uid %}
+  <div class="dm-turn-hold-banner dm-turn-hold-banner--player">Waiting for the DM to end this turn&hellip;</div>
+{% endif %}
 {% for entity in battle.combat_order %}
   {% set is_current = entity == battle.current_turn() %}
   {% set is_dead = entity.dead() %}

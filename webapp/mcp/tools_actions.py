@@ -293,7 +293,8 @@ def register(registry: ToolRegistry) -> None:
         registry,
         name='actions.end_turn',
         description='End the current entity\'s turn (advance battle to the next combatant). '
-                    'During a legendary action phase this ends the legendary action instead.',
+                    'During a legendary action phase this ends the legendary action instead. '
+                    'When an AI turn is held for DM narration (battle pacing), this ends the held turn.',
         input_schema={'type': 'object', 'properties': {}},
         category='actions',
     )
@@ -309,6 +310,11 @@ def register(registry: ToolRegistry) -> None:
                     'current_uid': _safe(lambda: battle.current_turn().entity_uid),
                     'round': getattr(battle, 'round', None)}
         before = _safe(lambda: battle.current_turn().entity_uid)
+        if getattr(context.current_game, 'dm_turn_hold', None):
+            # Held AI turn: end it properly and let the game loop continue.
+            context.current_game.release_dm_turn_hold()
+            return {'released_held_turn_uid': before, 'previous_uid': before,
+                    'round': getattr(battle, 'round', None)}
         try:
             battle.next_turn()
         except Exception as exc:

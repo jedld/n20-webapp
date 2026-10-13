@@ -38,7 +38,7 @@
     "edit_mode.min.js": "33eb5aceda",
     "edit_properties.min.js": "9567e2667f",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "a944a584bc",
+    "engine.min.js": "a2b63ead23",
     "grapple_links.min.js": "8c0dfdfd0a",
     "inert-polyfill.min.js": "fcce9c44c6",
     "map_annotations_edit.min.js": "a395fef84a",
@@ -46,10 +46,10 @@
     "notebook.min.js": "e18ad44c7e",
     "path_compute.min.js": "ccc22663d8",
     "perf.min.js": "7305880b63",
-    "sfx.min.js": "d5a1167d46",
+    "sfx.min.js": "34f772af3c",
     "sheet.min.js": "cb1dc9159d",
-    "spell_effects.min.js": "0528bd918f",
-    "status_effects.min.js": "985115ab42",
+    "spell_effects.min.js": "385e615274",
+    "status_effects.min.js": "6404141b34",
     "utils.min.js": "84f69b5e45",
     "utils_optimized.min.js": "d64c929e7e",
     "js/character_builder.min.js": "424a168ab6",
@@ -61,8 +61,8 @@
     "journal.min.css": "51ba4e37df",
     "notebook.min.css": "e5ebb9b378",
     "sheet.min.css": "780b514172",
-    "styles.min.css": "a20248f11a"
+    "styles.min.css": "d72bdda0a1"
   },
-  "generatedAt": "2026-10-12T09:42:15.971Z",
-  "buildVersion": "c1f77e632b10"
+  "generatedAt": "2026-10-13T02:25:09.703Z",
+  "buildVersion": "5e0d458f6dd8"
 }

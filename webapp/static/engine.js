@@ -123,7 +123,34 @@ function extractTargetValidation(data) {
     valid,
     primary_error,
     error_messages: data.error_messages || [],
+    blind_attack: data.blind_attack === true,
+    sensed: data.sensed === true,
+    blind_hint: data.blind_hint || null,
   };
+}
+
+// Blind attacks on squares with no sensed creature are a guess; ask first so a
+// stray click on an empty tile doesn't waste the attack.
+function confirmBlindAttackGuess(cacheKey, x, y) {
+  const cached = getCachedTargetValidation(cacheKey);
+  if (!cached || !cached.blind_attack || cached.sensed) {
+    return true;
+  }
+  return window.confirm(
+    `You don't see or hear anything at (${x}, ${y}).\n\n`
+    + 'Attack the square anyway? The attack has disadvantage and misses if nothing is there.'
+  );
+}
+
+function highlightUnseenTargetSquares(squares) {
+  clearUnseenTargetSquares();
+  (squares || []).forEach(([x, y]) => {
+    $(`.tile[data-coords-x="${x}"][data-coords-y="${y}"]`).addClass('unseen-target-candidate');
+  });
+}
+
+function clearUnseenTargetSquares() {
+  $('.tile.unseen-target-candidate').removeClass('unseen-target-candidate');
 }
 
 function cacheTargetValidation(cacheKey, validation) {
@@ -182,6 +209,7 @@ function exitTargetMode() {
   aoePointTargetMode = false;
   valid_target_cache = {};
   hideTargetValidationHint();
+  clearUnseenTargetSquares();
   setStackTargetPointerEvents(false);
   document.body.classList.remove('aoe-point-targeting');
   if (globalCtx && globalCanvas) {
@@ -3397,6 +3425,20 @@ class EventQueue {
           resolve();
           break;
         }
+        case "dm_turn_hold": {
+          const info = data.message || {};
+          if (isDM()) {
+            showMapToast(`${info.label || "The AI combatant"} is done — end the turn when you finish narrating.`, null, info.id, 6000);
+          }
+          refreshTurnOrder();
+          resolve();
+          break;
+        }
+        case "dm_turn_hold_end":
+        case "battle_pacing":
+          refreshTurnOrder();
+          resolve();
+          break;
         case "legendary_phase_end": {
           const info = data.message || {};
           $("body").attr("data-legendary-phase", "");
@@ -7631,6 +7673,9 @@ $(document).ready(() => {
             if (blockInvalidTargetClick(cacheKey, e)) {
               return;
             }
+            if (!confirmBlindAttackGuess(cacheKey, coordsx, coordsy)) {
+              return;
+            }
             // No targets, proceed with coordinates (server validates)
             targetModeCallback({ x: coordsx, y: coordsy });
             exitTargetMode();
@@ -7862,6 +7907,12 @@ $(document).ready(() => {
       );
     }
 
+    if (validation.valid && data && data.blind_hint) {
+      const label = data.sensed ? 'You hear something here.' : 'You see and hear nothing here.';
+      const hint = $('<div>').text(`${label} ${data.blind_hint}`).html();
+      tooltip += `<p class="blind-attack-hint"><span style="color: #9ecbff;">${hint}</span></p>`;
+    }
+
     if (!validation.valid && validation.primary_error) {
       tooltip += formatTargetInvalidTooltip(validation.primary_error);
       showTargetValidationHint(validation.primary_error);
@@ -8062,6 +8113,9 @@ $(document).ready(() => {
           valid_target: cachedValidation.valid,
           primary_error: cachedValidation.primary_error,
           error_messages: cachedValidation.error_messages,
+          blind_attack: cachedValidation.blind_attack,
+          sensed: cachedValidation.sensed,
+          blind_hint: cachedValidation.blind_hint,
         }, tooltip);
       } else {
         Utils.ajaxGet("/target", { payload: data_payload }, (data) => {
@@ -8563,10 +8617,23 @@ $(document).ready(() => {
     centerOnEntityId($(this).data("id"));
   });
 
-  $("#turn-order").on("click", "#next-turn", function () {
+  // #next-turn sits in the DM controls bar, outside #turn-order.
+  $("#battle-turn-order").on("click", "#next-turn", function () {
     ajaxPost("/next_turn", {}, (data) => {
       console.log("Next turn request successful:", data);
     });
+  });
+
+  $("#turn-order").on("click", ".end-held-turn", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    $(this).prop("disabled", true);
+    ajaxPost("/end_turn", {}, () => refreshTurnOrder());
+  });
+
+  $("#turn-order").on("change", ".dm-pacing-toggle", function () {
+    const enabled = $(this).is(":checked");
+    ajaxPost("/battle_pacing", { dm_ends_ai_turns: enabled }, () => refreshTurnOrder(), true);
   });
 
   $("#turn-order").on("click", ".turn-order-item", function () {
@@ -9839,6 +9906,7 @@ $(document).ready(() => {
           globalActionInfo = action;
           globalOpts = opts;
           globalSourceEntity = entity_uid;
+          highlightUnseenTargetSquares(data.unseen_squares);
         }
         targetModeCallback = (target) => {
           // Handle both coordinate-based and target_id-based targeting

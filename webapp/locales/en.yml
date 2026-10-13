@@ -35,6 +35,7 @@ en:
   attack_status:
     being_helped: Being being_helped
     invisible_attacker: Target is hidden/invisible
+    target_unseen: Target is unseen (hidden or invisible)
     prone: Target Prone
     ranged_with_enemy_in_melee: Ranged weapon with enemy in melee range
     shocking_grasp_metallic: Target wearing metal armor for Shocking Grasp
@@ -372,10 +373,13 @@ en:
   spell_slots: Spell Slots
   spells:
     disabled:
+      environment: '- Not possible here'
       in_battle: Cannot be used in combat
+      missing_materials: '- Missing costly material component'
       no_action: '- No more actions'
       no_bonus_action: '- No more bonus actions'
       no_spell_slot: '- No more spell slots'
+      not_implemented: '- Not yet supported'
       reaction_only: ' (Reaction)'
   tpk: The entire party has fallen. Game Over!
   unequip: Unequip

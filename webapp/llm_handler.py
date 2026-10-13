@@ -1107,7 +1107,7 @@ class JevProvider(LLMProvider):
 
     def __init__(self, opts=None):
         opts = opts or {}
-        self.base_url = opts.get('base_url') or os.environ.get('TYPESAFE_BASE_URL') or self.DEFAULT_BASE_URL
+        self.base_url = self._resolve_base_url(opts.get('base_url'))
         self.api_key = opts.get('api_key') or os.environ.get('TYPESAFE_API_KEY')
         self.current_model = (
             opts.get('model')
@@ -1119,6 +1119,14 @@ class JevProvider(LLMProvider):
         self.client = None
         self.initialized = False
 
+    @classmethod
+    def _resolve_base_url(cls, *candidates) -> str:
+        """First non-blank of ``candidates`` / ``TYPESAFE_BASE_URL``, else the public typesafe.ai API."""
+        for value in (*candidates, os.environ.get('TYPESAFE_BASE_URL')):
+            if isinstance(value, str) and value.strip():
+                return value.strip().rstrip('/')
+        return cls.DEFAULT_BASE_URL
+
     @staticmethod
     def _import_sdk():
         """Lazily import typesafe_sdk so a missing optional dep never breaks import."""
@@ -1128,7 +1136,7 @@ class JevProvider(LLMProvider):
     def initialize(self, config: Dict[str, Any]) -> bool:
         try:
             config = config or {}
-            self.base_url = (config.get('base_url') or self.base_url or self.DEFAULT_BASE_URL).rstrip('/')
+            self.base_url = self._resolve_base_url(config.get('base_url'), self.base_url)
             self.api_key = config.get('api_key') or self.api_key or os.environ.get('TYPESAFE_API_KEY')
             if config.get('timeout') is not None:
                 self.request_timeout = int(config['timeout'])

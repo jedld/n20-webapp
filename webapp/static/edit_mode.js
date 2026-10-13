@@ -788,6 +788,7 @@
         (entry) =>
           entry.source === 'entities' &&
           entry.kind === 'entity' &&
+          (!entry.runtime_uid || entry.runtime_uid === entityId) &&
           Number(entry.x) === sx &&
           Number(entry.y) === sy,
       ) || null
@@ -796,6 +797,16 @@
 
   window.moveEntityInEditMode = function (entityId, targetX, targetY) {
     const item = resolveEditOverlayItem(entityId);
+    if (!item) {
+      // Runtime-only tokens (player characters, spawned NPCs) have no map
+      // YAML entry to rewrite; move them live like outside edit mode.
+      return $.ajax({
+        url: '/dm_move_entity',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ entity_id: entityId, x: targetX, y: targetY }),
+      });
+    }
     const meta = item
       ? {
           kind: item.kind,

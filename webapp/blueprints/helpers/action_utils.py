@@ -39,6 +39,7 @@ from natural20.actions.pickpocket_action import PickpocketAction, PickpocketBonu
 from natural20.actions.ready_action import ReadyAction
 from natural20.actions.shell_defense_action import ShellDefenseAction, EmergenceAction
 from natural20.actions.summon_creatures_action import SummonCreaturesAction, DismissSummonsAction
+from natural20.actions.call_lightning_bolt_action import CallLightningBoltAction
 
 
 _ACTION_TYPE_MAP = {
@@ -91,6 +92,7 @@ _ACTION_TYPE_MAP = {
     'EmergenceAction': EmergenceAction,
     'SummonCreaturesAction': SummonCreaturesAction,
     'DismissSummonsAction': DismissSummonsAction,
+    'CallLightningBoltAction': CallLightningBoltAction,
 }
 
 

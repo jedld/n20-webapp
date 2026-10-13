@@ -212,6 +212,33 @@
         case 'cure_wounds_bloom':
           chord(t0, [659.25, 880], 0.6, 'triangle', 0.5);
           break;
+        case 'spirit_guardians_cast':
+          // Ethereal choir swell
+          chord(t0, [329.63, 493.88, 659.25, 987.77], 1.0, 'sine', 0.35);
+          glide(t0 + 0.1, 660, 990, 0.6, 'triangle', 0.18);
+          break;
+        case 'revivify_cast':
+          // Crystal shatter, then a rising heartbeat chord
+          playNoise(t0, 0.18, { band: [3000, 7000] });
+          chord(t0 + 0.12, [1568, 2093], 0.3, 'sine', 0.35);
+          chord(t0 + 0.35, [392, 523.25, 783.99], 0.8, 'sine', 0.45);
+          break;
+        case 'lightning_strike':
+          // Sharp crack + rolling thunder
+          playNoise(t0, 0.12, { band: [2000, 8000] });
+          (function(){
+            const n = ctx.createBufferSource(); n.buffer = noiseBuffer();
+            const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 180; lp.Q.value = 0.7;
+            const g = envGain(t0 + 0.05, 0.03, 0.7, 0.6, 0.9);
+            n.connect(lp); lp.connect(g); g.connect(master);
+            n.start(t0); n.stop(t0 + 1.5);
+          })();
+          break;
+        case 'sleet_storm_cast':
+          // Wind howl over icy patter
+          glide(t0, 260, 380, 0.9, 'sine', 0.18);
+          playNoise(t0, 1.0, { band: [2500, 6000] });
+          break;
         case 'spare_the_dying_cast':
           // Gentle stabilizing chime
           chord(t0, [392, 523.25], 0.35, 'sine', 0.35);

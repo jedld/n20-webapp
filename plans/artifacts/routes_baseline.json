@@ -847,6 +847,16 @@
     "rule": "/battle"
   },
   {
+    "endpoint": "battle.battle_pacing",
+    "methods": [
+      "GET",
+      "HEAD",
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/battle_pacing"
+  },
+  {
     "endpoint": "character.character_journal_add",
     "methods": [
       "OPTIONS",

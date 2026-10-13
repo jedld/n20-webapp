@@ -265,6 +265,10 @@ def end_turn():
         get_current_game().advance_legendary_phase(battle)
         return jsonify(status='ok', legendary_phase=battle.legendary_phase)
 
+    held = _end_held_turn()
+    if held is not None:
+        return held
+
     end_turn_state = True
     try:
         battle.end_turn()
@@ -287,9 +291,36 @@ def end_turn():
 def continue_game():
     get_current_game().schedule_continue_game_loop()
 
+
+def _end_held_turn():
+    """End an AI turn held for DM narration; ``None`` when no turn is held."""
+    game = get_current_game()
+    if not game.dm_turn_hold:
+        return None
+    if 'dm' not in user_role():
+        return jsonify(status='error', message='Waiting for the DM to end this turn.'), 409
+    game.release_dm_turn_hold()
+    return jsonify(status='ok', released=True)
+
+
+@battle_bp.route('/battle_pacing', methods=['GET', 'POST'])
+def battle_pacing():
+    """DM toggle: AI combatants wait for the DM to end their turn."""
+    if 'dm' not in user_role():
+        return jsonify(error='Only DMs can change battle pacing'), 403
+    game = get_current_game()
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+        if 'dm_ends_ai_turns' not in payload:
+            return jsonify(error='dm_ends_ai_turns is required'), 400
+        game.set_dm_ends_ai_turns(bool(payload['dm_ends_ai_turns']))
+    return jsonify(status='ok', **game.battle_pacing_state())
+
+
 @battle_bp.route('/turn_order', methods=['GET'])
 def get_turn_order():
-    battle = get_current_game().get_current_battle()
+    game = get_current_game()
+    battle = game.get_current_battle()
     current_turn_index = getattr(battle, 'current_turn_index', 0) if battle else 0
     battle_round = getattr(battle, 'round', 0) if battle else 0
     return render_template(
@@ -299,6 +330,8 @@ def get_turn_order():
         role=user_role(),
         current_turn_index=current_turn_index,
         battle_round=battle_round,
+        dm_ends_ai_turns=game.dm_ends_ai_turns(),
+        dm_turn_hold=game.dm_turn_hold,
     )
 
 @battle_bp.route('/next_turn', methods=['POST'])
@@ -307,6 +340,9 @@ def next_turn():
     if battle and battle.legendary_phase:
         get_current_game().advance_legendary_phase(battle)
         return jsonify(status='ok', legendary_phase=battle.legendary_phase)
+    held = _end_held_turn()
+    if held is not None:
+        return held
     if battle:
         with get_current_game().game_state_lock:
             current_turn = battle.current_turn()
@@ -629,6 +665,72 @@ def _entity_target_preview(entity, target_entity, action_info, opts, battle_map,
     return {'valid_target': True}
 
 
+def _attack_action_from_opts(entity, opts, battle):
+    action = AttackAction(get_game_session(), entity, 'attack')
+    action.using = opts.get('using')
+    action.npc_action = opts.get('npc_action', None)
+    action.thrown = opts.get('thrown', False)
+    if battle and battle.in_legendary_phase(entity):
+        action.legendary_action = True
+    return action
+
+
+def _targetable_object_at(entity, action, battle, battle_map, x, y):
+    objects = [o for o in (battle_map.objects_at(x, y) or []) if not o.dead() and o.allow_targeting()]
+    if not objects or battle is None:
+        return None
+    valid = battle.valid_targets_for(entity, action, include_objects=True)
+    return next((o for o in objects if o in valid), None)
+
+
+def _blind_attack_target_square(entity, action, battle, battle_map, target_entity, target_map, x, y):
+    """(x, y) when a click/hover should become a blind attack on that square.
+
+    Applies when nothing the attacker can see is targetable there: the square
+    looks empty or holds a creature the attacker can't see. The decision never
+    depends on what is actually in the square.
+    """
+    if battle is None or entity is None or target_map is not battle_map:
+        return None
+    if target_entity is not None and target_entity is not entity and battle.can_see(entity, target_entity):
+        return None
+    if _targetable_object_at(entity, action, battle, battle_map, x, y) is not None:
+        return None
+    return (x, y)
+
+
+def _blind_attack_preview(entity, action, battle, square):
+    from natural20.utils.unseen_targets import blind_attack_issue, sensed_creatures
+    issue_key = blind_attack_issue(battle, entity, action, square)
+    if issue_key:
+        invalid = targeting_issue(issue_key).to_dict()
+        return dict(
+            valid_target=False,
+            blind_attack=True,
+            errors=[invalid['key']],
+            error_details=[invalid],
+            error_messages=[invalid['message']],
+            primary_error=invalid['message'],
+        )
+    try:
+        _weapon, _name, attack_mod, _dmg, _ammo = action.get_weapon_info({})
+    except Exception:
+        attack_mod = None
+    sensed = any(tuple(e['pos']) == tuple(square) for e in sensed_creatures(battle, entity))
+    return dict(
+        valid_target=True,
+        blind_attack=True,
+        sensed=sensed,
+        adv_mod=-1,
+        adv_info=[[], ['unseen_target']],
+        attack_mod=attack_mod,
+        blind_hint=(
+            'Unseen target: attack with disadvantage. '
+            'If nothing is in this square the attack misses.'
+        ),
+    )
+
+
 @battle_bp.route('/target', methods=['GET'])
 def get_target():
    
@@ -649,13 +751,16 @@ def get_target():
     target_position = [x, y]
     target_entity, target_map, tx, ty = entity_at_stack_position(stack, battle_map, x, y)
 
+    if entity and battle and action_info in ['AttackAction', 'LinkedAttackAction']:
+        blind_action = _attack_action_from_opts(entity, opts, battle)
+        square = _blind_attack_target_square(
+            entity, blind_action, battle, battle_map, target_entity, target_map, x, y,
+        )
+        if square is not None:
+            return jsonify(**_blind_attack_preview(entity, blind_action, battle, square))
+
     if entity and target_entity and action_info in ['AttackAction', 'LinkedAttackAction']:
-        action = AttackAction(get_game_session(), entity, 'attack')
-        action.using = opts.get('using')
-        action.npc_action = opts.get('npc_action', None)
-        action.thrown = opts.get('thrown', False)
-        if battle and battle.in_legendary_phase(entity):
-            action.legendary_action = True
+        action = _attack_action_from_opts(entity, opts, battle)
         action.target = target_entity
 
         adv_mod, adv_info, attack_mod = action.compute_advantage_info(battle)
@@ -1251,6 +1356,22 @@ def action():
                 weapon_details = get_game_session().load_weapon(action.using)
 
             if target_coords:
+                if battle and isinstance(target_coords, dict):
+                    tx, ty = int(target_coords['x']), int(target_coords['y'])
+                    resolved = target if hasattr(target, 'entity_uid') else None
+                    resolved_map = (battle.map_for(resolved) if resolved is not None else None) or battle_map
+                    square = _blind_attack_target_square(
+                        entity, action, battle, battle_map, resolved, resolved_map, tx, ty,
+                    )
+                    if square is not None:
+                        from natural20.utils.unseen_targets import blind_attack_issue
+                        issue_key = blind_attack_issue(battle, entity, action, square)
+                        if issue_key:
+                            return jsonify(status='error', message=targeting_issue(issue_key).to_dict()['message'])
+                        action.target = None
+                        action.target_square = square
+                        return jsonify(_commit_and_update(action, pov_entities))
+
                 # ``target`` was resolved above (with entity_at fallback when
                 # entities_at is empty). Coordinate-only targets are invalid
                 # for attacks.
@@ -1281,8 +1402,13 @@ def action():
                 # expensive path that the client needs for target selection.
                 if battle:
                     from natural20.map_stack_targeting import valid_target_positions
+                    from natural20.utils.unseen_targets import blind_attack_squares, enabled as unseen_enabled
                     target_list = battle.valid_targets_for(entity, action, include_objects=True)
                     valid_targets = valid_target_positions(stack, battle_map, target_list, battle=battle)
+                    action_info['blind_attacks'] = unseen_enabled(get_game_session())
+                    action_info['unseen_squares'] = [
+                        list(sq) for sq in blind_attack_squares(battle, entity, action)
+                    ]
                 else:
                     target_list = battle_map.valid_targets_for(entity, action, include_objects=True)
                     valid_targets = {target.entity_uid: battle_map.entity_or_object_pos(target) for target in target_list}

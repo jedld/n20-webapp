@@ -4286,6 +4286,315 @@
   register('greater_invisibility', function(payload){ return playInvisibilityCast(payload, [230, 240, 255]); });
   register('greater invisibility', function(payload){ return play('greater_invisibility', payload); });
 
+  // Center for point-targeted spells: [x, y] target, then target_pos, then the caster.
+  function pointCenter(payload){
+    const target = payload && payload.target;
+    if (Array.isArray(target) && target.length === 2 && typeof target[0] === 'number') {
+      const c = tileCenterByCoords(target[0], target[1]);
+      if (c) return c;
+    }
+    const fromPos = centerFromGridPos(payload && payload.target_pos);
+    if (fromPos) return fromPos;
+    if (typeof target === 'string') {
+      const c = centerOfEntity(target);
+      if (c) return c;
+    }
+    return payload && payload.source ? centerOfEntity(payload.source) : null;
+  }
+
+  function tilePx(){
+    return ($('.tiles-container').data('tile-size') || 64);
+  }
+
+  // Spirit Guardians: radiant spirits spiral out from the caster and settle into a 15-ft ring.
+  register('spirit_guardians', function(payload){
+    return new Promise((resolve) => {
+      const c = payload && payload.source ? centerOfEntity(payload.source) : null;
+      if (!c) return resolve();
+      const ring = tilePx() * 3.5;
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const start = performance.now();
+      const duration = 1200;
+      const spirits = Array.from({ length: 5 }).map((_, i) => ({ a0: (i / 5) * Math.PI * 2 }));
+      const draw = (now) => {
+        const t = animProgress(now, start, duration);
+        const ease = 1 - Math.pow(1 - t, 3);
+        const fade = t < 0.75 ? 1 : 1 - (t - 0.75) / 0.25;
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const r = ring * ease;
+        const field = ctx.createRadialGradient(c.x, c.y, r * 0.2, c.x, c.y, Math.max(1, r));
+        field.addColorStop(0, rgba(255, 245, 210, 0));
+        field.addColorStop(0.8, rgba(255, 228, 150, 0.18 * fade));
+        field.addColorStop(1, rgba(255, 214, 110, 0));
+        ctx.fillStyle = field;
+        ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(1, r), 0, Math.PI * 2); ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = rgba(255, 230, 160, 0.75 * fade);
+        ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(1, r), 0, Math.PI * 2); ctx.stroke();
+        spirits.forEach((s) => {
+          const a = s.a0 + t * Math.PI * 2.4;
+          const sr = r * 0.92;
+          const x = c.x + Math.cos(a) * sr;
+          const y = c.y + Math.sin(a) * sr;
+          const g = ctx.createRadialGradient(x, y, 0, x, y, 16);
+          g.addColorStop(0, rgba(255, 255, 240, 0.95 * fade));
+          g.addColorStop(0.5, rgba(255, 226, 140, 0.55 * fade));
+          g.addColorStop(1, rgba(255, 210, 100, 0));
+          ctx.fillStyle = g;
+          ctx.beginPath(); ctx.arc(x, y, 16, 0, Math.PI * 2); ctx.fill();
+          // Trailing wisp
+          ctx.strokeStyle = rgba(255, 236, 170, 0.45 * fade);
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(c.x, c.y, sr, a - 0.5, a); ctx.stroke();
+        });
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      try { if (window.SFX && SFX.play) SFX.play('spirit_guardians_cast'); } catch(e){}
+      requestAnimationFrame(draw);
+    });
+  });
+  register('spirit guardians', function(payload){ return play('spirit_guardians', payload); });
+
+  // Revivify: a diamond shatters into a column of light that pours into the body.
+  register('revivify', function(payload){
+    return new Promise((resolve) => {
+      const c = pointCenter(payload);
+      if (!c) return resolve();
+      const tile = tilePx();
+      const { overlay, ctx, destroy } = createOverlay(1105);
+      const start = performance.now();
+      const duration = 1300;
+      const shards = Array.from({ length: 14 }).map(() => ({
+        a: Math.random() * Math.PI * 2, v: 0.6 + Math.random() * 0.8,
+      }));
+      const draw = (now) => {
+        const t = animProgress(now, start, duration);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        if (t < 0.3) {
+          // Diamond glints, then bursts
+          const p = t / 0.3;
+          const s = tile * 0.22 * (1 + p * 0.3);
+          ctx.fillStyle = rgba(220, 240, 255, 0.9 * (1 - p * 0.4));
+          ctx.beginPath();
+          ctx.moveTo(c.x, c.y - s); ctx.lineTo(c.x + s * 0.7, c.y);
+          ctx.lineTo(c.x, c.y + s); ctx.lineTo(c.x - s * 0.7, c.y); ctx.closePath();
+          ctx.fill();
+        } else {
+          const p = (t - 0.3) / 0.7;
+          shards.forEach((sh) => {
+            const d = tile * 0.9 * sh.v * Math.min(1, p * 2);
+            const x = c.x + Math.cos(sh.a) * d;
+            const y = c.y + Math.sin(sh.a) * d;
+            ctx.fillStyle = rgba(210, 235, 255, 0.85 * (1 - p));
+            ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+          });
+          // Light column from above
+          const colW = tile * 0.55 * (1 - p * 0.3);
+          const beam = ctx.createLinearGradient(c.x, c.y - tile * 4, c.x, c.y);
+          beam.addColorStop(0, rgba(255, 245, 200, 0));
+          beam.addColorStop(1, rgba(255, 240, 190, 0.75 * (1 - p)));
+          ctx.fillStyle = beam;
+          ctx.fillRect(c.x - colW / 2, c.y - tile * 4, colW, tile * 4);
+          // Heartbeat pulse
+          const pulse = 0.5 + 0.5 * Math.sin(p * Math.PI * 4);
+          const r = tile * (0.45 + 0.35 * p);
+          const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
+          g.addColorStop(0, rgba(255, 250, 225, (0.55 + 0.35 * pulse) * (1 - p)));
+          g.addColorStop(1, rgba(255, 220, 140, 0));
+          ctx.fillStyle = g;
+          ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      try { if (window.SFX && SFX.play) SFX.play('revivify_cast'); } catch(e){}
+      requestAnimationFrame(draw);
+    });
+  });
+
+  // Mass Healing Word: a ringing word ripples out and ribbons of green light reach every target.
+  register('mass_healing_word', function(payload){
+    return new Promise((resolve) => {
+      const src = payload && payload.source ? centerOfEntity(payload.source) : null;
+      const targets = ensureArray(payload && payload.target).map(centerOfEntity).filter(Boolean);
+      if (!src && !targets.length) return resolve();
+      const origin = src || targets[0];
+      const tile = tilePx();
+      const { overlay, ctx, destroy } = createOverlay(1101);
+      const start = performance.now();
+      const duration = 1100;
+      const draw = (now) => {
+        const t = animProgress(now, start, duration);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        // Expanding word ripples
+        for (let i = 0; i < 3; i++) {
+          const rt = Math.max(0, Math.min(1, t * 1.4 - i * 0.15));
+          if (rt <= 0) continue;
+          ctx.strokeStyle = rgba(150, 255, 190, 0.6 * (1 - rt));
+          ctx.lineWidth = 3 - rt * 2;
+          ctx.beginPath(); ctx.arc(origin.x, origin.y, tile * (0.4 + rt * 2.2), 0, Math.PI * 2); ctx.stroke();
+        }
+        const rib = Math.min(1, t / 0.5);
+        targets.forEach((tc) => {
+          const ctrl = { x: (origin.x + tc.x) / 2, y: Math.min(origin.y, tc.y) - tile };
+          const x = (1 - rib) * (1 - rib) * origin.x + 2 * (1 - rib) * rib * ctrl.x + rib * rib * tc.x;
+          const y = (1 - rib) * (1 - rib) * origin.y + 2 * (1 - rib) * rib * ctrl.y + rib * rib * tc.y;
+          if (t < 0.6) {
+            ctx.strokeStyle = rgba(140, 255, 180, 0.8);
+            ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.moveTo(origin.x, origin.y); ctx.quadraticCurveTo(ctrl.x, ctrl.y, x, y); ctx.stroke();
+          }
+          if (t >= 0.45) {
+            const bt = (t - 0.45) / 0.55;
+            const r = 14 + 22 * bt;
+            ctx.strokeStyle = rgba(140, 255, 180, 0.9 * (1 - bt));
+            ctx.lineWidth = 3 - 1.5 * bt;
+            ctx.beginPath(); ctx.arc(tc.x, tc.y, r, 0, Math.PI * 2); ctx.stroke();
+            for (let i = 0; i < 6; i++) {
+              const px = tc.x + Math.sin(i * 2.1) * 14;
+              const py = tc.y - 6 - 34 * bt - i * 2;
+              ctx.fillStyle = rgba(255, 255, 255, 0.6 * (1 - bt));
+              ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill();
+            }
+          }
+        });
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      try { if (window.SFX && SFX.play) SFX.play('healing_word_cast'); } catch(e){}
+      requestAnimationFrame(draw);
+    });
+  });
+  register('mass healing word', function(payload){ return play('mass_healing_word', payload); });
+
+  function jaggedBolt(ctx, x0, y0, x1, y1, jitter){
+    const steps = 9;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    for (let i = 1; i < steps; i++) {
+      const f = i / steps;
+      ctx.lineTo(x0 + (x1 - x0) * f + (Math.random() * 2 - 1) * jitter, y0 + (y1 - y0) * f);
+    }
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+
+  // Storm cloud gathers (optional) and a bolt strikes the point, with a 5-ft blast flash.
+  function playLightningStrike(payload, withCloud){
+    return new Promise((resolve) => {
+      const c = pointCenter(payload);
+      if (!c) return resolve();
+      const tile = tilePx();
+      const { overlay, ctx, destroy } = createOverlay(1106);
+      const start = performance.now();
+      const gather = withCloud ? 450 : 120;
+      const duration = gather + 650;
+      const skyY = c.y - tile * 4.5;
+      const draw = (now) => {
+        const elapsed = now - start;
+        const t = animProgress(now, start, duration);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        const cloudA = withCloud ? Math.min(1, elapsed / gather) * (t > 0.85 ? (1 - t) / 0.15 : 1) : 0.6 * (1 - t);
+        const cg = ctx.createRadialGradient(c.x, skyY, 0, c.x, skyY, tile * 3);
+        cg.addColorStop(0, rgba(60, 66, 96, 0.75 * cloudA));
+        cg.addColorStop(0.6, rgba(46, 52, 80, 0.45 * cloudA));
+        cg.addColorStop(1, rgba(30, 34, 60, 0));
+        ctx.fillStyle = cg;
+        ctx.beginPath(); ctx.ellipse(c.x, skyY, tile * 3, tile * 1.2, 0, 0, Math.PI * 2); ctx.fill();
+        if (elapsed >= gather) {
+          const bt = Math.min(1, (elapsed - gather) / 650);
+          ctx.globalCompositeOperation = 'screen';
+          if (bt < 0.45) {
+            ctx.lineCap = 'round';
+            ctx.strokeStyle = rgba(200, 225, 255, 0.55);
+            ctx.lineWidth = 9;
+            jaggedBolt(ctx, c.x, skyY, c.x, c.y, tile * 0.35);
+            ctx.strokeStyle = rgba(255, 255, 255, 0.95);
+            ctx.lineWidth = 3;
+            jaggedBolt(ctx, c.x, skyY, c.x, c.y, tile * 0.3);
+          }
+          const r = tile * (0.6 + 1.0 * bt);
+          const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
+          g.addColorStop(0, rgba(240, 248, 255, 0.85 * (1 - bt)));
+          g.addColorStop(0.5, rgba(160, 200, 255, 0.45 * (1 - bt)));
+          g.addColorStop(1, rgba(120, 160, 255, 0));
+          ctx.fillStyle = g;
+          ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.fill();
+          if (bt < 0.15) {
+            ctx.fillStyle = rgba(230, 240, 255, 0.18 * (1 - bt / 0.15));
+            ctx.fillRect(0, 0, overlay.width, overlay.height);
+          }
+        }
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      setTimeout(() => { try { if (window.SFX && SFX.play) SFX.play('lightning_strike'); } catch(e){} }, gather);
+      requestAnimationFrame(draw);
+    });
+  }
+  register('call_lightning', function(payload){ return playLightningStrike(payload, true); });
+  register('call lightning', function(payload){ return play('call_lightning', payload); });
+  register('call_lightning_bolt', function(payload){ return playLightningStrike(payload, false); });
+
+  // Sleet Storm: a grey squall rolls over the 40-ft radius and pelts it with sleet.
+  register('sleet_storm', function(payload){
+    return new Promise((resolve) => {
+      const c = pointCenter(payload);
+      if (!c) return resolve();
+      const tile = tilePx();
+      const radiusFt = (payload && payload.spell && payload.spell.radius) || 40;
+      const spread = tile * (radiusFt / 5);
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const start = performance.now();
+      const duration = 1300;
+      const streaks = Array.from({ length: 90 }).map(() => {
+        const a = Math.random() * Math.PI * 2;
+        const d = Math.sqrt(Math.random()) * spread;
+        return { x: Math.cos(a) * d, y: Math.sin(a) * d, p: Math.random() };
+      });
+      const draw = (now) => {
+        const t = animProgress(now, start, duration);
+        const grow = Math.min(1, t / 0.4);
+        const fade = t > 0.8 ? (1 - t) / 0.2 : 1;
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        const r = spread * (0.4 + 0.6 * grow);
+        const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
+        g.addColorStop(0, rgba(200, 220, 240, 0.38 * fade));
+        g.addColorStop(0.7, rgba(150, 175, 205, 0.28 * fade));
+        g.addColorStop(1, rgba(120, 140, 170, 0));
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.strokeStyle = rgba(235, 248, 255, 0.7 * fade);
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        streaks.forEach((s) => {
+          if (Math.hypot(s.x, s.y) > r) return;
+          const fall = ((t * 3 + s.p) % 1) * tile * 0.9;
+          const x = c.x + s.x - fall * 0.35;
+          const y = c.y + s.y - tile * 0.45 + fall;
+          ctx.moveTo(x, y);
+          ctx.lineTo(x - tile * 0.08, y + tile * 0.22);
+        });
+        ctx.stroke();
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      try { if (window.SFX && SFX.play) SFX.play('sleet_storm_cast'); } catch(e){}
+      requestAnimationFrame(draw);
+    });
+  });
+  register('sleet storm', function(payload){ return play('sleet_storm', payload); });
+
   // Expose API
   global.SpellEffects = { register, play };
 })(window);

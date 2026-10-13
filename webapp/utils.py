@@ -551,6 +551,8 @@ class SocketIOOutputLogger:
 
 # Defines a class for high level game management
 class GameManagement:
+    dm_turn_hold = None
+
     def __init__(self, game_session: Session, map_location, other_maps, socketio, output_logger, tile_px, controllers,
                  npc_controller = None,
                  force_llm_npc_combat = False,
@@ -602,6 +604,9 @@ class GameManagement:
         self.pov_entity_for_user = {}
         self.current_map_for_user = {}
         self.username_to_sid = {}
+        # entity_uid of an AI combatant whose turn is done but waits for the
+        # DM to end it (battle pacing: ``dm_ends_ai_turns``).
+        self.dm_turn_hold = None
         self.save_states = []
         self.defer_player_spawn = defer_player_spawn
         self.deferred_players = {}  # entity_uid -> {entity, map_name, position}
@@ -1217,6 +1222,98 @@ class GameManagement:
         })
         self.socketio.emit('message', {'type': 'turn', 'message': {}})
 
+    # -- Battle pacing: DM ends AI turns ------------------------------------ #
+
+    def dm_ends_ai_turns(self) -> bool:
+        """Whether AI combatants wait for the DM to end their turn.
+
+        The DM's runtime toggle (``session_state['battle_pacing']``, saved with
+        the game) overrides the campaign default ``game.yml`` →
+        ``battle_pacing.dm_ends_ai_turns``.
+        """
+        session = getattr(self, 'game_session', None)
+        state = (getattr(session, 'session_state', None) or {}).get('battle_pacing') or {}
+        if 'dm_ends_ai_turns' in state:
+            return bool(state['dm_ends_ai_turns'])
+        props = getattr(session, 'game_properties', None) or {}
+        block = props.get('battle_pacing') or {}
+        return bool(block.get('dm_ends_ai_turns', False)) if isinstance(block, dict) else False
+
+    def set_dm_ends_ai_turns(self, enabled: bool) -> bool:
+        enabled = bool(enabled)
+        self.game_session.session_state.setdefault('battle_pacing', {})['dm_ends_ai_turns'] = enabled
+        self.socketio.emit('message', {'type': 'battle_pacing', 'message': self.battle_pacing_state()})
+        if not enabled and self.dm_turn_hold:
+            self.release_dm_turn_hold()
+        return enabled
+
+    def battle_pacing_state(self) -> dict:
+        return {
+            'dm_ends_ai_turns': self.dm_ends_ai_turns(),
+            'dm_connected': self.dm_connected(),
+            'held_uid': self.dm_turn_hold,
+        }
+
+    def dm_connected(self) -> bool:
+        sids = self.username_to_sid or {}
+        return any(sids.get(name) for name in self._dm_usernames())
+
+    def _hold_for_dm(self, battle, entity) -> bool:
+        """Pause after an AI combatant acted so the DM can narrate; returns True when held.
+
+        Holds even with no DM online: the turn waits until a DM logs in and ends it.
+        """
+        if entity is None or battle is None or battle.battle_ends():
+            return False
+        if not self.dm_ends_ai_turns():
+            return False
+        if isinstance(battle.controller_for(entity), WebController):
+            return False
+        self.dm_turn_hold = entity.entity_uid
+        self.logger.info("Holding %s's turn for the DM to end.", entity.name)
+        self.socketio.emit('message', {
+            'type': 'dm_turn_hold',
+            'message': {'id': entity.entity_uid, 'label': entity.label()},
+        })
+        self.emit_current_turn_state()
+        return True
+
+    def release_dm_turn_hold(self) -> bool:
+        """End the held AI turn and continue combat. Returns False when nothing was held."""
+        held = self.dm_turn_hold
+        if not held:
+            return False
+        self.dm_turn_hold = None
+        self.socketio.emit('message', {'type': 'dm_turn_hold_end', 'message': {'id': held}})
+        self.socketio.start_background_task(self._after_dm_hold_background)
+        return True
+
+    def _after_dm_hold_background(self) -> None:
+        # The loop task that paused for the hold may still be emitting updates.
+        for _ in range(200):
+            if self._try_begin_game_loop_task():
+                break
+            self.socketio.sleep(0.05)
+        else:
+            self.logger.error("could not resume combat after DM-ended turn: game loop busy")
+            return
+        try:
+            with self.game_state_lock:
+                battle = self.get_current_battle()
+                if battle is not None:
+                    try:
+                        if not self._finish_turn(battle):
+                            self._run_turns()
+                    except ManualControl:
+                        self.logger.info("waiting for user to end turn.")
+                    except AsyncReactionHandler as e:
+                        self._await_reaction(e)
+            self.emit_post_game_loop_updates(battle_start=False)
+        except Exception:
+            self.logger.exception("game loop after DM-ended turn failed")
+        finally:
+            self._end_game_loop_task()
+
     def _try_begin_game_loop_task(self) -> bool:
         with self._game_loop_task_guard:
             if self._game_loop_task_running:
@@ -1647,6 +1744,9 @@ class GameManagement:
     def game_loop(self):
         """Run turns from the start of the current combatant's turn until a
         human must act, a reaction is pending, or the battle ends."""
+        if self.dm_turn_hold:
+            # The held combatant already acted; only the DM ends that turn.
+            return
         try:
             self._run_turns()
         except ManualControl:
@@ -1675,6 +1775,8 @@ class GameManagement:
                 self.ai_loop()
                 if battle.battle_ends():
                     break
+                if self._hold_for_dm(battle, current_turn):
+                    return
 
             if self._finish_turn(battle):
                 return
@@ -1726,7 +1828,7 @@ class GameManagement:
         straight to the next combatant instead of replaying the turn.
         """
         battle = self.get_current_battle()
-        if battle is None:
+        if battle is None or self.dm_turn_hold:
             return
         try:
             if battle.legendary_phase:
@@ -1741,6 +1843,8 @@ class GameManagement:
                     self.ai_loop()
                     if battle.battle_ends():
                         self.end_current_battle()
+                        return
+                    if self._hold_for_dm(battle, current):
                         return
                 if self._finish_turn(battle):
                     return
@@ -2325,6 +2429,7 @@ class GameManagement:
                 state = f.read()
         serializer = Serialization()
         new_session, new_battle, new_maps = serializer.deserialize(state)
+        self.dm_turn_hold = None
         self.game_session = new_session
         self.battle = new_battle
 
@@ -2380,6 +2485,7 @@ class GameManagement:
             except Exception:
                 self.logger.exception('Failed to demote battle zones to environment ticking')
         self.trigger_event('on_battle_end')
+        self.dm_turn_hold = None
         self.set_current_battle(None)
         self.restore_ambient_soundtrack_after_battle()
         self.socketio.emit('message', {'type': 'console', 'message': 'Battle has ended.'})

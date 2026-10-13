@@ -75,6 +75,9 @@
                 <div class="stinking-cloud-marker" aria-hidden="true"
                      style="--stink-seed: '{{ obj['stinking_cloud_marker_seed'] or 'seed' }}';"></div>
               {% endif %}
+              {% if obj['sleet_storm_marker'] %}
+                <div class="sleet-storm-marker" aria-hidden="true"></div>
+              {% endif %}
               {% if obj['tiny_hut_dome'] %}
                 <div class="tiny-hut-dome-marker" aria-hidden="true"
                      data-lighting="{{ obj['tiny_hut_lighting'] or 'default' }}"
@@ -182,7 +185,7 @@
               {% endif %}
               {% include '_grapple_token_badge.html' %}
               {% include '_death_save_overlay.html' %}
-              <div class="effect">
+              <div class="effect"{% if tile.get('mirror_images') %} data-mirror-images="{{ tile.mirror_images }}"{% endif %}>
                 {% for effect in tile.get('effects', []) %}
                   <img src="{{ url_for('static', filename='assets/effect/' ~ effect|lower ~ '.png') }}"
                        class="effect-img"

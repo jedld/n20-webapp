@@ -424,6 +424,8 @@ def index():
         narration=battle_map.narration(),
         special_effects_enabled=special_effects_enabled(),
         edit_mode=get_edit_mode(),
+        dm_ends_ai_turns=bool(getattr(current_game, 'dm_ends_ai_turns', lambda: False)()),
+        dm_turn_hold=getattr(current_game, 'dm_turn_hold', None),
     )
     template_ms = (time.perf_counter() - _t_tpl) * 1000.0
     total_ms = (time.perf_counter() - _t_index) * 1000.0

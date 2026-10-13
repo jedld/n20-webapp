@@ -52,6 +52,12 @@ export const SPELL_KEYS = [
   'blight',
   'invisibility',
   'greater_invisibility',
+  'spirit_guardians',
+  'revivify',
+  'mass_healing_word',
+  'call_lightning',
+  'call_lightning_bolt',
+  'sleet_storm',
 ];
 
 export const ALIASES = {
@@ -87,6 +93,11 @@ export const ALIASES = {
   mirrorimage: 'mirror_image',
   absorbelements: 'absorb_elements',
   greaterinvisibility: 'greater_invisibility',
+  spiritguardians: 'spirit_guardians',
+  masshealingword: 'mass_healing_word',
+  calllightning: 'call_lightning',
+  calllightningbolt: 'call_lightning_bolt',
+  sleetstorm: 'sleet_storm',
 };
 
 export const CHROMATIC_COLORS = {
@@ -255,6 +266,34 @@ const RECIPES = {
   },
   greater_invisibility: {
     kind: 'aura', color: 0xe6f0ff, duration: 0.6, at: 'target',
+  },
+  spirit_guardians: {
+    kind: 'combo',
+    steps: [
+      { kind: 'aura', color: 0xffe08a, duration: 0.7, at: 'source', sfx: 'spirit_guardians_cast' },
+      { kind: 'burst', color: 0xfff1c0, duration: 0.9, radius: 3.2, at: 'source' },
+    ],
+  },
+  revivify: {
+    kind: 'combo',
+    steps: [
+      { kind: 'burst', color: 0xd8f0ff, duration: 0.35, radius: 0.4, sfx: 'revivify_cast' },
+      { kind: 'heal', color: 0xfff1c0, duration: 0.8 },
+    ],
+  },
+  mass_healing_word: {
+    kind: 'heal', color: 0x8cffb4, duration: 0.6, allTargets: true, sfx: 'healing_word_cast',
+  },
+  call_lightning: {
+    kind: 'burst', color: 0xd8ecff, duration: 0.6, radius: 1.1, fromAbove: true,
+    sfx: 'lightning_strike',
+  },
+  call_lightning_bolt: {
+    kind: 'burst', color: 0xd8ecff, duration: 0.55, radius: 1.1, fromAbove: true,
+    sfx: 'lightning_strike',
+  },
+  sleet_storm: {
+    kind: 'area', color: 0xbcd8ee, duration: 0.9, radius: 4, sfx: 'sleet_storm_cast',
   },
 };
 

@@ -813,6 +813,7 @@ def move_entity():
         target_map.add(entity, x, y, entity.group)
         
         get_logger().info(f"DM {session['username']} moved entity {entity.label()} to ({x}, {y})")
+        get_current_game().bump_render_epoch()
         
         # Notify all clients of the map update
         get_socketio().emit('message', {'type': 'refresh_map'})
@@ -2533,6 +2534,7 @@ def dm_move_entity():
         
         # Perform the move
         battle_map.move_to(entity, target_x, target_y, battle)
+        get_current_game().bump_render_epoch()
         
         # Log the move for tracking
         get_output_logger().log(

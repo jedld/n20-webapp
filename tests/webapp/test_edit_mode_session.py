@@ -152,3 +152,32 @@ def test_edit_boot_flag_does_not_seed_player_login():
             assert client.post("/edit/session", json={"enabled": True}).status_code == 403
     finally:
         app.config["EDIT_MODE"] = previous
+
+
+def test_edit_move_falls_back_to_live_token_for_runtime_entities():
+    from types import SimpleNamespace
+
+    from natural20.event_manager import EventManager
+    from natural20.map import Map
+    from natural20.player_character import PlayerCharacter
+    from natural20.session import Session
+    from webapp.blueprints.edit import _move_live_entity
+
+    game_session = Session(root_path="tests/fixtures", event_manager=EventManager())
+    battle_map = Map(game_session, "battle_sim")
+    pc = PlayerCharacter.load(game_session, "high_elf_fighter.yml")
+    battle_map.add(pc, 0, 0)
+    bumps = []
+    game = SimpleNamespace(
+        get_entity_by_uid=lambda uid: pc if uid == pc.entity_uid else None,
+        get_current_battle=lambda: None,
+        bump_render_epoch=lambda: bumps.append(1),
+    )
+
+    moved, error = _move_live_entity(game, battle_map, {"item_id": pc.entity_uid, "kind": "entity"}, 1, 1)
+    assert moved and error is None
+    assert battle_map.entity_or_object_pos(pc) == [1, 1]
+    assert bumps, "cached /update tiles must be invalidated after a live move"
+
+    moved, _ = _move_live_entity(game, battle_map, {"item_id": "nobody", "kind": "entity"}, 2, 2)
+    assert not moved

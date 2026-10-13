@@ -174,6 +174,47 @@ class TestBattleProviderEnvWiring(unittest.TestCase):
             'jev', {'api_key': 'k'})
 
 
+class TestJevDefaultBaseUrl(unittest.TestCase):
+    """Without a configured base URL, Jev talks to the public typesafe.ai API."""
+
+    def setUp(self):
+        from webapp.llm_handler import JevProvider
+        self.JevProvider = JevProvider
+        self._saved_stack = []
+
+    def tearDown(self):
+        _restore_env(self._saved_stack)
+
+    def test_defaults_when_nothing_configured(self):
+        _save_and_clean_env({}, self._saved_stack)
+        provider = self.JevProvider({})
+        self.assertEqual(provider.base_url, 'https://api.typesafe.ai')
+        provider.initialize({})  # no API key -> disabled, but URL still resolved
+        self.assertEqual(provider.base_url, 'https://api.typesafe.ai')
+
+    def test_blank_values_fall_back_to_default(self):
+        _save_and_clean_env({'TYPESAFE_BASE_URL': '   '}, self._saved_stack)
+        provider = self.JevProvider({'base_url': ''})
+        provider.initialize({'base_url': ' '})
+        self.assertEqual(provider.base_url, 'https://api.typesafe.ai')
+
+    def test_ai_yaml_profile_without_base_url_uses_default(self):
+        from webapp.ai_config import provider_config_from_profile
+        _save_and_clean_env({}, self._saved_stack)
+        name, config = provider_config_from_profile({'provider': 'jev', 'api_key': 'k'}, role='battle')
+        provider = self.JevProvider({})
+        with patch.object(self.JevProvider, '_import_sdk', side_effect=ImportError):
+            provider.initialize(config)
+        self.assertEqual(name, 'jev')
+        self.assertEqual(provider.base_url, 'https://api.typesafe.ai')
+
+    def test_explicit_base_url_wins(self):
+        _save_and_clean_env({'TYPESAFE_BASE_URL': 'https://env.example'}, self._saved_stack)
+        provider = self.JevProvider({})
+        provider.initialize({'base_url': 'http://localhost:8901/'})
+        self.assertEqual(provider.base_url, 'http://localhost:8901')
+
+
 def _resolve_battle_provider(handler):
     """Mirror the resolution used by the 'llm' controller build sites."""
     battle_provider_fn = getattr(handler, 'battle_llm_provider', None)

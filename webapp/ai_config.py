@@ -562,6 +562,23 @@ def combat_llm_provider_for(handler, entity=None):
     return getattr(handler, 'current_provider', None)
 
 
+def _resolve_restored_combat_provider(entity):
+    """``LlmMcpController.provider_resolver``: rebinds controllers loaded from a save."""
+    try:
+        from webapp.blueprints.helpers.runtime_state import get_llm_handler
+        handler = get_llm_handler()
+    except Exception:
+        return None
+    if handler is None:
+        return None
+    return combat_llm_provider_for(handler, entity)
+
+
+def install_combat_provider_resolver() -> None:
+    from natural20.llm_controller import LlmMcpController
+    LlmMcpController.provider_resolver = staticmethod(_resolve_restored_combat_provider)
+
+
 def entity_tasks_enabled(entity) -> bool:
     config = get_ai_config()
     if config is None or entity is None:
@@ -795,3 +812,6 @@ def changed_provider_roles(before: Dict[str, Any], after: Dict[str, Any]) -> lis
         if 'npc' not in roles:
             roles.append('npc')
     return roles
+
+
+install_combat_provider_resolver()

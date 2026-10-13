@@ -20,6 +20,8 @@ export const AURA_STYLES = {
   light: { color: 0xfff4d6, opacity: 0.5, ring: true },
   guiding_bolt: { color: 0xffe08a, opacity: 0.55, ring: true },
   invisibility: { color: 0xc8e6ff, opacity: 0.28, fadeSprite: 0.38 },
+  spirit_guardians: { color: 0xffe08a, opacity: 0.5, ring: true },
+  call_lightning: { color: 0x9fb8ff, opacity: 0.45, ring: true },
 };
 
 const SYNONYMS = {

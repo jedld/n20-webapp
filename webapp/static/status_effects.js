@@ -160,6 +160,31 @@
       box-shadow: 0 0 12px rgba(150, 200, 255, 0.35), inset 0 0 10px rgba(220, 240, 255, 0.22);
       animation: pe-mirror-flicker 1.4s ease-in-out infinite alternate;
     }
+    /* Mirror Image: translucent copies of the token drifting around it,
+       one per remaining duplicate, so it is "impossible to track which is real". */
+    @keyframes pe-mirror-ghost-0 {
+      0% { transform: translate(-22%, -4%); opacity: 0.42; }
+      50% { transform: translate(-8%, 10%); opacity: 0.26; }
+      100% { transform: translate(-18%, -12%); opacity: 0.40; }
+    }
+    @keyframes pe-mirror-ghost-1 {
+      0% { transform: translate(20%, 6%); opacity: 0.30; }
+      50% { transform: translate(8%, -12%); opacity: 0.44; }
+      100% { transform: translate(24%, -2%); opacity: 0.28; }
+    }
+    @keyframes pe-mirror-ghost-2 {
+      0% { transform: translate(2%, 18%); opacity: 0.36; }
+      50% { transform: translate(-12%, -16%); opacity: 0.24; }
+      100% { transform: translate(12%, 14%); opacity: 0.42; }
+    }
+    .pe-mirror-ghost {
+      object-fit: contain;
+      mix-blend-mode: normal;
+      filter: grayscale(0.35) brightness(1.25) drop-shadow(0 0 4px rgba(170, 215, 255, 0.85));
+    }
+    .pe-mirror-ghost-0 { animation: pe-mirror-ghost-0 2.6s ease-in-out infinite alternate; }
+    .pe-mirror-ghost-1 { animation: pe-mirror-ghost-1 3.1s ease-in-out infinite alternate; }
+    .pe-mirror-ghost-2 { animation: pe-mirror-ghost-2 2.3s ease-in-out infinite alternate; }
     @keyframes pe-absorb-pulse {
       0% { opacity: 0.28; transform: scale(0.97); }
       100% { opacity: 0.48; transform: scale(1.03); }
@@ -234,6 +259,43 @@
       mix-blend-mode: screen;
       animation: pe-invis-shimmer 1.8s ease-in-out infinite alternate;
     }
+    @keyframes pe-guardians-breathe {
+      0% { opacity: 0.55; transform: scale(0.985); }
+      100% { opacity: 0.85; transform: scale(1.015); }
+    }
+    @keyframes pe-guardians-orbit {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .pe-spirit-guardians {
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255, 240, 190, 0.0) 0%, rgba(255, 232, 160, 0.10) 55%, rgba(255, 220, 120, 0.22) 88%, rgba(255, 214, 110, 0.0) 100%);
+      border: 2px solid rgba(255, 226, 150, 0.45);
+      box-shadow: 0 0 22px rgba(255, 222, 140, 0.40), inset 0 0 26px rgba(255, 236, 170, 0.30);
+      animation: pe-guardians-breathe 2.2s ease-in-out infinite alternate;
+    }
+    .pe-spirit-guardians-orbit {
+      border-radius: 50%;
+      mix-blend-mode: screen;
+      animation: pe-guardians-orbit 7s linear infinite;
+      background:
+        radial-gradient(circle at 50% 6%, rgba(255, 250, 220, 0.95) 0, rgba(255, 230, 150, 0.55) 3%, rgba(255, 230, 150, 0) 7%),
+        radial-gradient(circle at 92% 62%, rgba(255, 250, 220, 0.9) 0, rgba(255, 230, 150, 0.5) 3%, rgba(255, 230, 150, 0) 7%),
+        radial-gradient(circle at 14% 70%, rgba(255, 250, 220, 0.9) 0, rgba(255, 230, 150, 0.5) 3%, rgba(255, 230, 150, 0) 7%);
+    }
+    @keyframes pe-storm-flicker {
+      0%, 86%, 100% { opacity: 0.75; filter: brightness(1); }
+      88% { opacity: 0.95; filter: brightness(1.8); }
+      91% { opacity: 0.55; }
+      93% { opacity: 0.9; filter: brightness(1.5); }
+    }
+    .pe-call-lightning {
+      border-radius: 50%;
+      background: radial-gradient(ellipse at 50% 12%, rgba(170, 190, 255, 0.85) 0%, rgba(110, 125, 190, 0.5) 28%, rgba(60, 70, 120, 0.0) 52%),
+                  radial-gradient(circle, rgba(180, 210, 255, 0.0) 50%, rgba(190, 215, 255, 0.45) 68%, rgba(170, 200, 255, 0.0) 80%);
+      box-shadow: 0 0 16px rgba(160, 190, 255, 0.6);
+      animation: pe-storm-flicker 3.4s linear infinite;
+    }
     `;
     const style = document.createElement('style');
     style.id = 'persistent-effects-style';
@@ -280,6 +342,13 @@
     prone: 'pe-prone',
     invisibility: 'pe-invisibility',
     greater_invisibility: 'pe-invisibility',
+    spirit_guardians: 'pe-spirit-guardians',
+    call_lightning: 'pe-call-lightning',
+  };
+
+  // Emanations drawn around the token, in squares beyond its footprint.
+  const EMANATION_SQUARES = {
+    spirit_guardians: 3,
   };
 
   function createOverlayFor($tile, effKey){
@@ -306,9 +375,16 @@
       $container.css({ width: w, height: h });
     }
 
-    // Base layer
-    const $overlay = $('<div class="pe-overlay">').addClass(cls).attr('data-pe', effKey).css({ width: w, height: h, top: 0, left: 0 });
+    // Base layer (emanations extend past the token footprint)
+    const reach = (EMANATION_SQUARES[effKey] || 0) * tileSize;
+    const box = { width: w + 2 * reach, height: h + 2 * reach, top: -reach, left: -reach };
+    const $overlay = $('<div class="pe-overlay">').addClass(cls).attr('data-pe', effKey).css(box);
     $container.append($overlay);
+
+    if (effKey === 'spirit_guardians') {
+      const $orbit = $('<div class="pe-overlay pe-spirit-guardians-orbit">').attr('data-pe', effKey).css(box);
+      $container.append($orbit);
+    }
 
     // Optional extra layer(s) for certain effects to increase visibility
     if (effKey === 'mage_armor') {
@@ -344,8 +420,27 @@
     if ((effKey === 'invisibility' || effKey === 'greater_invisibility') && $img && $img.length) {
       $img.css('opacity', '0.38');
     }
+    if (effKey === 'mirror_image' && $img && $img.length) {
+      const count = mirrorImageCount($tile);
+      $overlay.attr('data-count', count);
+      for (let i = 0; i < count; i++) {
+        const $ghost = $('<img class="pe-overlay pe-mirror-ghost" alt="">')
+          .addClass('pe-mirror-ghost-' + i)
+          .attr('src', $img.attr('src'))
+          .attr('data-pe', effKey)
+          .css({ width: w, height: h, top: 0, left: 0 });
+        $container.prepend($ghost);
+      }
+    }
 
     return $overlay;
+  }
+
+  // Duplicates left (0-3); the tile's .effect carries data-mirror-images.
+  function mirrorImageCount($tile){
+    const raw = parseInt($tile.find('.effect').first().attr('data-mirror-images'), 10);
+    if (isNaN(raw)) return 3;
+    return Math.max(0, Math.min(3, raw));
   }
 
   function removeOverlay($tile, effKey){
@@ -390,6 +485,14 @@
     // Remove extras
     for (let j=0;j<have.length;j++) {
       if (want.indexOf(have[j]) === -1) removeOverlay($tile, have[j]);
+    }
+    // A destroyed duplicate changes the ghost count: rebuild.
+    if (want.indexOf('mirror_image') !== -1) {
+      const $base = $tile.find('.pe-mirror-image').first();
+      if ($base.length && String($base.attr('data-count')) !== String(mirrorImageCount($tile))) {
+        removeOverlay($tile, 'mirror_image');
+        createOverlayFor($tile, 'mirror_image');
+      }
     }
   }
 
@@ -488,7 +591,7 @@
       }
     });
 
-    observer.observe(container, { subtree: true, childList: true, attributes: true, attributeFilter: ['alt', 'data-tooltip', 'class'] });
+    observer.observe(container, { subtree: true, childList: true, attributes: true, attributeFilter: ['alt', 'data-tooltip', 'class', 'data-mirror-images'] });
   })();
 
   // Initial apply on DOM ready

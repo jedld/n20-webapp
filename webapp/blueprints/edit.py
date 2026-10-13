@@ -510,6 +510,25 @@ def edit_annotations_bounds():
     return jsonify({"success": True, "map": map_name, "annotation": updated})
 
 
+def _move_live_entity(current_game, target_map, data, x, y):
+    """Move a token that exists only in the running game. Returns ``(moved, error)``."""
+    if str(data.get("kind")) not in {"entity", "object"} or data.get("source") == "meta":
+        return False, None
+    entity = current_game.get_entity_by_uid(str(data["item_id"]))
+    if entity is None or entity not in getattr(target_map, "entities", {}):
+        return False, None
+    battle = current_game.get_current_battle()
+    if not target_map.placeable(entity, x, y, battle):
+        return False, f"{entity.label()} cannot be placed at ({x}, {y})"
+    target_map.move_to(entity, x, y, battle)
+    # /update serves tiles cached per render epoch; without a bump clients
+    # keep drawing the token at its old square.
+    bump = getattr(current_game, "bump_render_epoch", None)
+    if callable(bump):
+        bump()
+    return True, None
+
+
 @edit_bp.route("/edit/move", methods=["POST"])
 def edit_move():
     denied = _require_edit_dm()
@@ -570,7 +589,17 @@ def edit_move():
             from_x=from_x,
             from_y=from_y,
         )
-    except (KeyError, ValueError, IndexError) as exc:
+    except KeyError as exc:
+        # Tokens placed at runtime (party via /add, spawns) have no YAML
+        # entry; move the live token instead.
+        moved, error = _move_live_entity(current_game, target_map, data, x, y)
+        if not moved:
+            return jsonify({"success": False, "error": error or str(exc)}), 400
+        get_socketio().emit("message", {"type": "refresh_map"})
+        return jsonify(
+            {"success": True, "map": map_name, "item_id": data["item_id"], "x": x, "y": y, "persisted": False}
+        )
+    except (ValueError, IndexError) as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     except OSError as exc:
         return jsonify({"success": False, "error": f"Failed to write map YAML: {exc}"}), 500

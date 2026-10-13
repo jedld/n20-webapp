@@ -28,7 +28,9 @@ function sourceOf(payload) {
 
 function targetsOf(payload) {
   const fromSquares = (payload.target_squares || []).map(gridPos).filter(Boolean);
-  const explicit = asList(payload.target).filter(Boolean);
+  const t = payload.target;
+  const isPoint = Array.isArray(t) && t.length === 2 && typeof t[0] === 'number' && typeof t[1] === 'number';
+  const explicit = isPoint ? [t] : asList(t).filter(Boolean);
   const pos = gridPos(payload.target_pos);
   if (explicit.length) return explicit;
   if (pos) return [pos];
@@ -103,9 +105,13 @@ function playKind(fx, recipe, payload) {
       else if (firstTarget) fx.burst({ at: firstTarget, color, duration, radius: recipe.radius ?? 1.1 });
       break;
     case 'heal': {
-      const at = recipe.at === 'source' ? from : (firstTarget || from);
-      fx.particles({ at, color, duration, count: 20, mode: 'up' });
-      fx.auraBurst({ at, color, duration });
+      const spots = recipe.allTargets
+        ? targetList.map((t) => fx.resolveWorld(t, recipe.height ?? 0.7)).filter(Boolean)
+        : [recipe.at === 'source' ? from : (firstTarget || from)];
+      for (const at of spots) {
+        fx.particles({ at, color, duration, count: 20, mode: 'up' });
+        fx.auraBurst({ at, color, duration });
+      }
       break;
     }
     case 'aura': {

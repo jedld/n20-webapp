@@ -175,14 +175,28 @@ def battle_admin(
     order: Optional[Sequence[str]] = None,
     initiative: Optional[int] = None,
     controller: Optional[str] = None,
+    enabled: Optional[bool] = None,
 ) -> Dict[str, Any]:
     op = (op or '').lower()
+    if op == 'pacing':
+        if enabled is not None:
+            game.set_dm_ends_ai_turns(bool(enabled))
+        return {'op': op, **game.battle_pacing_state()}
+
     battle = game.get_current_battle()
     if battle is None:
         raise ValueError('No active battle')
 
     if op == 'next_turn':
         before = getattr(battle.current_turn(), 'entity_uid', None)
+        if getattr(game, 'dm_turn_hold', None):
+            game.release_dm_turn_hold()
+            return {
+                'op': op,
+                'previous_uid': before,
+                'released_held_turn': True,
+                'round': getattr(battle, 'round', None),
+            }
         battle.next_turn()
         after = getattr(battle.current_turn(), 'entity_uid', None)
         _emit_refresh(game)

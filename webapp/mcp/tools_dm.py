@@ -903,21 +903,26 @@ def register(registry: ToolRegistry) -> None:
         registry,
         name='dm.battle_admin',
         description='Mid-battle initiative/group management. '
-                    'op: add_combatant | remove_combatant | reorder | set_group | set_initiative | next_turn. '
+                    'op: add_combatant | remove_combatant | reorder | set_group | set_initiative | next_turn | pacing. '
                     '- add_combatant: adds entity to active battle; optional initiative int; '
                     'optional controller manual|ai|llm (PCs default to manual when omitted).\n'
                     '- remove_combatant: drops entity from initiative without removing from map.\n'
                     '- reorder: takes `order` array of entity_uids.\n'
                     '- set_group: requires `group` (e.g. "a"/"b"/"c").\n'
                     '- set_initiative: requires `initiative` int; resorts turn order.\n'
-                    '- next_turn: advances initiative; no entity_uid needed.',
+                    '- next_turn: advances initiative (ends a held AI turn when one is waiting); '
+                    'no entity_uid needed.\n'
+                    '- pacing: read or set (`enabled`) "DM ends AI turns" — AI combatants wait for a '
+                    'DM to end their turn (even if no DM is logged in yet). Works without an active battle.',
         input_schema={
             'type': 'object',
             'required': ['op'],
             'properties': {
                 'op': {'type': 'string',
                         'enum': ['add_combatant', 'remove_combatant', 'reorder',
-                                 'set_group', 'set_initiative', 'next_turn']},
+                                 'set_group', 'set_initiative', 'next_turn', 'pacing']},
+                'enabled': {'type': 'boolean',
+                            'description': 'pacing: turn "DM ends AI turns" on/off (omit to read).'},
                 'entity_uid': {'type': 'string'},
                 'group': {'type': 'string'},
                 'order': {'type': 'array', 'items': {'type': 'string'}},
@@ -936,7 +941,8 @@ def register(registry: ToolRegistry) -> None:
                      group: Optional[str] = None,
                      order: Optional[List[str]] = None,
                      initiative: Optional[int] = None,
-                     controller: Optional[str] = None):
+                     controller: Optional[str] = None,
+                     enabled: Optional[bool] = None):
         from webapp.battle_management import battle_admin as _battle_admin
 
         try:
@@ -949,6 +955,7 @@ def register(registry: ToolRegistry) -> None:
                 order=order,
                 initiative=initiative,
                 controller=controller,
+                enabled=enabled,
             )
         except ValueError as exc:
             raise tool_error(str(exc))

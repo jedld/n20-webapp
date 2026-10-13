@@ -38,6 +38,16 @@ describe('spellCatalog', () => {
     expect(recipeFor('fireball').kind).toBe('combo');
   });
 
+  it('covers the level 3 SRD spells and their persistent auras', () => {
+    expect(normalizeSpellKey('Spirit Guardians')).toBe('spirit_guardians');
+    expect(normalizeSpellKey('mass healing word')).toBe('mass_healing_word');
+    expect(recipeFor('mass_healing_word').allTargets).toBe(true);
+    expect(recipeFor('call_lightning_bolt').fromAbove).toBe(true);
+    expect(recipeFor('sleet_storm').kind).toBe('area');
+    expect(aurasForEffects(['spirit_guardians', 'call_lightning']).map((a) => a.key))
+      .toEqual(['spirit_guardians', 'call_lightning']);
+  });
+
   it('picks chromatic orb color from damage_type', () => {
     expect(recipeFor('chromatic_orb', { damage_type: 'fire' }).color).toBe(CHROMATIC_COLORS.fire);
     expect(recipeFor('chromatic orb', { damage_type: 'cold' }).color).toBe(CHROMATIC_COLORS.cold);

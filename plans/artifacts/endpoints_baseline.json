@@ -216,6 +216,10 @@
     "rule": "/bardic_inspiration"
   },
   {
+    "endpoint": "battle.battle_pacing",
+    "rule": "/battle_pacing"
+  },
+  {
     "endpoint": "battle.combat_log",
     "rule": "/api/combat-log"
   },
