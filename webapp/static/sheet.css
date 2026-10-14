@@ -2407,6 +2407,193 @@ body.item-card-open {
     color: #6b3fa0;
 }
 
+.item-card-attunement-state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.item-card-attunement-state .attunement-issue {
+    flex-basis: 100%;
+}
+
+.attunement-badge {
+    color: #8a6d3b;
+    border-style: dashed;
+}
+
+.attunement-badge.attunement-badge-on {
+    color: #6b3fa0;
+    border-color: #6b3fa0;
+    border-style: solid;
+    background: rgba(155, 89, 182, 0.12);
+}
+
+/* Attunement panel (character sheet equipment tab) */
+.attunement-panel {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    background: linear-gradient(180deg, rgba(245, 238, 255, 0.95), rgba(236, 226, 250, 0.85));
+    border: 2px solid #6b3fa0;
+    border-radius: 8px;
+}
+
+.attunement-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.attunement-title {
+    color: #4a2f19;
+    font-size: 1rem;
+}
+
+.attunement-slots {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.attunement-pip {
+    width: 12px;
+    height: 12px;
+    border: 2px solid #6b3fa0;
+    border-radius: 50%;
+    background: transparent;
+}
+
+.attunement-pip.filled {
+    background: #6b3fa0;
+}
+
+.attunement-count {
+    margin-left: 4px;
+    color: #4a2f19;
+    font-size: 0.9em;
+    font-weight: 700;
+}
+
+.attunement-note,
+.attunement-hint {
+    margin: 6px 0 0;
+    color: #6b4423;
+    font-size: 0.85em;
+    font-style: italic;
+}
+
+.attunement-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.attunement-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    padding: 6px 0;
+    border-top: 1px solid rgba(107, 63, 160, 0.2);
+}
+
+.attunement-row:first-child {
+    border-top: none;
+}
+
+.attunement-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 160px;
+    cursor: pointer;
+    color: #4a2f19;
+    font-weight: 600;
+}
+
+.attunement-icon {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+}
+
+.attunement-state {
+    color: #6b4423;
+    font-size: 0.85em;
+}
+
+.attunement-row.is-attuned .attunement-state {
+    color: #6b3fa0;
+    font-weight: 700;
+}
+
+.attunement-row.is-pending .attunement-state {
+    color: #b8860b;
+    font-style: italic;
+}
+
+.attunement-flag {
+    margin-left: 4px;
+    padding: 0 6px;
+    border: 1px solid #a67c52;
+    border-radius: 999px;
+    font-size: 0.85em;
+    font-weight: 400;
+}
+
+.attunement-flag-cursed {
+    color: #a94442;
+    border-color: #a94442;
+}
+
+.attunement-actions {
+    display: inline-flex;
+    gap: 4px;
+}
+
+.attunement-actions .inventory-action-btn {
+    width: auto;
+    margin: 0;
+    padding: 3px 8px;
+    font-size: 11px;
+    background: #fff8dc;
+    color: #4a2f19;
+    border: 1px solid #c4a574;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.attunement-actions .inventory-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.attunement-actions .attunement-btn-dm {
+    border-style: dashed;
+    color: #6b3fa0;
+}
+
+.attunement-issue {
+    flex-basis: 100%;
+    color: #a94442;
+    font-size: 0.8em;
+}
+
+.attunement-warning {
+    display: inline-block;
+    padding: 0 6px;
+    border: 1px solid #a94442;
+    border-radius: 999px;
+    color: #a94442;
+    font-size: 10px;
+    font-weight: 400;
+    white-space: nowrap;
+}
+
 .item-card-letter {
     margin-top: 14px;
 }

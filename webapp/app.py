@@ -1329,6 +1329,7 @@ def import_dndbeyond_character():
     pc, import_warnings, raw_data = import_character_from_dndbeyond(
       character_id,
       cobalt_token=cobalt_token,
+      campaign_root=game_session.root_path,
     )
   except RuntimeError as exc:
     return jsonify(error=str(exc)), 500
@@ -3423,9 +3424,24 @@ def action_type_to_class(action_type):
     elif action_type == 'DismissSummonsAction':
         from natural20.actions.summon_creatures_action import DismissSummonsAction
         return DismissSummonsAction
+    elif action_type == 'NpcAreaAction':
+        from natural20.actions.npc_area_action import NpcAreaAction
+        return NpcAreaAction
+    elif action_type == 'PostAttackTeleportAction':
+        from natural20.actions.post_attack_teleport_action import PostAttackTeleportAction
+        return PostAttackTeleportAction
     elif action_type == 'CallLightningBoltAction':
         from natural20.actions.call_lightning_bolt_action import CallLightningBoltAction
         return CallLightningBoltAction
+    elif action_type == 'AuraOfVitalityHealAction':
+        from natural20.actions.aura_of_vitality_heal_action import AuraOfVitalityHealAction
+        return AuraOfVitalityHealAction
+    elif action_type == 'CloudsJauntAction':
+        from natural20.actions.clouds_jaunt_action import CloudsJauntAction
+        return CloudsJauntAction
+    elif action_type == 'LargeFormAction':
+        from natural20.actions.large_form_action import LargeFormAction
+        return LargeFormAction
     else:
         raise ValueError(f"Unknown action type {action_type}")
 

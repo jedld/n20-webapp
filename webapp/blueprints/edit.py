@@ -529,6 +529,24 @@ def _move_live_entity(current_game, target_map, data, x, y):
     return True, None
 
 
+def _persist_player_position(current_game, map_name, data, x, y):
+    """Write a moved player character's square to the map YAML ``player`` list
+    so it spawns there after a restart. Returns True when persisted."""
+    from natural20.player_character import PlayerCharacter
+
+    entity = current_game.get_entity_by_uid(str(data["item_id"]))
+    if not isinstance(entity, PlayerCharacter):
+        return False
+    try:
+        place_player_in_map(
+            current_game.game_session, map_name,
+            entity_uid=str(entity.entity_uid), x=x, y=y,
+        )
+    except (ValueError, KeyError, OSError):
+        return False
+    return True
+
+
 @edit_bp.route("/edit/move", methods=["POST"])
 def edit_move():
     denied = _require_edit_dm()
@@ -595,9 +613,10 @@ def edit_move():
         moved, error = _move_live_entity(current_game, target_map, data, x, y)
         if not moved:
             return jsonify({"success": False, "error": error or str(exc)}), 400
+        persisted = _persist_player_position(current_game, map_name, data, x, y)
         get_socketio().emit("message", {"type": "refresh_map"})
         return jsonify(
-            {"success": True, "map": map_name, "item_id": data["item_id"], "x": x, "y": y, "persisted": False}
+            {"success": True, "map": map_name, "item_id": data["item_id"], "x": x, "y": y, "persisted": persisted}
         )
     except (ValueError, IndexError) as exc:
         return jsonify({"success": False, "error": str(exc)}), 400

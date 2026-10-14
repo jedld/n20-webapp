@@ -48,6 +48,16 @@ describe('spellCatalog', () => {
       .toEqual(['spirit_guardians', 'call_lightning']);
   });
 
+  it('covers the ranger and wizard utility spells', () => {
+    expect(normalizeSpellKey('Hail of Thorns')).toBe('hail_of_thorns');
+    expect(normalizeSpellKey('Pass without Trace')).toBe('pass_without_trace');
+    expect(normalizeSpellKey('zephyr strike')).toBe('zephyr_strike');
+    expect(recipeFor('spike_growth').kind).toBe('area');
+    expect(recipeFor('silence').kind).toBe('area');
+    expect(recipeFor('fear').kind).toBe('area');
+    expect(recipeFor('ensnaring_strike').at).toBe('target');
+  });
+
   it('picks chromatic orb color from damage_type', () => {
     expect(recipeFor('chromatic_orb', { damage_type: 'fire' }).color).toBe(CHROMATIC_COLORS.fire);
     expect(recipeFor('chromatic orb', { damage_type: 'cold' }).color).toBe(CHROMATIC_COLORS.cold);

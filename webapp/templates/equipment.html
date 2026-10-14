@@ -52,12 +52,14 @@
     {% endif %}
 </div>
 {% endif %}
+{% include '_attunement_panel.html' %}
 {% for item in entity.equipped_items() %}
+{% set unattuned = item.get('requires_attunement') and not item.get('magic_active', true) %}
 {% if item['damage'] and not item['ac'] %}
 <table class="equipped-item-stats{% if item.get('magical') %} magic-item{% endif %}">
     <thead>
         <tr>
-            <th style="width: 60px;">{{ item['label'] }}{% if item.get('magical') %} <span class="magic-indicator" title="Magical">✦</span>{% endif %}</th>
+            <th style="width: 60px;">{{ item['label'] }}{% if item.get('magical') %} <span class="magic-indicator" title="Magical">✦</span>{% endif %}{% if unattuned %} <span class="attunement-warning" title="Not attuned: only its nonmagical properties work">Not attuned</span>{% endif %}</th>
             <th>To Hit</th>
             <th>Damage</th>
             <th>Type</th>
@@ -78,7 +80,7 @@
                 </div>
             </td>
             <td class="auto-die-roll" data-entity="{{ entity.entity_uid }}" data-description="Attack Roll">
-                1d20&nbsp;+&nbsp;{{ entity.attack_roll_mod(item) }}{% if item.get('magic_bonus', 0) > 0 %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">(+{{ item['magic_bonus'] }})</span>{% endif %}
+                1d20&nbsp;+&nbsp;{{ entity.attack_roll_mod(item) }}{% if item.get('magic_bonus', 0) > 0 and not unattuned %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">(+{{ item['magic_bonus'] }})</span>{% endif %}
             </td>
             <td>
             {% if entity.is_two_handed_weapon(item) %}
@@ -86,7 +88,7 @@
             {% else %}
                 {{ item['damage'] }}
             {% endif %}
-            {% if item.get('magic_bonus', 0) > 0 %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">+{{ item['magic_bonus'] }}</span>{% endif %}
+            {% if item.get('magic_bonus', 0) > 0 and not unattuned %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">+{{ item['magic_bonus'] }}</span>{% endif %}
             </td>
             <td>{{ item['damage_type'] }}</td>
             {% if item['range_max'] %}
@@ -116,7 +118,7 @@
 {% elif item['ac'] or item['bonus_ac'] %}
 <table class="{% if item.get('magical') %}magic-item{% endif %}">
     <tr>
-        <th style="width: 60px;">{{ item['label'] }}{% if item.get('magical') %} <span class="magic-indicator" title="Magical">✦</span>{% endif %}</th>
+        <th style="width: 60px;">{{ item['label'] }}{% if item.get('magical') %} <span class="magic-indicator" title="Magical">✦</span>{% endif %}{% if unattuned %} <span class="attunement-warning" title="Not attuned: only its nonmagical properties work">Not attuned</span>{% endif %}</th>
         <th>AC</th>
         <th>Stealth Disadvantage</th>
         {% if item.get('weight') is not none %}<th>Weight</th>{% endif %}
@@ -130,7 +132,7 @@
             {% with item_name=item['name'] %}{% include '_item_charge_badge.html' %}{% endwith %}
             </div>
         </td>
-        <td>{{ item['ac'] or item['bonus_ac'] }}{% if item.get('magic_bonus', 0) > 0 %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">(+{{ item['magic_bonus'] }})</span>{% endif %}</td>
+        <td>{{ item['ac'] or item['bonus_ac'] }}{% if item.get('magic_bonus', 0) > 0 and not unattuned %} <span class="magic-bonus" title="+{{ item['magic_bonus'] }} magic bonus">(+{{ item['magic_bonus'] }})</span>{% endif %}</td>
         <td>{{ "Yes" if item['stealth_disadvantage'] else "" }}</td>
         {% if item.get('weight') is not none %}<td>{{ item['weight'] }} lb</td>{% endif %}
     </tr>
@@ -138,7 +140,7 @@
 {% else %} <!-- Cloak -->
 <table>
     <tr>
-        <th style="width: 60px;">{{ item['label'] }}</th>
+        <th style="width: 60px;">{{ item['label'] }}{% if unattuned %} <span class="attunement-warning" title="Not attuned: only its nonmagical properties work">Not attuned</span>{% endif %}</th>
         <th>Effect</th>
         <th>Description</th>
     </tr>

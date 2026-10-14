@@ -417,7 +417,7 @@
                     {% endif %}
                     {% for resource_name, resource in _resource_pools.items() %}
                     <tr>
-                        <th>{{ resource_name | replace('_', ' ') | title }}</th>
+                        <th>{{ resource_name | resource_pool_label }}</th>
                         <td>
                             {% if 'dm' in role %}
                             <div class="action-resource-controls">
@@ -426,7 +426,7 @@
                                        value="{{ resource.current }}"
                                        min="0"
                                        max="{{ resource.max_value }}"
-                                       title="Current {{ resource_name | replace('_', ' ') }}">
+                                       title="Current {{ resource_name | resource_pool_label }}">
                                 <div class="action-resource-buttons">
                                     <button class="action-resource-btn minus-btn" onclick="updateResourcePool('{{ resource_name }}', -1)" title="Remove one">-</button>
                                     <button class="action-resource-btn plus-btn" onclick="updateResourcePool('{{ resource_name }}', 1)" title="Add one">+</button>

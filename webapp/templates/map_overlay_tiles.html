@@ -78,6 +78,15 @@
               {% if obj['sleet_storm_marker'] %}
                 <div class="sleet-storm-marker" aria-hidden="true"></div>
               {% endif %}
+              {% if obj['spike_growth_marker'] %}
+                <div class="spike-growth-marker" aria-hidden="true"></div>
+              {% endif %}
+              {% if obj['silence_marker'] %}
+                <div class="silence-marker" aria-hidden="true"></div>
+              {% endif %}
+              {% if obj['flaming_sphere_marker'] %}
+                <div class="flaming-sphere-marker" aria-hidden="true"></div>
+              {% endif %}
               {% if obj['tiny_hut_dome'] %}
                 <div class="tiny-hut-dome-marker" aria-hidden="true"
                      data-lighting="{{ obj['tiny_hut_lighting'] or 'default' }}"

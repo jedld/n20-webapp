@@ -181,3 +181,36 @@ def test_edit_move_falls_back_to_live_token_for_runtime_entities():
 
     moved, _ = _move_live_entity(game, battle_map, {"item_id": "nobody", "kind": "entity"}, 2, 2)
     assert not moved
+
+
+def test_edit_move_persists_player_character_position(tmp_path):
+    import shutil
+    from types import SimpleNamespace
+
+    from natural20.event_manager import EventManager
+    from natural20.map import Map
+    from natural20.player_character import PlayerCharacter
+    from natural20.session import Session
+    from webapp.blueprints.edit import _persist_player_position
+
+    fixtures = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "tests", "fixtures"))
+    root = tmp_path / "campaign"
+    shutil.copytree(fixtures, root, ignore=shutil.ignore_patterns("tmp", "__pycache__"))
+
+    game_session = Session(root_path=str(root), event_manager=EventManager())
+    pc = PlayerCharacter.load(game_session, "high_elf_fighter.yml", override={"entity_uid": "high_elf_fighter"})
+    npc = game_session.npc("goblin")
+    lookup = {pc.entity_uid: pc, npc.entity_uid: npc}
+    game = SimpleNamespace(game_session=game_session, get_entity_by_uid=lookup.get)
+
+    assert _persist_player_position(game, "empty_map", {"item_id": pc.entity_uid}, 2, 3)
+    assert not _persist_player_position(game, "empty_map", {"item_id": npc.entity_uid}, 4, 4)
+    assert _persist_player_position(game, "empty_map", {"item_id": pc.entity_uid}, 3, 1)
+
+    reloaded = Session(root_path=str(root), event_manager=EventManager())
+    battle_map = Map(reloaded, "maps/empty_map")
+    placed = [e for e in battle_map.entities if getattr(e, "entity_uid", None) == pc.entity_uid]
+    assert placed and battle_map.entity_or_object_pos(placed[0]) == [3, 1]
+    entries = [p for p in (battle_map.properties.get("player") or [])
+               if (p.get("overrides") or {}).get("entity_uid") == pc.entity_uid]
+    assert len(entries) == 1

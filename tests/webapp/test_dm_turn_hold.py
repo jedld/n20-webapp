@@ -15,6 +15,9 @@ def _combatant(uid='orc-1'):
     entity.label.return_value = uid.title()
     entity.dead.return_value = False
     entity.unconscious.return_value = False
+    # Must be falsy: a truthy MagicMock would send every turn down the
+    # incapacitated-skip branch and _run_turns would loop forever.
+    entity.incapacitated.return_value = False
     return entity
 
 

@@ -4750,8 +4750,22 @@ const refreshTurnOrder = () => {
 const refreshTurn = () => {
   Utils.ajaxGet("/turn", {}, (data) => {
     $(".game-turn-container").html(data).show();
+    applyResourcePoolsPanelState();
   });
 };
+
+// Collapsible "Class Resources" panel in the turn container. The panel is
+// re-rendered on every /turn refresh, so the expanded/collapsed choice is
+// persisted in localStorage and re-applied after each render.
+const resourcePoolsExpandedKey = "natural20.turnResourcePoolsExpanded";
+
+function applyResourcePoolsPanelState() {
+  const $panel = $(".game-turn-container #resource-pools-panel");
+  if (!$panel.length) return;
+  let expanded = false;
+  try { expanded = window.localStorage.getItem(resourcePoolsExpandedKey) === "1"; } catch (e) { }
+  $panel.toggleClass("expanded", expanded);
+}
 
 // Global variables used by EventQueue and other components
 let active_background_sound = null;
@@ -10506,6 +10520,12 @@ $(document).ready(() => {
     ajaxPost("/end_turn", {}, (data) => {
       // Optionally hide game turn container
     });
+  });
+
+  $(".game-turn-container").on("click", "#resource-pools-toggle", function () {
+    const $panel = $(this).closest("#resource-pools-panel");
+    const expanded = $panel.toggleClass("expanded").hasClass("expanded");
+    try { window.localStorage.setItem(resourcePoolsExpandedKey, expanded ? "1" : "0"); } catch (e) { }
   });
 
   //on mouse over an action button if there is a target, highlight the target

@@ -18,6 +18,9 @@ def test_game_loop_emits_turn_state_before_manual_handoff():
     current_turn.reset_turn = MagicMock()
     current_turn.dead.return_value = False
     current_turn.unconscious.return_value = False
+    # Must be falsy: a truthy MagicMock would route the turn through the
+    # incapacitated-skip branch instead of ai_loop.
+    current_turn.incapacitated.return_value = False
 
     battle = _make_battle(current_turn)
 

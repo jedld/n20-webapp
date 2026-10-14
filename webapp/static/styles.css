@@ -1728,6 +1728,131 @@ input.initiative-text {
 
 }
 
+/* Class resource pools panel (collapsible, lives under the turn indicators) */
+.game-turn-container .resource-pools-panel {
+  pointer-events: none;
+  margin-top: 8px;
+  width: 240px;
+}
+
+.game-turn-container .resource-pools-toggle {
+  pointer-events: auto;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(46, 24, 66, 0.88);
+  color: #e8d5f5;
+  border: 1px solid #6c3483;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.game-turn-container .resource-pools-toggle:hover {
+  background: rgba(66, 34, 92, 0.95);
+}
+
+.game-turn-container .resource-pools-toggle .rpp-arrow {
+  display: inline-block;
+  font-size: 10px;
+  width: 10px;
+}
+
+.game-turn-container .resource-pools-panel.expanded .resource-pools-toggle .rpp-arrow {
+  transform: rotate(90deg);
+}
+
+.game-turn-container .resource-pools-toggle .rpp-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.game-turn-container .resource-pools-toggle .rpp-summary {
+  margin-left: auto;
+  background: #6c3483;
+  color: #f4ecf7;
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.game-turn-container .resource-pools-toggle .rpp-summary.depleted {
+  background: #b03a2e;
+}
+
+.game-turn-container .resource-pools-body {
+  display: none;
+  padding: 4px 0 0 0;
+}
+
+.game-turn-container .resource-pools-panel.expanded .resource-pools-body {
+  display: block;
+}
+
+.game-turn-container .resource-pool-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(32, 16, 46, 0.85);
+  border: 1px solid rgba(108, 52, 131, 0.45);
+  border-radius: 5px;
+  padding: 4px 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #e8d5f5;
+}
+
+.game-turn-container .resource-pool-row .rpp-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.game-turn-container .resource-pool-row .rpp-name {
+  flex: 1 1 auto;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.game-turn-container .resource-pool-row .rpp-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.game-turn-container .resource-pool-row .rpp-restore {
+  color: #b39ddb;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.game-turn-container .resource-pool-row .rpp-bar {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.game-turn-container .resource-pool-row .rpp-bar-fill {
+  height: 100%;
+  background: #a569bd;
+  border-radius: 2px;
+}
+
+.game-turn-container .resource-pool-row.depleted .rpp-bar-fill {
+  background: #b03a2e;
+}
+
+.game-turn-container .resource-pool-row.depleted .rpp-value {
+  color: #f1948a;
+}
+
 .spell-icon {
   width: 50px;
   height: 50px;
@@ -2736,6 +2861,24 @@ body.highlight-doors .tile.tile-door-highlight {
   }
 }
 
+.flaming-sphere-marker {
+  position: absolute;
+  inset: 8%;
+  pointer-events: none;
+  z-index: 999;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 40% 35%, rgba(255, 246, 196, 0.95), rgba(255, 176, 48, 0.85) 38%,
+      rgba(214, 72, 18, 0.75) 68%, rgba(120, 24, 6, 0) 100%);
+  box-shadow: 0 0 14px 6px rgba(255, 128, 32, 0.55);
+  animation: flaming-sphere-flicker 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes flaming-sphere-flicker {
+  from { transform: scale(0.94); filter: brightness(0.95); }
+  to { transform: scale(1.04); filter: brightness(1.15); }
+}
+
 .stinking-cloud-marker {
   position: absolute;
   inset: 0;
@@ -2823,6 +2966,45 @@ body.highlight-doors .tile.tile-door-highlight {
   0% { transform: translateY(-40%); opacity: 0; }
   20% { opacity: 1; }
   100% { transform: translateY(40%); opacity: 0.2; }
+}
+
+/* Spike Growth: thorny difficult terrain. */
+.spike-growth-marker {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 999;
+  background:
+    radial-gradient(80% 60% at 30% 70%, rgba(84, 120, 48, 0.32), transparent 65%),
+    linear-gradient(150deg, rgba(70, 92, 38, 0.30), rgba(52, 66, 30, 0.36));
+  box-shadow: inset 0 0 0 1px rgba(120, 160, 70, 0.28);
+}
+
+.spike-growth-marker::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    conic-gradient(from 160deg at 20% 72%, transparent 0 20deg, rgba(196, 212, 150, 0.75) 20deg 30deg, transparent 30deg),
+    conic-gradient(from 160deg at 58% 40%, transparent 0 20deg, rgba(196, 212, 150, 0.7) 20deg 30deg, transparent 30deg),
+    conic-gradient(from 160deg at 80% 82%, transparent 0 20deg, rgba(196, 212, 150, 0.7) 20deg 30deg, transparent 30deg);
+  opacity: 0.85;
+}
+
+/* Silence: muted sphere. */
+.silence-marker {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 999;
+  background: radial-gradient(circle at 50% 50%, rgba(170, 180, 230, 0.10), rgba(90, 100, 160, 0.30));
+  box-shadow: inset 0 0 0 1px rgba(180, 190, 240, 0.22);
+  animation: silence-hush 3.2s ease-in-out infinite;
+}
+
+@keyframes silence-hush {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
 }
 
 /* Unseen creatures whose square is known (heard) or remembered (last known). */

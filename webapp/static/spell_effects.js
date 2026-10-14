@@ -862,6 +862,7 @@
   });
 
   // Misty Step: silvery vanish and reappear between coordinates
+  register('dimension_door', function(payload){ return play('misty_step', payload); });
   register('misty_step', function(payload){
     return new Promise((resolve) => {
       const fromCoords = Array.isArray(payload && payload.from) ? payload.from : null;
@@ -4594,6 +4595,142 @@
     });
   });
   register('sleet storm', function(payload){ return play('sleet_storm', payload); });
+
+  // Shared radiant cast: a glow at the caster, tethers to each target, then a
+  // burst at each target. opts: color [r,g,b], rays (sunburst), ring (expanding
+  // ring around the caster instead of tethers), shatter (breaking-chain shards),
+  // point (use the targeted square), duration, sfx.
+  function playRadiantCast(payload, opts){
+    return new Promise((resolve) => {
+      const o = opts || {};
+      const [cr, cg, cb] = o.color || [255, 220, 120];
+      const src = payload && payload.source ? centerOfEntity(payload.source) : null;
+      let centers = o.point ? [pointCenter(payload)].filter(Boolean)
+        : ensureArray(payload && payload.target).map(centerOfEntity).filter(Boolean);
+      if (!centers.length && src) centers = [src];
+      if (!centers.length) return resolve();
+      const tile = tilePx();
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const start = performance.now();
+      const duration = o.duration || 1000;
+      const draw = (now) => {
+        const t = animProgress(now, start, duration);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        if (src) {
+          const cr0 = tile * (0.4 + 0.3 * Math.min(1, t * 3));
+          const g0 = ctx.createRadialGradient(src.x, src.y, 0, src.x, src.y, cr0);
+          g0.addColorStop(0, rgba(255, 255, 240, 0.6 * (1 - t)));
+          g0.addColorStop(1, rgba(cr, cg, cb, 0));
+          ctx.fillStyle = g0;
+          ctx.beginPath(); ctx.arc(src.x, src.y, cr0, 0, Math.PI * 2); ctx.fill();
+        }
+        if (o.ring && src) {
+          const rt = Math.min(1, t / 0.7);
+          ctx.strokeStyle = rgba(cr, cg, cb, 0.85 * (1 - t));
+          ctx.lineWidth = 4 - 2 * rt;
+          ctx.beginPath(); ctx.arc(src.x, src.y, tile * (0.5 + 5.5 * rt), 0, Math.PI * 2); ctx.stroke();
+        } else if (src) {
+          const lt = Math.min(1, t / 0.4);
+          centers.forEach((c) => {
+            if (c === src) return;
+            ctx.strokeStyle = rgba(cr, cg, cb, 0.75 * (1 - t));
+            ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.moveTo(src.x, src.y);
+            ctx.lineTo(src.x + (c.x - src.x) * lt, src.y + (c.y - src.y) * lt); ctx.stroke();
+          });
+        }
+        if (t >= 0.3) {
+          const bt = (t - 0.3) / 0.7;
+          centers.forEach((c) => {
+            const r = tile * (0.3 + (o.rays ? 1.6 : 0.8) * bt);
+            const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
+            g.addColorStop(0, rgba(255, 255, 235, 0.8 * (1 - bt)));
+            g.addColorStop(0.5, rgba(cr, cg, cb, 0.5 * (1 - bt)));
+            g.addColorStop(1, rgba(cr, cg, cb, 0));
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.fill();
+            if (o.rays) {
+              ctx.strokeStyle = rgba(cr, cg, cb, 0.8 * (1 - bt));
+              ctx.lineWidth = 2;
+              for (let i = 0; i < 12; i++) {
+                const a = (i / 12) * Math.PI * 2 + bt * 0.6;
+                ctx.beginPath();
+                ctx.moveTo(c.x + Math.cos(a) * r * 0.4, c.y + Math.sin(a) * r * 0.4);
+                ctx.lineTo(c.x + Math.cos(a) * r * 1.1, c.y + Math.sin(a) * r * 1.1);
+                ctx.stroke();
+              }
+            }
+            if (o.shatter) {
+              ctx.fillStyle = rgba(160, 90, 200, 0.85 * (1 - bt));
+              for (let i = 0; i < 10; i++) {
+                const a = (i / 10) * Math.PI * 2;
+                const d = tile * (0.2 + 0.9 * bt);
+                ctx.fillRect(c.x + Math.cos(a) * d - 2, c.y + Math.sin(a) * d - 2, 4, 4);
+              }
+            }
+          });
+        }
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      try { if (o.sfx && window.SFX && SFX.play) SFX.play(o.sfx); } catch(e){}
+      requestAnimationFrame(draw);
+    });
+  }
+
+  register('shining_smite', function(payload){
+    return playRadiantCast(payload, { color: [255, 225, 120], rays: true, duration: 900, sfx: 'guiding_bolt_impact' });
+  });
+  register('shining smite', function(payload){ return play('shining_smite', payload); });
+  register('beacon_of_hope', function(payload){
+    return playRadiantCast(payload, { color: [255, 236, 170], duration: 1200, sfx: 'bless_cast' });
+  });
+  register('beacon of hope', function(payload){ return play('beacon_of_hope', payload); });
+  register('daylight', function(payload){
+    return playRadiantCast(payload, { color: [255, 245, 200], rays: true, point: true, duration: 1300, sfx: 'sacred_flame_impact' });
+  });
+  register('remove_curse', function(payload){
+    return playRadiantCast(payload, { color: [220, 200, 255], shatter: true, duration: 1000, sfx: 'cure_wounds_bloom' });
+  });
+  register('remove curse', function(payload){ return play('remove_curse', payload); });
+  register('aura_of_vitality', function(payload){
+    return playRadiantCast(payload, { color: [140, 255, 170], ring: true, duration: 1100, sfx: 'healing_word_cast' });
+  });
+  register('aura of vitality', function(payload){ return play('aura_of_vitality', payload); });
+
+  // Simple tinted casts built on playRadiantCast: [key, label alias, options].
+  [
+    ['faerie_fire', 'faerie fire', { color: [190, 140, 255], rays: true, point: true, duration: 1100, sfx: 'bless_cast' }],
+    ['sanctuary', null, { color: [205, 230, 255], duration: 1000, sfx: 'resistance_apply' }],
+    ['lesser_restoration', 'lesser restoration', { color: [170, 255, 215], duration: 1000, sfx: 'cure_wounds_bloom' }],
+    ['ray_of_sickness', 'ray of sickness', { color: [150, 220, 80], duration: 800, sfx: 'poison_spray_cast' }],
+    ['melfs_acid_arrow', "melf's acid arrow", { color: [175, 255, 70], duration: 850, sfx: 'burning_hands_cast' }],
+    ['flaming_sphere', 'flaming sphere', { color: [255, 140, 40], rays: true, point: true, duration: 1100, sfx: 'burning_hands_cast' }],
+    ['flaming_sphere_move', null, { color: [255, 120, 30], point: true, duration: 700, sfx: 'burning_hands_cast' }],
+    ['feather_fall', 'feather fall', { color: [235, 240, 255], duration: 900, sfx: 'healing_word_cast' }],
+    ['prestidigitation', null, { color: [255, 200, 240], point: true, duration: 700 }],
+    ['mending', null, { color: [200, 220, 255], point: true, duration: 800 }],
+    ['identify', null, { color: [170, 200, 255], rays: true, duration: 900, sfx: 'guidance_cast' }],
+    ['gaseous_form', 'gaseous form', { color: [205, 205, 215], ring: true, duration: 1200 }],
+    ['ensnaring_strike', 'ensnaring strike', { color: [110, 190, 70], shatter: true, duration: 900, sfx: 'poison_spray_cast' }],
+    ['hail_of_thorns', 'hail of thorns', { color: [150, 200, 90], rays: true, duration: 850, sfx: 'ice_knife_shatter' }],
+    ['spike_growth', 'spike growth', { color: [120, 160, 60], rays: true, point: true, duration: 1100, sfx: 'poison_spray_cast' }],
+    ['silence', null, { color: [160, 170, 230], ring: true, point: true, duration: 1300 }],
+    ['magic_weapon', 'magic weapon', { color: [170, 210, 255], rays: true, duration: 900, sfx: 'guidance_cast' }],
+    ['pass_without_trace', 'pass without trace', { color: [120, 130, 150], ring: true, duration: 1100 }],
+    ['disguise_self', 'disguise self', { color: [230, 190, 255], shatter: true, duration: 900, sfx: 'guidance_cast' }],
+    ['rope_trick', 'rope trick', { color: [210, 180, 130], ring: true, duration: 1000 }],
+    ['fear', null, { color: [130, 60, 160], rays: true, point: true, duration: 1100, sfx: 'bless_cast' }],
+    ['zephyr_strike', 'zephyr strike', { color: [200, 240, 255], ring: true, duration: 800, sfx: 'healing_word_cast' }],
+    ['gust', null, { color: [220, 240, 250], duration: 700 }],
+    ['summon_fiend', 'summon fiend', { color: [200, 50, 30], rays: true, ring: true, point: true, duration: 1300, sfx: 'burning_hands_cast' }],
+    ['sending', null, { color: [180, 200, 255], duration: 800, sfx: 'guidance_cast' }],
+  ].forEach(([key, alias, opts]) => {
+    register(key, function(payload){ return playRadiantCast(payload, opts); });
+    if (alias) register(alias, function(payload){ return play(key, payload); });
+  });
 
   // Expose API
   global.SpellEffects = { register, play };

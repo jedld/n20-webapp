@@ -22,6 +22,23 @@ export const AURA_STYLES = {
   invisibility: { color: 0xc8e6ff, opacity: 0.28, fadeSprite: 0.38 },
   spirit_guardians: { color: 0xffe08a, opacity: 0.5, ring: true },
   call_lightning: { color: 0x9fb8ff, opacity: 0.45, ring: true },
+  beacon_of_hope: { color: 0xffecaa, opacity: 0.45, ring: true },
+  aura_of_vitality: { color: 0x8cffaa, opacity: 0.45, ring: true },
+  sacred_weapon: { color: 0xfff5d2, opacity: 0.45, ring: true },
+  faerie_fire: { color: 0xbe8cff, opacity: 0.5, ring: true },
+  sanctuary: { color: 0xcde6ff, opacity: 0.4, ring: true },
+  gaseous_form: { color: 0xcdcdd7, opacity: 0.35, fadeSprite: 0.55 },
+  ray_of_sickness: { color: 0x96dc50, opacity: 0.45, ring: true },
+  acid_arrow: { color: 0xafff46, opacity: 0.45, ring: true },
+  burning: { color: 0xff8c28, opacity: 0.55, ring: true },
+  ensnaring_strike: { color: 0x6ebe46, opacity: 0.5, ring: true },
+  magic_weapon: { color: 0xaad2ff, opacity: 0.4, ring: true },
+  pass_without_trace: { color: 0x788296, opacity: 0.35, ring: true },
+  silence_ward: { color: 0xa0aae6, opacity: 0.4, ring: true },
+  fear: { color: 0x823ca0, opacity: 0.5, ring: true },
+  zephyr_strike: { color: 0xc8f0ff, opacity: 0.4, ring: true },
+  disguise_self: { color: 0xe6beff, opacity: 0.35, ring: true },
+  hunters_mark: { color: 0xc83c3c, opacity: 0.45, ring: true },
 };
 
 const SYNONYMS = {

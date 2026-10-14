@@ -1124,6 +1124,57 @@ def equip():
     return jsonify(error="Entity not found"), 404
 
 
+@dm_bp.route('/attunement', methods=['POST'])
+def attunement():
+    """Attune to / end attunement to / cancel a pending change for a magic item.
+
+    Form or JSON: ``id``, ``item_id``, ``op`` (attune|end|cancel), optional
+    ``force`` (DM only: apply immediately, waiving the rest and prerequisites)."""
+    from natural20.utils.attunement import (
+        AttunementError, attunement_status, cancel_pending, request_attunement, request_end,
+    )
+    data = request.get_json(silent=True) or request.form
+    entity_id = data.get('id') or data.get('entity_id')
+    item_id = (data.get('item_id') or '').strip()
+    op = (data.get('op') or 'attune').strip().lower()
+    force = str(data.get('force') or '').lower() in ('1', 'true', 'yes', 'on')
+    if not entity_id or not item_id:
+        return jsonify(success=False, error='Missing id or item_id'), 400
+    if op not in ('attune', 'end', 'cancel'):
+        return jsonify(success=False, error="op must be 'attune', 'end' or 'cancel'"), 400
+    if not _can_act_for_entity(entity_id):
+        return jsonify(success=False, error='Forbidden'), 403
+    if force and 'dm' not in user_role():
+        return jsonify(success=False, error='Only the DM may change attunement immediately'), 403
+
+    game = get_current_game()
+    battle_map = game.get_map_for_user(session['username'])
+    entity = battle_map.entity_by_uid(entity_id) if battle_map is not None else None
+    if entity is None:
+        entity = game.get_entity_by_uid(entity_id)
+    if entity is None:
+        return jsonify(success=False, error='Entity not found'), 404
+
+    battle = game.get_current_battle()
+    try:
+        if op == 'attune':
+            result = request_attunement(entity, item_id, battle=battle, force=force)
+        elif op == 'end':
+            result = request_end(entity, item_id, battle=battle, force=force)
+        else:
+            result = cancel_pending(entity, item_id)
+    except AttunementError as exc:
+        return jsonify(success=False, error=str(exc)), 400
+
+    if result.get('status') in ('attuned', 'ended'):
+        game.recalc_lights_for_user(session['username'])
+        get_socketio().emit('message', {'type': 'refresh_map'})
+    status = attunement_status(entity)
+    return jsonify(success=True, op=op, result=result,
+                   attuned=[r['item'] for r in status['items'] if r['attuned']],
+                   pending=status['pending'], limit=status['limit'], count=status['count'])
+
+
 @dm_bp.route('/dm/items_catalog', methods=['GET'])
 def dm_items_catalog():
     """Return the full catalog of items (weapons + equipment + objects) for DM autocomplete."""
@@ -1447,7 +1498,7 @@ def get_item_card():
     card = entity.item_card(item_name, container_name=container_name)
     if not card:
         return jsonify(error="Item not found"), 404
-    return render_template('_item_card.html', entity=entity, item=card)
+    return render_template('_item_card.html', entity=entity, item=card, role=user_role())
 
 @dm_bp.route('/usable_items', methods=['GET'])
 def usable_items():

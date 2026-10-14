@@ -58,6 +58,34 @@ export const SPELL_KEYS = [
   'call_lightning',
   'call_lightning_bolt',
   'sleet_storm',
+  'shining_smite',
+  'beacon_of_hope',
+  'daylight',
+  'remove_curse',
+  'aura_of_vitality',
+  'faerie_fire',
+  'sanctuary',
+  'lesser_restoration',
+  'ray_of_sickness',
+  'melfs_acid_arrow',
+  'flaming_sphere',
+  'flaming_sphere_move',
+  'feather_fall',
+  'prestidigitation',
+  'mending',
+  'identify',
+  'gaseous_form',
+  'ensnaring_strike',
+  'hail_of_thorns',
+  'spike_growth',
+  'silence',
+  'magic_weapon',
+  'pass_without_trace',
+  'disguise_self',
+  'rope_trick',
+  'fear',
+  'zephyr_strike',
+  'gust',
 ];
 
 export const ALIASES = {
@@ -69,6 +97,8 @@ export const ALIASES = {
   leomundstinyhut: 'leomunds_tiny_hut',
   eldritchblast: 'eldritch_blast',
   mistystep: 'misty_step',
+  dimensiondoor: 'misty_step',
+  dimension_door: 'misty_step',
   guidingbolt: 'guiding_bolt',
   sacredflame: 'sacred_flame',
   rayoffrost: 'ray_of_frost',
@@ -98,6 +128,27 @@ export const ALIASES = {
   calllightning: 'call_lightning',
   calllightningbolt: 'call_lightning_bolt',
   sleetstorm: 'sleet_storm',
+  shiningsmite: 'shining_smite',
+  beaconofhope: 'beacon_of_hope',
+  removecurse: 'remove_curse',
+  auraofvitality: 'aura_of_vitality',
+  faeriefire: 'faerie_fire',
+  lesserrestoration: 'lesser_restoration',
+  rayofsickness: 'ray_of_sickness',
+  melfsacidarrow: 'melfs_acid_arrow',
+  acidarrow: 'melfs_acid_arrow',
+  flamingsphere: 'flaming_sphere',
+  flamingspheremove: 'flaming_sphere_move',
+  featherfall: 'feather_fall',
+  gaseousform: 'gaseous_form',
+  ensnaringstrike: 'ensnaring_strike',
+  hailofthorns: 'hail_of_thorns',
+  spikegrowth: 'spike_growth',
+  magicweapon: 'magic_weapon',
+  passwithouttrace: 'pass_without_trace',
+  disguiseself: 'disguise_self',
+  ropetrick: 'rope_trick',
+  zephyrstrike: 'zephyr_strike',
 };
 
 export const CHROMATIC_COLORS = {
@@ -294,6 +345,105 @@ const RECIPES = {
   },
   sleet_storm: {
     kind: 'area', color: 0xbcd8ee, duration: 0.9, radius: 4, sfx: 'sleet_storm_cast',
+  },
+  shining_smite: {
+    kind: 'burst', color: 0xffe178, duration: 0.55, radius: 0.8, at: 'target', sfx: 'guiding_bolt_impact',
+  },
+  beacon_of_hope: {
+    kind: 'aura', color: 0xffecaa, duration: 0.8, at: 'target', sfx: 'bless_cast',
+  },
+  daylight: {
+    kind: 'burst', color: 0xfff5c8, duration: 0.9, radius: 2.5, fromAbove: true, sfx: 'sacred_flame_impact',
+  },
+  remove_curse: {
+    kind: 'combo',
+    steps: [
+      { kind: 'aura', color: 0xa05ac8, duration: 0.4, at: 'target' },
+      { kind: 'burst', color: 0xdcc8ff, duration: 0.5, radius: 0.6, at: 'target', sfx: 'cure_wounds_bloom' },
+    ],
+  },
+  aura_of_vitality: {
+    kind: 'combo',
+    steps: [
+      { kind: 'aura', color: 0x8cffaa, duration: 0.6, at: 'source', sfx: 'healing_word_cast' },
+      { kind: 'burst', color: 0xc8ffd8, duration: 0.8, radius: 6, at: 'source' },
+    ],
+  },
+  faerie_fire: {
+    kind: 'area', color: 0xbe8cff, duration: 0.8, sfx: 'bless_cast',
+  },
+  sanctuary: {
+    kind: 'aura', color: 0xcde6ff, duration: 0.7, at: 'target', sfx: 'shield_of_faith_start',
+  },
+  lesser_restoration: {
+    kind: 'heal', color: 0xaaffd7, duration: 0.6, sfx: 'cure_wounds_cast',
+  },
+  ray_of_sickness: {
+    kind: 'beam', color: 0x96dc50, duration: 0.45, sfx: 'ray_of_frost_fire',
+  },
+  melfs_acid_arrow: {
+    kind: 'projectile', color: 0xafff46, duration: 0.42, arc: 0.3,
+    sfx: 'firebolt_fire', impactSfx: 'poison_spray_hit',
+  },
+  flaming_sphere: {
+    kind: 'burst', color: 0xff8c28, duration: 0.7, radius: 0.9, useSquares: true, impactSfx: 'firebolt_impact',
+  },
+  flaming_sphere_move: {
+    kind: 'burst', color: 0xff7820, duration: 0.5, radius: 0.7, useSquares: true, impactSfx: 'firebolt_impact',
+  },
+  feather_fall: {
+    kind: 'aura', color: 0xebf0ff, duration: 0.6, at: 'target', sfx: 'healing_word_cast',
+  },
+  prestidigitation: {
+    kind: 'burst', color: 0xffc8f0, duration: 0.45, radius: 0.4, useSquares: true,
+  },
+  mending: {
+    kind: 'burst', color: 0xc8dcff, duration: 0.5, radius: 0.4, useSquares: true,
+  },
+  identify: {
+    kind: 'aura', color: 0xaac8ff, duration: 0.6, at: 'target', sfx: 'guidance_cast',
+  },
+  gaseous_form: {
+    kind: 'aura', color: 0xcdcdd7, duration: 0.8, at: 'target',
+  },
+  ensnaring_strike: {
+    kind: 'burst', color: 0x6ebe46, duration: 0.6, radius: 0.8, at: 'target', sfx: 'poison_spray_cast',
+  },
+  hail_of_thorns: {
+    kind: 'burst', color: 0x96c85a, duration: 0.6, radius: 1.2, at: 'target', sfx: 'ice_knife_shatter',
+  },
+  spike_growth: {
+    kind: 'area', color: 0x78a03c, duration: 0.9, radius: 4, sfx: 'poison_spray_cast',
+  },
+  silence: {
+    kind: 'area', color: 0xa0aae6, duration: 1.0, radius: 4,
+  },
+  magic_weapon: {
+    kind: 'aura', color: 0xaad2ff, duration: 0.6, at: 'target', sfx: 'guidance_cast',
+  },
+  pass_without_trace: {
+    kind: 'aura', color: 0x788296, duration: 0.8, at: 'source',
+  },
+  disguise_self: {
+    kind: 'aura', color: 0xe6beff, duration: 0.6, at: 'source', sfx: 'guidance_cast',
+  },
+  rope_trick: {
+    kind: 'aura', color: 0xd2b482, duration: 0.7, at: 'source',
+  },
+  fear: {
+    kind: 'area', color: 0x823ca0, duration: 0.8, sfx: 'bless_cast',
+  },
+  zephyr_strike: {
+    kind: 'aura', color: 0xc8f0ff, duration: 0.5, at: 'source', sfx: 'healing_word_cast',
+  },
+  gust: {
+    kind: 'burst', color: 0xdcf0fa, duration: 0.45, radius: 0.6, at: 'target',
+  },
+  sending: {
+    kind: 'aura', color: 0xb4c8ff, duration: 0.5, at: 'source', sfx: 'guidance_cast',
+  },
+  summon_fiend: {
+    kind: 'area', color: 0xc8321e, duration: 1.0, sfx: 'burning_hands_cast',
   },
 };
 

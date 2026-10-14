@@ -235,6 +235,43 @@ $(document).ready(function () {
         });
     });
 
+    $(document).on('click', '.attunement-btn', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const $btn = $(this);
+        if ($btn.prop('disabled')) {
+            return;
+        }
+        const payload = {
+            id: $btn.attr('data-entity') || entityId,
+            item_id: $btn.attr('data-item'),
+            op: $btn.attr('data-attune-op') || 'attune'
+        };
+        if ($btn.attr('data-force')) {
+            payload.force = 1;
+        }
+        const reopenCard = !$itemCardModal.is('[hidden]') ? payload.item_id : null;
+        $btn.prop('disabled', true);
+        $.post('/attunement', payload)
+            .done(function (response) {
+                if (response && response.error) {
+                    alert(response.error);
+                    return;
+                }
+                refreshEquipment();
+                if (reopenCard) {
+                    openItemCard(reopenCard);
+                }
+            })
+            .fail(function (xhr) {
+                const message = (xhr.responseJSON && xhr.responseJSON.error) || 'Unable to change attunement.';
+                alert(message);
+            })
+            .always(function () {
+                $btn.prop('disabled', false);
+            });
+    });
+
     $('.equipment-container').on('input', '#inventory-search', function () {
         inventoryFilterState.q = $(this).val() || '';
         applyInventoryFilter();

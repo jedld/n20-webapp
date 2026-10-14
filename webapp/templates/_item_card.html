@@ -85,6 +85,21 @@
     {% if item.attunement_note %}
     <p class="item-card-attunement">{{ item.attunement_note }}</p>
     {% endif %}
+    {% if item.attunement %}
+    {% set row = item.attunement %}
+    {% set is_dm = role is defined and role and 'dm' in role %}
+    <div class="item-card-attunement-state">
+        <span class="item-card-badge attunement-badge{% if row.attuned %} attunement-badge-on{% endif %}">
+            {% if row.pending == 'attune' %}Attuning at next rest{% elif row.pending == 'end' %}Ending at next rest{% elif row.attuned %}Attuned{% else %}Not attuned{% endif %}
+        </span>
+        {% if row.held or row.attuned %}
+        {% include '_attunement_actions.html' %}
+        {% endif %}
+        {% if row.issue and not row.attuned and row.held %}
+        <div class="attunement-issue">{{ row.issue }}</div>
+        {% endif %}
+    </div>
+    {% endif %}
 
     {% if item.charges %}
     <p class="item-card-charges">Charges {{ item.charges.current }}/{{ item.charges.max }}</p>

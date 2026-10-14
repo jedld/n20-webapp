@@ -32,6 +32,7 @@ from natural20.actions.patient_defense_action import PatientDefenseAction
 from natural20.actions.step_of_the_wind_action import StepOfTheWindAction
 from natural20.actions.feline_agility_action import FelineAgilityAction
 from natural20.actions.martial_arts_bonus_attack_action import MartialArtsBonusAttackAction
+from natural20.actions.hew_attack_action import HewAttackAction
 from natural20.actions.bardic_inspiration_action import BardicInspirationAction
 from natural20.actions.wild_shape_action import WildShapeAction, RevertWildShapeAction, WildShapeAttackAction
 from natural20.actions.rage_action import RageAction, EndRageAction, RecklessAttackAction
@@ -39,7 +40,12 @@ from natural20.actions.pickpocket_action import PickpocketAction, PickpocketBonu
 from natural20.actions.ready_action import ReadyAction
 from natural20.actions.shell_defense_action import ShellDefenseAction, EmergenceAction
 from natural20.actions.summon_creatures_action import SummonCreaturesAction, DismissSummonsAction
+from natural20.actions.npc_area_action import NpcAreaAction
+from natural20.actions.post_attack_teleport_action import PostAttackTeleportAction
 from natural20.actions.call_lightning_bolt_action import CallLightningBoltAction
+from natural20.actions.aura_of_vitality_heal_action import AuraOfVitalityHealAction
+from natural20.actions.clouds_jaunt_action import CloudsJauntAction
+from natural20.actions.large_form_action import LargeFormAction
 
 
 _ACTION_TYPE_MAP = {
@@ -78,6 +84,7 @@ _ACTION_TYPE_MAP = {
     'StepOfTheWindAction': StepOfTheWindAction,
     'FelineAgilityAction': FelineAgilityAction,
     'MartialArtsBonusAttackAction': MartialArtsBonusAttackAction,
+    'HewAttackAction': HewAttackAction,
     'BardicInspirationAction': BardicInspirationAction,
     'WildShapeAction': WildShapeAction,
     'RevertWildShapeAction': RevertWildShapeAction,
@@ -92,7 +99,12 @@ _ACTION_TYPE_MAP = {
     'EmergenceAction': EmergenceAction,
     'SummonCreaturesAction': SummonCreaturesAction,
     'DismissSummonsAction': DismissSummonsAction,
+    'NpcAreaAction': NpcAreaAction,
+    'PostAttackTeleportAction': PostAttackTeleportAction,
     'CallLightningBoltAction': CallLightningBoltAction,
+    'AuraOfVitalityHealAction': AuraOfVitalityHealAction,
+    'CloudsJauntAction': CloudsJauntAction,
+    'LargeFormAction': LargeFormAction,
 }
 
 
@@ -117,6 +129,9 @@ def action_type_to_class(action_type):
     Raises ``ValueError`` for unknown types.
     """
     cls = _ACTION_TYPE_MAP.get(action_type)
+    if cls is None:
+        from natural20.utils.class_feature_registry import action_class_named
+        cls = action_class_named(action_type)
     if cls is None:
         raise ValueError(f"Unknown action type {action_type}")
     return cls

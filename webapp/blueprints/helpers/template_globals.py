@@ -247,15 +247,47 @@ def ability_mod_str(ability_mod):
 
 
 def casting_time(casting_time):
-    qty, resource = casting_time.split(":")
+    if not casting_time:
+        return ""
+    text = str(casting_time)
+    if ":" not in text:
+        return text
+    qty, resource = text.split(":", 1)
+    if resource == "no_action":
+        return "Free"
     mapping = {
-        "action": "A", "reaction": "R", "bonus_action": "B",
+        "action": "A", "reaction": "R", "bonus_action": "B", "bonus": "B",
         "hour": "H", "minute": "M", "round": "R",
     }
     r_str = mapping.get(resource)
     if r_str is None:
-        raise ValueError(f"Invalid casting time: {casting_time}")
+        return text
     return f"{qty}{r_str}"
+
+
+_RESOURCE_POOL_MINOR_WORDS = {"of", "the", "and", "to", "in", "on", "for", "with", "a", "an"}
+_RESOURCE_POOL_ACRONYMS = {"hp", "la", "d20"}
+
+
+def resource_pool_label(name):
+    """Display label for a snake_case resource pool key.
+
+    ``'flash_of_genius'`` -> ``'Flash of Genius'``,
+    ``'lay_on_hands'`` -> ``'Lay on Hands'``,
+    ``'superiority_dice'`` -> ``'Superiority Dice'``.
+    """
+    if not name:
+        return ""
+    words = str(name).replace("_", " ").split()
+    out = []
+    for i, word in enumerate(words):
+        if word.isupper() or word.lower() in _RESOURCE_POOL_ACRONYMS:
+            out.append(word.upper())
+        elif i > 0 and word.lower() in _RESOURCE_POOL_MINOR_WORDS:
+            out.append(word.lower())
+        else:
+            out.append(word.capitalize())
+    return " ".join(out)
 
 
 def format_languages(entity):
@@ -432,3 +464,4 @@ def register_template_globals(flask_app):
     flask_app.add_template_filter(ability_mod_str, name='mod_str')
     flask_app.add_template_filter(casting_time, name='casting_time')
     flask_app.add_template_filter(format_game_time, name='format_game_time')
+    flask_app.add_template_filter(resource_pool_label, name='resource_pool_label')

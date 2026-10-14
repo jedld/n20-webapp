@@ -11,15 +11,19 @@ fi
 
 EDIT_MODE=0
 RESET_SAVES=0
+NEW_CAMPAIGN=0
 # Optional flags (accepted in any position):
 #   --edit   DM sessions start in campaign edit mode after login.
 #   --reset  wipe persisted save state at boot (saves, logs, notebook, NPC memories).
+#   --new    create the campaign directory with starter files (index.json, game.yml,
+#            one empty map, DM login dm/admin) when it does not exist yet.
 # The first non-flag argument is the campaign directory (or slug).
 CAMPAIGN_ARG=""
 for arg in "$@"; do
     case "$arg" in
         --edit)  EDIT_MODE=1 ;;
         --reset) RESET_SAVES=1 ;;
+        --new)   NEW_CAMPAIGN=1 ;;
         *)
             if [ -z "$CAMPAIGN_ARG" ]; then
                 CAMPAIGN_ARG="$arg"
@@ -54,6 +58,19 @@ if [ -n "$ENGINE_ROOT" ]; then
   export N20_CAMPAIGNS_DIR="${N20_CAMPAIGNS_DIR:-$ENGINE_ROOT/user_levels}"
 else
   export PYTHONPATH="$REPO_ROOT:$WEBAPP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
+if [ "$NEW_CAMPAIGN" = "1" ]; then
+  if [ -z "$CAMPAIGN_ARG" ]; then
+    echo "--new needs a campaign directory or slug, e.g. ./start_web.sh --new ../user_levels/my_campaign" >&2
+    exit 2
+  fi
+  case "$TEMPLATE_DIR" in
+    */*) NEW_CAMPAIGN_PATH="$TEMPLATE_DIR" ;;
+    *)   NEW_CAMPAIGN_PATH="${N20_CAMPAIGNS_DIR:-.}/$TEMPLATE_DIR" ;;
+  esac
+  "$N20_PYTHON" -m natural20.campaign_scaffold --if-missing "$NEW_CAMPAIGN_PATH" || exit 1
+  TEMPLATE_DIR="$(cd "$NEW_CAMPAIGN_PATH" && pwd)"
 fi
 
 # Resolve TEMPLATE_DIR relative to engine root, campaigns dir, webapp repo, or slug.

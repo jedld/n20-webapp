@@ -296,6 +296,12 @@
       box-shadow: 0 0 16px rgba(160, 190, 255, 0.6);
       animation: pe-storm-flicker 3.4s linear infinite;
     }
+    .pe-tint {
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(var(--pe-rgb), 0.42) 0%, rgba(var(--pe-rgb), 0.20) 58%, rgba(var(--pe-rgb), 0.0) 76%);
+      box-shadow: 0 0 12px rgba(var(--pe-rgb), 0.45), inset 0 0 8px rgba(var(--pe-rgb), 0.30);
+      animation: pe-breathe 1.8s ease-in-out infinite alternate;
+    }
     `;
     const style = document.createElement('style');
     style.id = 'persistent-effects-style';
@@ -346,6 +352,28 @@
     call_lightning: 'pe-call-lightning',
   };
 
+  // Simple tinted glows (key -> "r, g, b"); rendered with the pe-tint class.
+  const EFFECT_TINT = {
+    beacon_of_hope: '255, 236, 170',
+    aura_of_vitality: '140, 255, 170',
+    sacred_weapon: '255, 245, 210',
+    faerie_fire: '190, 140, 255',
+    sanctuary: '205, 230, 255',
+    gaseous_form: '205, 205, 215',
+    ray_of_sickness: '150, 220, 80',
+    acid_arrow: '175, 255, 70',
+    burning: '255, 140, 40',
+    ensnaring_strike: '110, 190, 70',
+    magic_weapon: '170, 210, 255',
+    pass_without_trace: '120, 130, 150',
+    silence_ward: '160, 170, 230',
+    fear: '130, 60, 160',
+    zephyr_strike: '200, 240, 255',
+    disguise_self: '230, 190, 255',
+    hunters_mark: '200, 60, 60',
+  };
+  Object.keys(EFFECT_TINT).forEach((k) => { if (!EFFECT_CLASS[k]) EFFECT_CLASS[k] = 'pe-tint'; });
+
   // Emanations drawn around the token, in squares beyond its footprint.
   const EMANATION_SQUARES = {
     spirit_guardians: 3,
@@ -379,6 +407,7 @@
     const reach = (EMANATION_SQUARES[effKey] || 0) * tileSize;
     const box = { width: w + 2 * reach, height: h + 2 * reach, top: -reach, left: -reach };
     const $overlay = $('<div class="pe-overlay">').addClass(cls).attr('data-pe', effKey).css(box);
+    if (EFFECT_TINT[effKey]) $overlay[0].style.setProperty('--pe-rgb', EFFECT_TINT[effKey]);
     $container.append($overlay);
 
     if (effKey === 'spirit_guardians') {

@@ -15,6 +15,12 @@ from flask import jsonify, render_template, session
 
 # SRD 5.1 trait text (CC BY 4.0). Used when YAML only stores an attribute id.
 _SRD_TRAIT_TEXT = {
+    'undead_fortitude': (
+        'If damage reduces the {name} to 0 hit points, it must make a '
+        'Constitution saving throw with a DC of 5 + the damage taken, unless '
+        'the damage is radiant or from a critical hit. On a success, the '
+        '{name} drops to 1 hit point instead.'
+    ),
     'nimble_escape': (
         'The {name} can take the Disengage or Hide action as a bonus action '
         'on each of its turns.'
@@ -277,6 +283,11 @@ def format_npc_action(action: dict) -> dict[str, str]:
             extra_bits.append(str(hit['description']).strip())
     if action.get('description') and action_type not in ('melee_attack', 'ranged_attack'):
         extra_bits.insert(0, str(action['description']).strip())
+    if action.get('teleport_after_attack'):
+        extra_bits.append(
+            f"Immediately after the attack hits or misses, it can teleport up to "
+            f"{action['teleport_after_attack']} feet to an unoccupied space it can see."
+        )
 
     if action_type in ('melee_attack', 'ranged_attack'):
         kind = 'Melee Weapon Attack' if action_type == 'melee_attack' else 'Ranged Weapon Attack'
@@ -312,7 +323,10 @@ def format_npc_action(action: dict) -> dict[str, str]:
         return {'name': title_label(name) or name, 'text': sentence}
 
     text = ' '.join(extra_bits) if extra_bits else str(action.get('description') or '').strip()
-    return {'name': title_label(name) or name, 'text': text}
+    label = title_label(name) or name
+    if action.get('recharge'):
+        label = f"{label} (Recharge {action['recharge']})"
+    return {'name': label, 'text': text}
 
 
 def _trait_entries(entity) -> list[dict[str, str]]:
@@ -356,19 +370,28 @@ def _trait_entries(entity) -> list[dict[str, str]]:
 
     multi = props.get('multiattack')
     if multi:
-        names = []
-        if isinstance(multi, str):
-            names = [title_label(part) for part in multi.split(',') if part.strip()]
-        elif isinstance(multi, list):
-            for entry in multi:
-                if isinstance(entry, str):
-                    names.extend(title_label(part) for part in entry.split(',') if part.strip())
-        if names:
-            traits.insert(0, {
-                'name': 'Multiattack',
-                'text': f'The {creature} makes {len(names)} attacks: {", ".join(names)}.',
-            })
+        text = _multiattack_text(multi, creature)
+        if text:
+            traits.insert(0, {'name': 'Multiattack', 'text': text})
     return traits
+
+
+def _multiattack_text(multi, creature) -> str:
+    entries = multi if isinstance(multi, list) else [multi]
+    phrases = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            options = [title_label(n) for n in entry.get('any_of') or [] if str(n).strip()]
+            count = int(entry.get('count', 2) or 0)
+            if options and count:
+                phrases.append(f'{count} attacks, any combination of {" or ".join(options)}')
+        elif isinstance(entry, str):
+            names = [title_label(part) for part in entry.split(',') if part.strip()]
+            if names:
+                phrases.append(f'{len(names)} attacks: {", ".join(names)}')
+    if not phrases:
+        return ''
+    return f'The {creature} makes {" — or — ".join(phrases)}.'
 
 
 def _ability_rows(entity) -> list[dict[str, Any]]:
@@ -540,7 +563,49 @@ def _spell_lists(entity, prepared, known, slots) -> list[dict[str, Any]]:
     return lists
 
 
+def _innate_spellcasting_block(entity) -> Optional[dict[str, Any]]:
+    from natural20.utils.innate_spellcasting import (
+        innate_ability, innate_attack_bonus, innate_config,
+        innate_save_dc, innate_spell_groups, pool_name,
+    )
+    if not innate_config(entity):
+        return None
+    session = getattr(entity, 'session', None)
+    resources = getattr(entity, 'resources', None) or {}
+    lists = []
+    for kind, count, slugs in innate_spell_groups(entity):
+        names = []
+        for slug in slugs:
+            name = _spell_display_name(session, slug)[1] if session is not None else title_label(slug)
+            pool = resources.get(pool_name(slug)) if kind == 'per_day' else None
+            if pool is not None and pool.current < pool.max_value:
+                name = f'{name} ({pool.current} left)'
+            names.append(name)
+        label = 'At will' if kind == 'at_will' else f'{count}/day' + (' each' if len(slugs) > 1 else '')
+        lists.append({'label': label, 'spells': names})
+    ability = innate_ability(entity)
+    attack_bonus = innate_attack_bonus(entity)
+    return {
+        'innate': True,
+        'ability': title_label(ability),
+        'ability_key': ability,
+        'save_dc': innate_save_dc(entity),
+        'attack_bonus': attack_bonus,
+        'attack_bonus_signed': signed(attack_bonus),
+        'no_material': bool(innate_config(entity).get('no_material')),
+        'caster_level': None,
+        'caster_level_ordinal': '',
+        'slots': [],
+        'lists': lists,
+        'prepared': [],
+        'known': [],
+    }
+
+
 def _spellcasting_block(entity) -> Optional[dict[str, Any]]:
+    innate = _innate_spellcasting_block(entity)
+    if innate is not None:
+        return innate
     props = getattr(entity, 'properties', None) or {}
     slots = props.get('spell_slots') or {}
     prepared = []

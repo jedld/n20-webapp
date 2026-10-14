@@ -2064,6 +2064,9 @@ def get_targets_at_position():
                                 test_build = test_build['next'](thing)
                             elif test_build['param'][0]['type'] == 'select_empty_space':
                                 test_build = test_build['next']([x, y])
+                            elif test_build['param'][0]['type'] == 'select_choice':
+                                test_build = test_build['next'](
+                                    opts.get('choice') or test_build['param'][0]['choices'][0][1])
                             else:
                                 break
                         
@@ -2094,6 +2097,9 @@ def get_targets_at_position():
                         test_build = test_build['next']([x, y])
                     elif param_type in ('select_radius', 'select_square', 'select_line', 'select_cone', 'select_cube'):
                         test_build = test_build['next']([x, y])
+                    elif param_type == 'select_choice':
+                        test_build = test_build['next'](
+                            opts.get('choice') or test_build['param'][0]['choices'][0][1])
                     else:
                         break
                 

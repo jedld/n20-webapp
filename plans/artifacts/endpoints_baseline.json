@@ -612,6 +612,10 @@
     "rule": "/admin/users"
   },
   {
+    "endpoint": "dm.attunement",
+    "rule": "/attunement"
+  },
+  {
     "endpoint": "dm.available_pcs",
     "rule": "/available_pcs"
   },

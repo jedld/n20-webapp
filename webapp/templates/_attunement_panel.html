@@ -1,0 +1,43 @@
+{% set is_dm = role is defined and role and 'dm' in role %}
+{% set attune = entity.attunement_status() if entity.attunement_status is defined else none %}
+{% if attune and (attune['items'] or attune['count']) %}
+<div class="attunement-panel" id="attunement-panel">
+    <div class="attunement-header">
+        <strong class="attunement-title">Attunement</strong>
+        <span class="attunement-slots" title="Attuned magic items ({{ attune['count'] }} of {{ attune['limit'] }})">
+            {% for i in range(attune['limit']) %}<span class="attunement-pip{% if i < attune['count'] %} filled{% endif %}"></span>{% endfor %}
+            <span class="attunement-count">{{ attune['count'] }} / {{ attune['limit'] }}</span>
+        </span>
+    </div>
+    {% if not attune['tracked'] %}
+    <p class="attunement-note">Attunement isn't tracked for this character yet, so equipped items work as if attuned. Your first change here starts tracking.</p>
+    {% endif %}
+    <ul class="attunement-list">
+        {% for row in attune['items'] %}
+        <li class="attunement-row{% if row.attuned %} is-attuned{% endif %}{% if row.pending %} is-pending{% endif %}">
+            <span class="attunement-item item-card-trigger" data-item-name="{{ row.item }}" role="button" tabindex="0" title="View item">
+                {% if row.icon %}<img class="attunement-icon" src="{{ row.icon }}" alt="">{% endif %}
+                <span class="attunement-label">{{ row.label }}</span>
+            </span>
+            <span class="attunement-state">
+                {% if row.pending == 'attune' %}Attuning at next rest{% elif row.pending == 'end' %}Ending at next rest{% elif row.attuned %}Attuned{% else %}Not attuned{% endif %}
+                {% if row.cursed %}<span class="attunement-flag attunement-flag-cursed">Cursed</span>{% endif %}
+                {% if not row.held %}<span class="attunement-flag" title="Attunement ends after 24 hours away from the item">Not carried</span>{% endif %}
+            </span>
+            {% include '_attunement_actions.html' %}
+            {% if row.issue and not row.attuned %}
+            <div class="attunement-issue">{{ row.issue }}</div>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    <p class="attunement-hint">
+        {% if attune['requires_rest'] %}
+        Attuning or ending attunement takes a short rest focused on the item. A short rest completes {{ attune['per_short_rest'] }} change, a long rest {{ attune['per_long_rest'] }}.
+        {% else %}
+        Attunement changes take effect immediately in this campaign.
+        {% endif %}
+        Unattuned items give only their nonmagical benefits.
+    </p>
+</div>
+{% endif %}

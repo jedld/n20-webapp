@@ -171,6 +171,42 @@ def test_dm_grant_level_up_tool_grants_player_character():
     assert pc.pending_level_ups() == 1
 
 
+def test_dm_equipment_manages_attunement():
+    from natural20.event_manager import EventManager
+    from natural20.player_character import PlayerCharacter
+    from natural20.session import Session
+    from webapp.mcp import MCPContext, build_default_registry
+
+    session = Session(root_path='tests/fixtures', event_manager=EventManager())
+    pc = PlayerCharacter.load(session, 'high_elf_fighter.yml')
+    pc.properties['attuned'] = []
+    pc.add_item('ring_of_protection')
+    pc.add_item('cloak_of_protection')
+    fake_map = MagicMock()
+    fake_map.entities = {pc: {'group': 'a'}}
+    fake_map.entity_by_uid.side_effect = lambda uid: pc if uid == pc.entity_uid else None
+    fake_map.object_by_uid.return_value = None
+    fake_game = MagicMock()
+    fake_game.maps = {'index': fake_map}
+    fake_game.get_entity_by_uid.side_effect = lambda uid: pc if uid == pc.entity_uid else None
+    fake_game.game_state_lock = None
+    ctx = MCPContext(game_session_getter=lambda: session, current_game_getter=lambda: fake_game)
+    registry = build_default_registry()
+
+    env = registry.call('dm.equipment', {'entity_uid': pc.entity_uid, 'op': 'attune',
+                                         'item_id': 'ring_of_protection', 'force': True}, context=ctx)
+    assert env['isError'] is False
+    assert env['content'][0]['json']['attuned'] == ['ring_of_protection']
+
+    env = registry.call('dm.equipment', {'entity_uid': pc.entity_uid, 'op': 'attune',
+                                         'item_id': 'cloak_of_protection'}, context=ctx)
+    assert env['content'][0]['json']['status'] == 'pending'
+
+    env = registry.call('dm.equipment', {'entity_uid': pc.entity_uid, 'op': 'attune',
+                                         'item_id': 'amulet_of_health'}, context=ctx)
+    assert env['isError'] is True
+
+
 def test_unknown_tool_returns_error(context_and_registry):
     ctx, registry, *_ = context_and_registry
     env = registry.call('does.not.exist', {}, context=ctx)

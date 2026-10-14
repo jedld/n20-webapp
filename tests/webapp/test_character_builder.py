@@ -4,6 +4,8 @@ import re
 import sys
 import uuid
 
+import pytest
+
 import yaml
 
 WEBAPP_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'webapp')
@@ -384,14 +386,26 @@ def test_import_dndbeyond_route_saves_character(monkeypatch):
     import webapp.blueprints.character as character_module
     from webapp.dndbeyond_import import import_character_from_dndbeyond as _real_import
 
-    wizard_fixture = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), '..', '..', 'tests', 'fixtures', 'dndbeyond_wizard.json')
+    webapp_repo = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    wizard_fixture = next(
+        (
+            path
+            for path in (
+                os.path.join(webapp_repo, 'tests', 'fixtures', 'dndbeyond_wizard.json'),
+                os.path.join(webapp_repo, '..', 'tests', 'fixtures', 'dndbeyond_wizard.json'),
+            )
+            if os.path.isfile(path)
+        ),
+        None,
     )
+    if wizard_fixture is None:
+        pytest.skip('dndbeyond_wizard.json fixture not available')
 
-    def _fake_import(character_id, cobalt_token=None):
+    def _fake_import(character_id, cobalt_token=None, campaign_root=None):
         pc, warnings, raw_data = _real_import(
             character_id,
             input_path=wizard_fixture,
+            campaign_root=campaign_root,
         )
         pc = dict(pc)
         pc['name'] = f"DDB Import {uuid.uuid4().hex[:8]}"

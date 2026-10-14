@@ -1,0 +1,20 @@
+{# Attunement buttons for one item row (natural20/utils/attunement.py attunement_row). Needs entity, row, is_dm. #}
+<span class="attunement-actions">
+{% if row.pending %}
+    <button type="button" class="inventory-action-btn attunement-btn" data-entity="{{ entity.entity_uid }}" data-item="{{ row.item }}" data-attune-op="cancel">Cancel</button>
+{% elif row.attuned %}
+    {% if not row.issue %}
+    <button type="button" class="inventory-action-btn attunement-btn" data-entity="{{ entity.entity_uid }}" data-item="{{ row.item }}" data-attune-op="end"
+            title="{{ 'Ends during your next rest' if row.requires_rest else 'Ends attunement now' }}">End attunement</button>
+    {% endif %}
+    {% if is_dm and (row.requires_rest or row.issue) %}
+    <button type="button" class="inventory-action-btn attunement-btn attunement-btn-dm" data-entity="{{ entity.entity_uid }}" data-item="{{ row.item }}" data-attune-op="end" data-force="1" title="DM: end immediately, even if cursed">End now</button>
+    {% endif %}
+{% else %}
+    <button type="button" class="inventory-action-btn attunement-btn" data-entity="{{ entity.entity_uid }}" data-item="{{ row.item }}" data-attune-op="attune"
+            {% if row.issue %}disabled title="{{ row.issue }}"{% else %}title="{{ 'Attunes during your next rest' if row.requires_rest else 'Attunes now' }}"{% endif %}>Attune</button>
+    {% if is_dm and (row.requires_rest or row.issue) and row.held %}
+    <button type="button" class="inventory-action-btn attunement-btn attunement-btn-dm" data-entity="{{ entity.entity_uid }}" data-item="{{ row.item }}" data-attune-op="attune" data-force="1" title="DM: attune immediately, ignoring prerequisites">Attune now</button>
+    {% endif %}
+{% endif %}
+</span>

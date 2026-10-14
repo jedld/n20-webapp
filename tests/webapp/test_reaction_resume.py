@@ -8,6 +8,9 @@ def _combatant(dead=False, unconscious=False):
     entity = MagicMock()
     entity.dead.return_value = dead
     entity.unconscious.return_value = unconscious
+    # Must be falsy: a truthy MagicMock would route the turn through the
+    # incapacitated-skip branch instead of ai_loop.
+    entity.incapacitated.return_value = False
     return entity
 
 

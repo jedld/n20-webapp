@@ -748,24 +748,52 @@ def register(registry: ToolRegistry) -> None:
     @tool(
         registry,
         name='dm.equipment',
-        description='Equip or unequip an item the entity already owns. '
-                    '`op` must be "equip" or "unequip"; `item_id` is the inventory key.',
+        description='Equip or unequip an item the entity already owns, or manage magic item attunement. '
+                    '`op`: equip | unequip | attune | end_attunement | cancel_attunement; `item_id` is the inventory key. '
+                    'Attunement changes wait for the next rest unless `force` is true (immediate, waives prerequisites; '
+                    'the 3-item limit still applies).',
         input_schema={
             'type': 'object',
             'required': ['entity_uid', 'op', 'item_id'],
             'properties': {
                 'entity_uid': {'type': 'string'},
-                'op': {'type': 'string', 'enum': ['equip', 'unequip']},
+                'op': {'type': 'string', 'enum': ['equip', 'unequip', 'attune', 'end_attunement', 'cancel_attunement']},
                 'item_id': {'type': 'string'},
+                'force': {'type': 'boolean'},
             },
         },
         category='dm',
     )
-    def equipment(context: MCPContext, entity_uid: str, op: str, item_id: str):
+    def equipment(context: MCPContext, entity_uid: str, op: str, item_id: str, force: bool = False):
         ent = _resolve(context, entity_uid)
         op = (op or '').lower()
+        if op in ('attune', 'end_attunement', 'cancel_attunement'):
+            from natural20.utils.attunement import (
+                AttunementError, attunement_status, cancel_pending, request_attunement, request_end,
+            )
+            try:
+                if op == 'attune':
+                    result = request_attunement(ent, item_id, force=bool(force))
+                elif op == 'end_attunement':
+                    result = request_end(ent, item_id, force=bool(force))
+                else:
+                    result = cancel_pending(ent, item_id)
+            except AttunementError as exc:
+                raise tool_error(str(exc))
+            context.log_dm(f"DM {op.replace('_', ' ')} {item_id} on {ent.label()} ({result['status']})")
+            context.emit_refresh()
+            status = attunement_status(ent)
+            return {
+                'entity_uid': entity_uid,
+                'op': op,
+                'item_id': item_id,
+                'status': result['status'],
+                'attuned': [row['item'] for row in status['items'] if row['attuned']],
+                'pending': status['pending'],
+                'limit': status['limit'],
+            }
         if op not in ('equip', 'unequip'):
-            raise tool_error("op must be 'equip' or 'unequip'")
+            raise tool_error("op must be 'equip', 'unequip', 'attune', 'end_attunement' or 'cancel_attunement'")
         try:
             (ent.equip if op == 'equip' else ent.unequip)(item_id)
         except Exception as exc:

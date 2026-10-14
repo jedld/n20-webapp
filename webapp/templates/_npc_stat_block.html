@@ -168,6 +168,18 @@
     {% if block.spellcasting %}
     <div class="stat-block-section">
         <h2 class="stat-block-heading">Spellcasting</h2>
+        {% if block.spellcasting.innate %}
+        <p class="stat-block-trait">
+            The {{ block.name }} casts one of the following spells, using {{ block.spellcasting.ability }} as the spellcasting ability
+            (spell save DC {{ block.spellcasting.save_dc }}, {{ block.spellcasting.attack_bonus_signed }} to hit with spell attacks)
+            {%- if block.spellcasting.no_material %} and requiring no material components{% endif %}:
+        </p>
+        <ul class="stat-block-spell-list">
+            {% for group in block.spellcasting.lists %}
+            <li><em>{{ group.label }}:</em> {{ group.spells | join(', ') }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
         <p class="stat-block-trait">
             The {{ block.name }} is
             {%- if block.spellcasting.caster_level_ordinal %} a {{ block.spellcasting.caster_level_ordinal }}-level spellcaster
@@ -190,6 +202,7 @@
             {% if block.spellcasting.known %}
             <p class="stat-block-trait"><em>Known:</em> {{ block.spellcasting.known | join(', ') }}</p>
             {% endif %}
+        {% endif %}
         {% endif %}
     </div>
     {% endif %}

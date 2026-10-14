@@ -1764,14 +1764,32 @@ class GameManagement:
             self.end_turn_state = False
             battle.start_turn()
             current_turn = battle.current_turn()
-            current_turn.reset_turn(battle)
             self.emit_current_turn_state()
 
             if battle.battle_ends():
                 break
 
+            # Incapacitated creatures (banished, stunned, paralyzed, petrified,
+            # ...) use up their turn slot but take no actions and no movement:
+            # skip reset_turn (which would restore action/movement resources and
+            # fire the start_of_turn banner + DM status line) and run no AI,
+            # mirroring Battle.while_active. Emit the same turn_skipped event the
+            # engine loop emits so the combat log and the UI toast still react.
+            if current_turn.incapacitated() and not current_turn.dead():
+                battle.event_manager.received_event({
+                    'event': 'turn_skipped',
+                    'target': current_turn,
+                    'reason': 'incapacitated',
+                    'statuses': list(current_turn.statuses),
+                })
+                if self._finish_turn(battle):
+                    return
+                continue
+
             # Unconscious creatures only roll their death save (start_turn).
-            if not (current_turn.dead() or current_turn.unconscious()):
+            if not current_turn.dead():
+                current_turn.reset_turn(battle)
+                self.emit_current_turn_state()
                 self.ai_loop()
                 if battle.battle_ends():
                     break
@@ -1839,7 +1857,11 @@ class GameManagement:
                 return
             if not self.end_turn_state:
                 current = battle.current_turn()
-                if not (current.dead() or current.unconscious()):
+                # Unconscious creatures only roll their death save; an
+                # incapacitated combatant (banished, stunned, paralyzed, ...)
+                # can't continue its turn once a reaction resolves, so end it
+                # without any further action (mirrors Battle.while_active).
+                if not current.incapacitated():
                     self.ai_loop()
                     if battle.battle_ends():
                         self.end_current_battle()
@@ -1878,7 +1900,7 @@ class GameManagement:
             # commit_and_update(); advance render epoch so /update never serves
             # stale cached HTML after NPC animations.
             self.bump_render_epoch()
-            if not action or entity.unconscious() or entity.dead():
+            if not action or entity.incapacitated():
                 break
 
     def set_volume(self, volume):

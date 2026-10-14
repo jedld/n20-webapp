@@ -35,10 +35,10 @@
     "ai_config.min.js": "db4bf5dba5",
     "combat-log.min.js": "a8e282849c",
     "dm_notes.min.js": "a9c23e4e5d",
-    "edit_mode.min.js": "33eb5aceda",
+    "edit_mode.min.js": "7bd59c2b7c",
     "edit_properties.min.js": "9567e2667f",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "a2b63ead23",
+    "engine.min.js": "79fa0d2941",
     "grapple_links.min.js": "8c0dfdfd0a",
     "inert-polyfill.min.js": "fcce9c44c6",
     "map_annotations_edit.min.js": "a395fef84a",
@@ -47,9 +47,9 @@
     "path_compute.min.js": "ccc22663d8",
     "perf.min.js": "7305880b63",
     "sfx.min.js": "34f772af3c",
-    "sheet.min.js": "cb1dc9159d",
-    "spell_effects.min.js": "385e615274",
-    "status_effects.min.js": "6404141b34",
+    "sheet.min.js": "ee44a3ab8e",
+    "spell_effects.min.js": "6c2071bd76",
+    "status_effects.min.js": "91bc7c59c9",
     "utils.min.js": "84f69b5e45",
     "utils_optimized.min.js": "d64c929e7e",
     "js/character_builder.min.js": "424a168ab6",
@@ -60,9 +60,9 @@
     "ai_config.min.css": "3d5f64451e",
     "journal.min.css": "51ba4e37df",
     "notebook.min.css": "e5ebb9b378",
-    "sheet.min.css": "780b514172",
-    "styles.min.css": "d72bdda0a1"
+    "sheet.min.css": "e203710971",
+    "styles.min.css": "3a4577815e"
   },
-  "generatedAt": "2026-10-13T02:25:09.703Z",
-  "buildVersion": "5e0d458f6dd8"
+  "generatedAt": "2026-10-14T08:39:14.866Z",
+  "buildVersion": "ea75b0fea2f3"
 }

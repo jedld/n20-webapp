@@ -118,13 +118,15 @@ def import_character_from_dndbeyond(
     *,
     cobalt_token: Optional[str] = None,
     input_path: Optional[str] = None,
+    campaign_root: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[str], Dict[str, Any]]:
     """Fetch (or load) a D&D Beyond character and convert it to engine YAML fields.
 
     Returns ``(yaml_dict, warnings, raw_character_data)``. The raw payload is
     needed to download portrait/token URLs that are not stored in YAML.
+    ``campaign_root`` lets campaign-local items and spells count as known.
     """
-    importer = BeyondImporter()
+    importer = BeyondImporter(campaign_root=campaign_root)
     if input_path:
         data = importer.load_character(input_path)
     else:

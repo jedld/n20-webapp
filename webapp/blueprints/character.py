@@ -712,6 +712,7 @@ def import_dndbeyond_character():
     pc, import_warnings, raw_data = import_character_from_dndbeyond(
       character_id,
       cobalt_token=cobalt_token,
+      campaign_root=get_game_session().root_path,
     )
   except RuntimeError as exc:
     return jsonify(error=str(exc)), 500
@@ -989,6 +990,7 @@ def create_character():
             'max_hp': max_hp,
             'ability': ability,
             'equipped': [],
+            'attuned': [],
             'inventory': [],
             'token': [ name[:1].upper() ],
             'description': f"A newly forged {race} {klass}.",

@@ -753,6 +753,14 @@
     "rule": "/assets/sounds/<filename>"
   },
   {
+    "endpoint": "dm.attunement",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/attunement"
+  },
+  {
     "endpoint": "dm.get_available_npcs",
     "methods": [
       "GET",
