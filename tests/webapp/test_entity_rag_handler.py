@@ -245,6 +245,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         battle_map = Mock()
         battle_map.entities = {observer: [1, 1], player: [2, 2], wolf: [4, 4]}
         battle_map.interactable_objects = {chest: [3, 3]}
+        battle_map.items_on_the_ground.return_value = []
         battle_map.feet_per_grid = 5
         battle_map.distance.side_effect = lambda a, b: 2 if b == player else (3 if b == chest else 4)
         battle_map.can_see.return_value = True
@@ -572,6 +573,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         approach_target.entity_uid = "door-1"
 
         self.rag_handler.resolve_named_target = Mock(return_value=approach_target)
+        self.rag_handler.parse_move_target_info = Mock(return_value={'target': approach_target})
         self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
 
         plan = self.rag_handler.build_conversation_response_plan(
@@ -598,6 +600,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         approach_target.entity_uid = "aldric"
 
         self.rag_handler.resolve_named_target = Mock(return_value=approach_target)
+        self.rag_handler.parse_move_target_info = Mock(return_value={'target': approach_target})
         self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
 
         plan = self.rag_handler.build_conversation_response_plan(
@@ -621,6 +624,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         request_target.entity_uid = "pc-1"
 
         self.rag_handler.resolve_named_target = Mock(return_value=request_target)
+        self.rag_handler.resolve_action_target = Mock(return_value=request_target)
         self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
 
         plan = self.rag_handler.build_conversation_response_plan(
@@ -660,6 +664,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         offer_target.entity_uid = "pc-1"
 
         self.rag_handler.resolve_named_target = Mock(return_value=offer_target)
+        self.rag_handler.resolve_action_target = Mock(return_value=offer_target)
         self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
 
         plan = self.rag_handler.build_conversation_response_plan(
@@ -741,6 +746,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         trade_target = Mock()
         trade_target.entity_uid = 'pc-1'
         self.rag_handler.resolve_named_target = Mock(return_value=trade_target)
+        self.rag_handler.resolve_action_target = Mock(return_value=trade_target)
         self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
 
         plan = self.rag_handler.build_conversation_response_plan(
@@ -764,6 +770,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         shop_target = Mock()
         shop_target.entity_uid = 'pc-1'
         self.rag_handler.resolve_named_target = Mock(return_value=shop_target)
+        self.rag_handler.resolve_action_target = Mock(return_value=shop_target)
         self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
 
         plan = self.rag_handler.build_conversation_response_plan(
@@ -786,6 +793,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         gift_target = Mock()
         gift_target.entity_uid = 'pc-1'
         self.rag_handler.resolve_named_target = Mock(return_value=gift_target)
+        self.rag_handler.resolve_action_target = Mock(return_value=gift_target)
         self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
 
         plan = self.rag_handler.build_conversation_response_plan(
@@ -1038,6 +1046,7 @@ class TestEntityRAGHandler(unittest.TestCase):
         speaker.label.return_value = "Aldric"
 
         self.rag_handler.resolve_named_target = Mock(return_value=speaker)
+        self.rag_handler.resolve_action_target = Mock(return_value=speaker)
         self.rag_handler.plan_response_volume = Mock(return_value=('normal', [speaker]))
 
         plan = self.rag_handler.build_conversation_response_plan(
@@ -1332,7 +1341,9 @@ class TestEntityRAGHandler(unittest.TestCase):
             callback({'response': 'Yes'})
 
         actor.deduct_item.assert_called_once_with('scroll_speak_animals_modified', 1)
-        target.add_item.assert_called_once_with('scroll_speak_animals_modified', 1)
+        target.add_item.assert_called_once_with(
+            'scroll_speak_animals_modified', 1, source_item=actor.deduct_item.return_value,
+        )
         self.mock_game_session.save_state.assert_called()
         self.mock_current_game.socketio.emit.assert_called()
         notify_mock.assert_called_once()
@@ -1365,7 +1376,9 @@ class TestEntityRAGHandler(unittest.TestCase):
         callback({'response': 'OK.'})
 
         actor.deduct_item.assert_called_once_with('scroll_speak_animals_modified', 1)
-        target.add_item.assert_called_once_with('scroll_speak_animals_modified', 1)
+        target.add_item.assert_called_once_with(
+            'scroll_speak_animals_modified', 1, source_item=actor.deduct_item.return_value,
+        )
 
     def test_offer_item_prompt_callback_boolean_true_payload_transfers_item(self):
         actor = Mock()
@@ -1395,7 +1408,9 @@ class TestEntityRAGHandler(unittest.TestCase):
         callback({'response': True})
 
         actor.deduct_item.assert_called_once_with('scroll_speak_animals_modified', 1)
-        target.add_item.assert_called_once_with('scroll_speak_animals_modified', 1)
+        target.add_item.assert_called_once_with(
+            'scroll_speak_animals_modified', 1, source_item=actor.deduct_item.return_value,
+        )
 
     def test_can_offer_item_blocks_when_target_has_animal_communication(self):
         actor = Mock()
@@ -1517,7 +1532,14 @@ class TestEntityRAGHandler(unittest.TestCase):
 
         handler = EntityRAGHandler(session, self.mock_current_game)
         self.assertTrue(handler._actor_has_offer_source(mara, 'tavern_room_key_1'))
-        allowed, reason = handler._can_offer_item(mara, target, 'tavern_room_key_1')
+        # The guest must name the specific room so the listener's choice is
+        # unambiguous among Mara's numbered room keys.
+        allowed, reason = handler._can_offer_item(
+            mara,
+            target,
+            'tavern_room_key_1',
+            player_message="I'd like the key for room 1",
+        )
         self.assertTrue(allowed)
         self.assertEqual(reason, 'ok')
 

@@ -107,7 +107,15 @@ def test_handle_npc_pickpocket_detected_runs_reply_turn():
     if webapp_dir not in sys.path:
         sys.path.insert(0, webapp_dir)
     importlib.import_module('webapp.conversation_service')
-    from tests.webapp.test_npc_damage_reaction import _StubNpc, _StubPc, _build_service
+    # Load the sibling test module by path: the tests tree is not a package
+    # (no __init__.py), so a dotted import is not portable across pytest
+    # import modes / working directories.
+    import importlib.util as _ilu
+    _sibling = os.path.join(os.path.dirname(__file__), 'test_npc_damage_reaction.py')
+    _spec = _ilu.spec_from_file_location('_npc_damage_reaction_shared', _sibling)
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _StubNpc, _StubPc, _build_service = _mod._StubNpc, _mod._StubPc, _mod._build_service
 
     victim = _StubNpc('merchant_npc', 'Merchant')
     thief = _StubPc('aldric', 'Aldric')

@@ -103,13 +103,114 @@ class RecordingConversationHandler:
         self.generated_ids.append(conversation_id)
         return 'Unexpected NPC reply'
 
+    def _format_incoming_player_turn(self, message):
+        spoken = str(message.get('message') or '').strip()
+        source = message.get('source')
+        if source is not None and hasattr(source, 'label'):
+            speaker_label = source.label()
+        else:
+            speaker_label = str(source or 'Player')
+        language = message.get('language') or 'common'
+        if spoken:
+            return f"{speaker_label} says to you (in {language}): {spoken}"
+        return ''
+
 
 class FakeEntityRagHandler:
-    def get_nearby_entities(self, entity, distance_ft, volume=None, include_extended=False):
+    def __getattr__(self, name, **kwargs):
+        # Future-proofing: any EntityRagHandler method not explicitly stubbed
+        # below returns a permissive no-op yielding '' (the neutral 'no campaign
+        # configuration' default for prompt/guidance helpers). Structured-return
+        # methods (plans, segment tuples, DC checks) are stubbed explicitly.
+        def _noop(*args, **kwargs):
+            return ""
+        return _noop
+    def get_nearby_entities(self, entity, distance_ft, volume=None, include_extended=False, **kwargs):
         return []
 
-    def collect_perceivable_targets(self, observer, *, range_ft=120, include_objects=True):
+    def collect_perceivable_targets(self, observer, *, range_ft=120, include_objects=True, **kwargs):
         return []
+
+    def get_conversation_targets(self, receiver, speaker=None, **kwargs):
+        return [speaker] if speaker is not None else []
+
+    def witnessed_events_summary(self, entity, **kwargs):
+        return ""
+
+    def npc_memory_context_summary(self, entity, **kwargs):
+        return ""
+
+    def animal_communication_guidance_for_conversation(self, *args, **kwargs):
+        return ""
+
+    def offer_item_guidance_for_conversation(self, *args, **kwargs):
+        return ""
+
+    def map_landmarks_prompt_for_entity(self, *args, **kwargs):
+        return ""
+
+    def campaign_setting_prompt(self, *args, **kwargs):
+        return ""
+
+    def npc_backstory_prompt(self, *args, **kwargs):
+        return ""
+
+    def container_serving_guidance_for_conversation(self, *args, **kwargs):
+        return ""
+
+    def usable_items_guidance_for_entity(self, *args, **kwargs):
+        return ""
+
+    def inventory_containers_guidance_for_entity(self, *args, **kwargs):
+        return ""
+
+    def interactable_objects_guidance_for_entity(self, *args, **kwargs):
+        return ""
+
+    def perceivable_targets_guidance_for_entity(self, *args, **kwargs):
+        return ""
+
+    def npc_image_gallery_guidance_for_conversation(self, *args, **kwargs):
+        return ""
+
+    def escort_navigation_inject_note(self, *args, **kwargs):
+        return ""
+
+    def maybe_promote_escort_approach_to_move(self, *args, **kwargs):
+        return None
+
+    def count_speech_beats(self, *args, **kwargs):
+        return 0
+
+    def pop_next_reply_beat(self, *args, **kwargs):
+        return ([], [])
+
+    def _apply_narrative_segment_policies(self, *args, **kwargs):
+        segments = args[0] if args else kwargs.get('segments')
+        return (list(segments or []), '', '', None)
+
+    def ensure_request_check_dc(self, *args, **kwargs):
+        return None
+
+    def apply_conversation_keywords_from_plan(self, *args, **kwargs):
+        return None
+
+    def parse_response_controls(self, response, **kwargs):
+        return {'no_response': '[NO_RESPONSE]' in response}
+
+    def build_conversation_response_plan(self, response, receiver, speaker, llm_conversation_handler=None, **kwargs):
+        if response == '[NO_RESPONSE]':
+            return {'skip': True, 'language': 'common', 'message': '', 'targets': [], 'volume': None}
+        return {'skip': False, 'language': 'common', 'message': response, 'targets': [speaker], 'volume': 'normal'}
+
+    def apply_response_plan_directives(self, plan, actor, speaker=None, advance_time=False, only=None, skip=None, **kwargs):
+        pass
+
+    def apply_conversation_keywords(self, *args, **kwargs):
+        pass
+
+    def process_entity_response(self, response, receiver, speaker, llm_handler, **kwargs):
+        return 'common', response
 
 
 class FakeGameSession:
@@ -161,7 +262,11 @@ def test_dm_impersonation_records_npc_speech_without_llm_reply(monkeypatch):
     body = response.get_json()
     assert body['success'] is True
     assert body.get('dm_impersonate') is True
-    assert body.get('replies') in (None, [])
+    # DM impersonated speech is echoed back as a reply (the recorded line),
+    # but no LLM-generated replies are produced.
+    replies = body.get('replies') or []
+    assert all(r.get('entity_id') == 'corin_guard' for r in replies)
+    assert not any(r.get('source') == 'llm' for r in replies)
     assert handler.generated_ids == []
     assert speaker.conversation_buffer
     assert speaker.conversation_buffer[-1]['message'] == 'Move along, citizen.'

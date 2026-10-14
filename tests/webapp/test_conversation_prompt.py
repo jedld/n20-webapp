@@ -43,49 +43,102 @@ class FakeCurrentGame:
 
 
 class FakeEntityRagHandler:
-    def get_conversation_targets(self, receiver, speaker=None):
+    def __getattr__(self, name, **kwargs):
+        # Future-proofing: any EntityRagHandler method not explicitly stubbed
+        # below returns a permissive no-op yielding '' (the neutral 'no campaign
+        # configuration' default for prompt/guidance helpers). Structured-return
+        # methods (plans, segment tuples, DC checks) are stubbed explicitly.
+        def _noop(*args, **kwargs):
+            return ""
+        return _noop
+    def get_conversation_targets(self, receiver, speaker=None, **kwargs):
         return [speaker] if speaker is not None else []
 
-    def collect_perceivable_targets(self, observer, *, range_ft=120, include_objects=True):
+    def collect_perceivable_targets(self, observer, *, range_ft=120, include_objects=True, **kwargs):
         return []
 
-    def witnessed_events_summary(self, entity):
+    def witnessed_events_summary(self, entity, **kwargs):
         return ""
 
-    def npc_memory_context_summary(self, entity):
+    def npc_memory_context_summary(self, entity, **kwargs):
         return ""
 
-    def animal_communication_guidance_for_conversation(self, receiver, speaker=None, nearby_entities=None):
+    def animal_communication_guidance_for_conversation(self, *args, **kwargs):
         return ""
 
-    def map_landmarks_prompt_for_entity(self, entity):
+    def map_landmarks_prompt_for_entity(self, *args, **kwargs):
         return ""
 
-    def container_serving_guidance_for_conversation(self, receiver):
+    def container_serving_guidance_for_conversation(self, *args, **kwargs):
         return ""
 
-    def offer_item_guidance_for_conversation(self, receiver, speaker):
+    def offer_item_guidance_for_conversation(self, *args, **kwargs):
         return ""
 
-    def parse_response_controls(self, response):
+    def parse_response_controls(self, response, **kwargs):
         return {'no_response': '[NO_RESPONSE]' in response}
 
-    def apply_response_plan_directives(self, plan, actor, speaker=None, advance_time=False):
+    def apply_response_plan_directives(self, plan, actor, speaker=None, advance_time=False, **kwargs):
         pass
 
-    def apply_conversation_keywords(self, response, receiver, speaker, llm_handler):
+    def apply_conversation_keywords(self, *args, **kwargs):
         pass
 
-    def get_nearby_entities(self, entity, distance_ft, volume=None, include_extended=False):
+    def get_nearby_entities(self, entity, distance_ft, volume=None, include_extended=False, **kwargs):
         return []
 
-    def build_conversation_response_plan(self, response, receiver, speaker, llm_handler):
+    def build_conversation_response_plan(self, response, receiver, speaker, llm_handler=None, **kwargs):
         if '[NO_RESPONSE]' in response:
             return {'skip': True, 'language': 'common', 'message': '', 'targets': [], 'volume': None}
         return {'skip': False, 'language': 'common', 'message': response, 'targets': [speaker], 'volume': 'normal'}
 
-    def process_entity_response(self, response, receiver, speaker, llm_handler):
+    def process_entity_response(self, response, receiver, speaker, llm_handler, **kwargs):
         return 'common', response
+
+    # -- Stubs for EntityRagHandler methods added since this fake was written.
+
+    def campaign_setting_prompt(self, *args, **kwargs):
+        return ""
+
+    def npc_backstory_prompt(self, *args, **kwargs):
+        return ""
+
+    def usable_items_guidance_for_entity(self, *args, **kwargs):
+        return ""
+
+    def inventory_containers_guidance_for_entity(self, *args, **kwargs):
+        return ""
+
+    def interactable_objects_guidance_for_entity(self, *args, **kwargs):
+        return ""
+
+    def perceivable_targets_guidance_for_entity(self, *args, **kwargs):
+        return ""
+
+    def npc_image_gallery_guidance_for_conversation(self, *args, **kwargs):
+        return ""
+
+    def escort_navigation_inject_note(self, *args, **kwargs):
+        return ""
+
+    def maybe_promote_escort_approach_to_move(self, *args, **kwargs):
+        return None
+
+    def count_speech_beats(self, *args, **kwargs):
+        return 0
+
+    def pop_next_reply_beat(self, *args, **kwargs):
+        return ([], [])
+
+    def _apply_narrative_segment_policies(self, *args, **kwargs):
+        segments = args[0] if args else kwargs.get('segments')
+        return (list(segments or []), '', '', None)
+
+    def ensure_request_check_dc(self, *args, **kwargs):
+        return None
+
+    def apply_conversation_keywords_from_plan(self, *args, **kwargs):
+        return None
 
 
 class FakeSpeaker:

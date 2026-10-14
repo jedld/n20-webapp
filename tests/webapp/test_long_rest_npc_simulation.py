@@ -1,3 +1,5 @@
+import logging
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -120,6 +122,10 @@ def test_advance_world_time_skips_emit_when_suppressed():
     gm.game_state_lock = threading.Lock()
     gm.get_current_battle = MagicMock(return_value=None)
     gm.loop_environment = MagicMock()
+    # advance_world_time also ticks exploration environment zones, which needs a
+    # maps registry and a logger (normally set in __init__, bypassed here).
+    gm.maps = {}
+    gm.logger = logging.getLogger('test')
 
     with RealtimeUiSuppressor.suppress(gm):
         gm.advance_world_time(seconds=6)
