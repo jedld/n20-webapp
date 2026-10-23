@@ -38,7 +38,7 @@
     "edit_mode.min.js": "7bd59c2b7c",
     "edit_properties.min.js": "9567e2667f",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "79fa0d2941",
+    "engine.min.js": "e8b09d9c2a",
     "grapple_links.min.js": "8c0dfdfd0a",
     "inert-polyfill.min.js": "fcce9c44c6",
     "map_annotations_edit.min.js": "a395fef84a",
@@ -48,9 +48,9 @@
     "perf.min.js": "7305880b63",
     "sfx.min.js": "34f772af3c",
     "sheet.min.js": "ee44a3ab8e",
-    "spell_effects.min.js": "6c2071bd76",
+    "spell_effects.min.js": "e730cdc169",
     "status_effects.min.js": "91bc7c59c9",
-    "utils.min.js": "84f69b5e45",
+    "utils.min.js": "599748674d",
     "utils_optimized.min.js": "d64c929e7e",
     "js/character_builder.min.js": "424a168ab6",
     "js/character_builder_images.min.js": "cb752ad32e",
@@ -61,8 +61,8 @@
     "journal.min.css": "51ba4e37df",
     "notebook.min.css": "e5ebb9b378",
     "sheet.min.css": "e203710971",
-    "styles.min.css": "3a4577815e"
+    "styles.min.css": "efd344b0d2"
   },
-  "generatedAt": "2026-10-14T08:39:14.866Z",
-  "buildVersion": "ea75b0fea2f3"
+  "generatedAt": "2026-10-15T23:08:48.718Z",
+  "buildVersion": "3867a019c7c2"
 }

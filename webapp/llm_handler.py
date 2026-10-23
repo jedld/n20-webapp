@@ -1105,7 +1105,7 @@ class JevProvider(LLMProvider):
     DEFAULT_BASE_URL = "https://api.typesafe.ai"
     DEFAULT_MODEL = "jev-latest"
 
-    def __init__(self, opts=None):
+    def __init__(self, opts=None, request_logger: Optional[Callable[[Dict[str, Any]], None]] = None):
         opts = opts or {}
         self.base_url = self._resolve_base_url(opts.get('base_url'))
         self.api_key = opts.get('api_key') or os.environ.get('TYPESAFE_API_KEY')
@@ -1116,6 +1116,8 @@ class JevProvider(LLMProvider):
             or self.DEFAULT_MODEL
         )
         self.request_timeout = int(opts.get('timeout') or os.environ.get('JEV_TIMEOUT', '8'))
+        self.request_logger = request_logger
+        self._request_log_lock = threading.Lock()
         self.client = None
         self.initialized = False
 
@@ -1142,6 +1144,8 @@ class JevProvider(LLMProvider):
                 self.request_timeout = int(config['timeout'])
             if config.get('model'):
                 self.current_model = config['model']
+            if config.get('request_logger') is not None:
+                self.request_logger = config['request_logger']
 
             if not self.api_key:
                 logger.warning("[JevProvider] No TYPESAFE_API_KEY set; Jev provider disabled.")
@@ -1196,16 +1200,36 @@ class JevProvider(LLMProvider):
             logger.warning("[JevProvider] %d options exceed Jev cardinality cap (255); skipping.", len(options))
             return None
 
+        request = {
+            'instructions': "Choose the single best action index for the entity given the state.",
+            'state': state,
+            'options': [desc if isinstance(desc, str) else str(desc) for desc in options],
+        }
+        t0 = time.perf_counter()
         try:
             _, Choice, _ = self._import_sdk()
-            criteria = {str(i): (desc if isinstance(desc, str) else str(desc)) for i, desc in enumerate(options)}
+            criteria = {str(i): desc for i, desc in enumerate(request['options'])}
             question = Choice(
-                instructions="Choose the single best action index for the entity given the state.",
+                instructions=request['instructions'],
                 criteria=criteria,
             )
             result = self.client.system_one(state=state, questions={"action": question})
-            return self._extract_choice(result, "action", options)
+            parsed = self._extract_choice(result, "action", options)
+            self._emit_request_log(
+                'action',
+                request,
+                response={'raw': self._response_payload(result, 'action'), 'parsed': parsed},
+                latency_ms=(time.perf_counter() - t0) * 1000,
+            )
+            return parsed
         except Exception as e:
+            self._emit_request_log(
+                'action',
+                request,
+                response=None,
+                error=str(e),
+                latency_ms=(time.perf_counter() - t0) * 1000,
+            )
             logger.error(f"[JevProvider] decide_action failed: {e}")
             return None
 
@@ -1213,14 +1237,29 @@ class JevProvider(LLMProvider):
         """Ask Jev a yes/no question. Returns ``{'noul': float, 'confidence': float}`` or ``None``."""
         if self.client is None:
             return None
+        request = {'instructions': instructions, 'state': state}
+        t0 = time.perf_counter()
         try:
             _, _, Noul = self._import_sdk()
             question = Noul(instructions=instructions)
             result = self.client.system_one(state=state, questions={"answer": question})
             n = result.nouls["answer"]
-            value = float(getattr(n, 'noul', 0.0))
-            return {'noul': value, 'confidence': float(getattr(n, 'confidence', 0.0) or 0.0)}
+            parsed = {'noul': float(getattr(n, 'noul', 0.0)), 'confidence': float(getattr(n, 'confidence', 0.0) or 0.0)}
+            self._emit_request_log(
+                'bool',
+                request,
+                response={'raw': self._response_payload(result, 'answer'), 'parsed': parsed},
+                latency_ms=(time.perf_counter() - t0) * 1000,
+            )
+            return parsed
         except Exception as e:
+            self._emit_request_log(
+                'bool',
+                request,
+                response=None,
+                error=str(e),
+                latency_ms=(time.perf_counter() - t0) * 1000,
+            )
             logger.error(f"[JevProvider] decide_bool failed: {e}")
             return None
 
@@ -1263,6 +1302,60 @@ class JevProvider(LLMProvider):
         except Exception as e:
             logger.error(f"[JevProvider] could not parse Choice result: {e}")
             return None
+
+    def _emit_request_log(self, task: str, request: Dict[str, Any],
+                          response: Optional[Dict[str, Any]] = None,
+                          error: Optional[str] = None,
+                          latency_ms: Optional[float] = None) -> None:
+        if not callable(self.request_logger):
+            return
+        record = {
+            'v': 1,
+            'timestamp': time.time(),
+            'model': self.current_model,
+            'task': task,
+            'request': request,
+        }
+        if response is not None:
+            record['response'] = response
+        if error is not None:
+            record['error'] = error
+        if latency_ms is not None:
+            record['latency_ms'] = float(latency_ms)
+        with self._request_log_lock:
+            try:
+                self.request_logger(record)
+            except Exception as e:
+                logger.error(f"[JevProvider] request logger failed: {e}")
+
+    def _response_payload(self, result, question_name: str) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        choices = getattr(result, 'choices', None)
+        choice_resp = None
+        if isinstance(choices, dict):
+            choice_resp = choices.get(question_name)
+        elif choices is not None:
+            choice_resp = getattr(choices, question_name, None)
+        if choice_resp is not None:
+            payload['choice'] = getattr(choice_resp, 'choice', None)
+            confidence = getattr(choice_resp, 'confidence', None)
+            payload['confidence'] = float(confidence) if confidence is not None else None
+            probabilities = getattr(choice_resp, 'probabilities', None)
+            if isinstance(probabilities, dict):
+                payload['probabilities'] = {str(key): value for key, value in probabilities.items()}
+            elif probabilities is not None:
+                payload['probabilities'] = str(probabilities)
+        nouls = getattr(result, 'nouls', None)
+        noul_resp = None
+        if isinstance(nouls, dict):
+            noul_resp = nouls.get(question_name)
+        elif nouls is not None:
+            noul_resp = getattr(nouls, question_name, None)
+        if noul_resp is not None:
+            payload['noul'] = float(getattr(noul_resp, 'noul', 0.0))
+            confidence = getattr(noul_resp, 'confidence', None)
+            payload['confidence'] = float(confidence) if confidence is not None else None
+        return payload
 
     def get_available_models(self) -> List[str]:
         if self.client is None:

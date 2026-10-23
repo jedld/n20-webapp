@@ -5,6 +5,7 @@ Covers:
     ``get_battle_provider_info``.
   * ``configure_battle_provider_from_environment`` (``BATTLE_LLM_PROVIDER``)
     env resolution, overrides, and unsupported-provider handling.
+  * ``JevProvider`` request/response logging for fine-tuning datasets.
 """
 
 import os
@@ -258,6 +259,89 @@ class TestBattleProviderRouting(unittest.TestCase):
                 patch.dict(sys.modules, {'webapp.utils': None}):
             registry._build_controller_by_kind('llm')
         self.assertEqual(captured['provider'], 'jev-provider')
+
+
+class TestJevRequestLogging(unittest.TestCase):
+    """JevProvider records decision requests/responses for fine-tuning datasets."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from webapp.llm_handler import JevProvider
+        self.SimpleNamespace = SimpleNamespace
+        self.JevProvider = JevProvider
+
+    def _provider(self, records):
+        provider = self.JevProvider({}, request_logger=records.append)
+        provider.client = MagicMock()
+        return provider
+
+    def test_decide_action_records_request_and_response(self):
+        records = []
+        provider = self._provider(records)
+        result = self.SimpleNamespace(
+            choices={
+                'action': self.SimpleNamespace(
+                    choice='1',
+                    confidence=0.7,
+                    probabilities={'0': 0.3, '1': 0.7},
+                )
+            }
+        )
+        provider.client.system_one.return_value = result
+
+        with patch.object(self.JevProvider, '_import_sdk',
+                          return_value=(None, MagicMock(), None)):
+            parsed = provider.decide_action('state A', ['alpha', 'beta'])
+
+        self.assertEqual(parsed['index'], 1)
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record['v'], 1)
+        self.assertEqual(record['model'], 'jev-latest')
+        self.assertEqual(record['task'], 'action')
+        self.assertEqual(record['request']['state'], 'state A')
+        self.assertEqual(record['request']['options'], ['alpha', 'beta'])
+        self.assertEqual(record['response']['parsed']['index'], 1)
+        self.assertEqual(record['response']['raw']['choice'], '1')
+        self.assertIsInstance(record['latency_ms'], float)
+
+    def test_decide_bool_records_request_and_response(self):
+        records = []
+        provider = self._provider(records)
+        result = self.SimpleNamespace(
+            nouls={'answer': self.SimpleNamespace(noul=0.35, confidence=0.9)}
+        )
+        provider.client.system_one.return_value = result
+
+        with patch.object(self.JevProvider, '_import_sdk',
+                          return_value=(None, MagicMock(), MagicMock())):
+            parsed = provider.decide_bool('state B', 'Should it cast?')
+
+        self.assertEqual(parsed, {'noul': 0.35, 'confidence': 0.9})
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record['task'], 'bool')
+        self.assertEqual(record['request']['state'], 'state B')
+        self.assertEqual(record['request']['instructions'], 'Should it cast?')
+        self.assertEqual(record['response']['parsed'], {'noul': 0.35, 'confidence': 0.9})
+        self.assertEqual(record['response']['raw']['noul'], 0.35)
+
+    def test_failed_request_records_error(self):
+        records = []
+        provider = self._provider(records)
+        provider.client.system_one.side_effect = RuntimeError('boom')
+
+        with patch.object(self.JevProvider, '_import_sdk',
+                          return_value=(None, MagicMock(), None)):
+            parsed = provider.decide_action('state C', ['alpha'])
+
+        self.assertIsNone(parsed)
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record['task'], 'action')
+        self.assertIsNone(record.get('response'))
+        self.assertEqual(record['error'], 'boom')
+        self.assertIsInstance(record['latency_ms'], float)
 
 
 if __name__ == '__main__':

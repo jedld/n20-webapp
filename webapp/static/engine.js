@@ -4191,6 +4191,14 @@ class EventQueue {
       const msg = data && data.message ? data.message : data;
       const spellKey = (msg && (msg.spell || msg.label)) || '';
       const spellKeyNorm = String(spellKey || '').toLowerCase().replace(/\s+/g, '_');
+      // NPC YAML actions may declare a pre-baked VFX via ``special_effect``;
+      // prefer its registered renderer over the generic spell/attack effects.
+      const specialKey = msg && msg.special_effect
+        ? String(msg.special_effect).toLowerCase().replace(/\s+/g, '_')
+        : '';
+      const playKey = (window.SpellEffects && specialKey && window.SpellEffects.has(specialKey))
+        ? specialKey
+        : spellKeyNorm;
       const refreshAfter = (cb) => {
         try {
           // Targeted refresh for source and all targets to update effect icons and concentration
@@ -4224,7 +4232,7 @@ class EventQueue {
         refreshAfter(resolve);
       };
       if (window.SpellEffects && typeof window.SpellEffects.play === 'function') {
-        window.SpellEffects.play(spellKey, msg).then(() => { finishSpell(); }).catch(() => { finishSpell(); });
+        window.SpellEffects.play(playKey, msg).then(() => { finishSpell(); }).catch(() => { finishSpell(); });
         return;
       }
       // Fallback: log only if SpellEffects registry isn’t loaded
@@ -4247,7 +4255,13 @@ class EventQueue {
         resolve();
       };
       if (window.SpellEffects && typeof window.SpellEffects.play === 'function') {
-        window.SpellEffects.play('attack', msg).then(() => { finishAttack(); }).catch(() => { finishAttack(); });
+        // NPC YAML attacks may declare a pre-baked VFX via ``special_effect``
+        // (e.g. draconian Energy Ray); prefer it over the generic attack render.
+        const specialKey = msg && msg.special_effect
+          ? String(msg.special_effect).toLowerCase().replace(/\s+/g, '_')
+          : '';
+        const playKey = (specialKey && window.SpellEffects.has(specialKey)) ? specialKey : 'attack';
+        window.SpellEffects.play(playKey, msg).then(() => { finishAttack(); }).catch(() => { finishAttack(); });
         return;
       }
       console.log('Attack animation (no SpellEffects registry found):', msg);
@@ -6236,8 +6250,31 @@ function handleDirectWSADMovement(event) {
     const cacheKey = `${source.x}-${source.y}-${newX}-${newY}-${pivotPoints.join("-")}`;
 
     const applyMovementData = (data) => {
-      if (!data || !data.cost || !data.path || data.cost.budget < 0) {
+      if (!data || !data.cost || data.cost.budget < 0) {
         console.log("Invalid move via WSAD - path not available or budget exceeded");
+        return;
+      }
+      if (!data.path) {
+        // Blocked step (wall, intraversable, or over budget): clear the
+        // previous preview and mark the target square with a red X.
+        movePath = [];
+        currentPosition = null;
+        lastPathForJump = null;
+        if (globalCtx && globalCanvas && typeof Utils !== 'undefined' && Utils.tileCenterForGrid) {
+          globalCtx.clearRect(0, 0, globalCanvas.width, globalCanvas.height);
+          const center = Utils.tileCenterForGrid(newX, newY);
+          if (center) {
+            const s = center.tile * 0.35;
+            globalCtx.beginPath();
+            globalCtx.strokeStyle = "red";
+            globalCtx.lineWidth = 5;
+            globalCtx.moveTo(center.x - s, center.y - s);
+            globalCtx.lineTo(center.x + s, center.y + s);
+            globalCtx.moveTo(center.x + s, center.y - s);
+            globalCtx.lineTo(center.x - s, center.y + s);
+            globalCtx.stroke();
+          }
+        }
         return;
       }
 
@@ -8161,6 +8198,33 @@ $(document).ready(() => {
           if (data.cost.budget < 0) return;
 
           const available_cost = (data.cost.original_budget - data.cost.budget) * 5;
+          if (!data.path) {
+            // No path to this square (intraversable or out of movement budget):
+            // clear any previous path preview and mark the destination with a
+            // red X so the hover state always reflects the hovered square.
+            movePath = [];
+            currentPosition = null;
+            lastPathForJump = null;
+            if (globalCtx && globalCanvas && typeof Utils !== 'undefined' && Utils.tileCenterForGrid) {
+              globalCtx.clearRect(0, 0, globalCanvas.width, globalCanvas.height);
+              // Grid-based center in the same coordinate space as the movement
+              // path, so the X lands exactly on the hovered square (a DOM
+              // .tile lookup is ambiguous in stack-composite view).
+              const center = Utils.tileCenterForGrid(pathDestX, pathDestY);
+              if (center) {
+                const s = center.tile * 0.35;
+                globalCtx.beginPath();
+                globalCtx.strokeStyle = "red";
+                globalCtx.lineWidth = 5;
+                globalCtx.moveTo(center.x - s, center.y - s);
+                globalCtx.lineTo(center.x + s, center.y + s);
+                globalCtx.moveTo(center.x + s, center.y - s);
+                globalCtx.lineTo(center.x - s, center.y + s);
+                globalCtx.stroke();
+              }
+            }
+            return;
+          }
           if (data.path) {
             // Create a new movement path starting with accumulated path
             movePath = [...accumulatedPath];

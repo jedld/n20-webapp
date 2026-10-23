@@ -406,10 +406,27 @@ button.vtt-menu-item:focus {
 
 .nameplate {
   position: absolute;
-  padding: 2px;
+  padding: 0 3px;
   left: 0;
   opacity: 0.6;
   background-color: white; color: black;
+  /* Compact: tight line box, truncated to the token width. */
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  max-width: calc(100% - 2px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Purely decorative: never intercept clicks, so a nameplate overlapping
+     the token below still lets clicks reach that token. */
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Hovering the token expands the nameplate to its full (un-truncated) name. */
+.entity:hover .nameplate {
+  max-width: none;
+  opacity: 0.85;
 }
 
 .tile {

@@ -1055,6 +1055,29 @@ const Utils = {
     return { x, y };
   },
 
+  /**
+   * Center of grid cell (x, y) in the global canvas coordinate space, using
+   * the same origin/stack-offset math as _doDrawMovementPath so canvas marks
+   * land on the exact squares the movement path touches.
+   */
+  tileCenterForGrid: function (x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+    const grid = Utils._getMovementGridOrigin();
+    if (!grid) {
+      return null;
+    }
+    const stackOff = Utils.getStackCompositeOffset();
+    const gx = stackOff && stackOff.active ? x + (stackOff.x || 0) : x;
+    const gy = stackOff && stackOff.active ? y + (stackOff.y || 0) : y;
+    return {
+      x: grid.ox + gx * grid.tile + grid.tile / 2,
+      y: grid.oy + gy * grid.tile + grid.tile / 2,
+      tile: grid.tile,
+    };
+  },
+
   // Compute and cache the tile grid origin in viewport coords. Tiles are laid
   // out at (x+1)*tile_size, (y+1)*tile_size relative to .tiles-container
   // (see templates/map.html), so we only need ONE getBoundingClientRect on

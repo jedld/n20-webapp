@@ -146,6 +146,13 @@
     return `rgba(${r},${g},${b},${clampAlpha(a).toFixed(3)})`;
   }
 
+  // True when a renderer is registered for ``name`` (used to prefer a
+  // campaign-declared ``special_effect`` over generic spell/attack VFX).
+  function has(name) {
+    if (!name) return false;
+    return Object.prototype.hasOwnProperty.call(REGISTRY, String(name).toLowerCase());
+  }
+
   // Public API to play a registered effect (safe no-op on errors)
   function play(name, payload){
     return new Promise((resolve) => {
@@ -4732,7 +4739,290 @@
     if (alias) register(alias, function(payload){ return play(key, payload); });
   });
 
+  // ---- Pre-baked NPC special effects (YAML ``special_effect``) ---------------
+  // Renderers campaigns can point NPC actions at. To add one: call
+  // register('my_effect', fn) below (or from a future module loaded after this
+  // file) and set ``special_effect: my_effect`` on an NPC YAML action
+  // (attack or area_save). The engine attaches the key to the animation
+  // payload (``action_animator`` in natural20/battle.py) and the client
+  // (engine.js) plays it in preference to generic attack/spell VFX when a
+  // renderer is registered; unknown keys fall back to the normal effects.
+
+  // Energy Ray: draconian force beam — brief charge at the caster, then a
+  // pale force beam streaks to the target with an impact flash. A miss stops
+  // short of the target and shows the standard "MISS!" treatment.
+  register('energy_ray', function(payload){
+    return new Promise((resolve) => {
+      const srcId = payload && payload.source;
+      const src = centerForAttackEntity(payload, srcId, payload && payload.source_pos)
+        || (srcId ? centerOfEntity(srcId) : null);
+      const tgtIds = ensureArray(payload && payload.target);
+      const tgt = centerFromGridPos(payload && payload.target_pos)
+        || (payload && payload.target_positions && centerFromGridPos(payload.target_positions[0]))
+        || tgtIds.map((id) => centerOfEntity(id)).filter(Boolean)[0]
+        || null;
+      if (!src || !tgt) return resolve();
+
+      const isMiss = !!(payload && (payload.miss || payload.missed));
+      const { overlay, ctx, destroy } = createOverlay(1102);
+      const col = [170, 225, 255]; // pale force blue
+      const seed = Math.random() * 1000;
+      const dist = Math.hypot(tgt.x - src.x, tgt.y - src.y);
+      const endT = isMiss ? 0.8 : 1;
+      const px = src.x + (tgt.x - src.x) * endT;
+      const py = src.y + (tgt.y - src.y) * endT;
+
+      try { if (window.SFX && SFX.play) { SFX.play('attack_generic_ranged'); } } catch (e) {}
+
+      const t0 = performance.now();
+      const chargeDur = 170;
+      const beamDur = 300;
+
+      function drawCharge(now){
+        const t = Math.min(1, (now - t0) / chargeDur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save(); ctx.globalCompositeOperation = 'screen';
+        const r = 6 + 14 * t;
+        const g = ctx.createRadialGradient(src.x, src.y, 1, src.x, src.y, r);
+        g.addColorStop(0, rgba(255, 255, 255, 0.9 * t));
+        g.addColorStop(0.5, rgba(col[0], col[1], col[2], 0.55 * t));
+        g.addColorStop(1, rgba(col[0], col[1], col[2], 0));
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(src.x, src.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(drawCharge); else beam();
+      }
+
+      function beam(){
+        const b0 = performance.now();
+        const step = (ns) => {
+          const t = Math.min(1, (ns - b0) / beamDur);
+          ctx.clearRect(0, 0, overlay.width, overlay.height);
+          ctx.save(); ctx.globalCompositeOperation = 'screen';
+          const ex = src.x + (px - src.x) * t;
+          const ey = src.y + (py - src.y) * t;
+          ctx.strokeStyle = rgba(col[0], col[1], col[2], 0.28);
+          ctx.lineWidth = 9; ctx.lineCap = 'round';
+          ctx.beginPath(); ctx.moveTo(src.x, src.y); ctx.lineTo(ex, ey); ctx.stroke();
+          // wobbly bright core
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          const segs = 14;
+          const nx = -(py - src.y) / (dist || 1);
+          const ny = (px - src.x) / (dist || 1);
+          for (let i = 0; i <= segs; i++) {
+            const f = i / segs;
+            const x = src.x + (ex - src.x) * f;
+            const y = src.y + (ey - src.y) * f;
+            const wob = Math.sin(f * 18 + seed + ns * 0.03) * 2.2 * (1 - f * 0.5);
+            if (i === 0) ctx.moveTo(x + nx * wob, y + ny * wob); else ctx.lineTo(x + nx * wob, y + ny * wob);
+          }
+          ctx.stroke();
+          const gr = ctx.createRadialGradient(ex, ey, 1, ex, ey, 10);
+          gr.addColorStop(0, 'rgba(255,255,255,0.9)');
+          gr.addColorStop(1, rgba(col[0], col[1], col[2], 0));
+          ctx.fillStyle = gr;
+          ctx.beginPath(); ctx.arc(ex, ey, 10, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+          if (t < 1) requestAnimationFrame(step); else impact();
+        };
+        requestAnimationFrame(step);
+      }
+
+      function impact(){
+        try { if (window.SFX && SFX.play) { SFX.play(isMiss ? 'attack_generic_ranged' : 'attack_impact_ranged'); } } catch (e) {}
+        const t0i = performance.now();
+        const dur = isMiss ? 820 : 260;
+        const loop = (now) => {
+          const t = Math.min(1, (now - t0i) / dur);
+          ctx.clearRect(0, 0, overlay.width, overlay.height);
+          ctx.save(); ctx.globalCompositeOperation = 'screen';
+          if (isMiss) {
+            // standard miss deflection arcs
+            const fade = 0.85 * (1 - t);
+            for (let i = 0; i < 3; i++) {
+              const ang = -Math.PI * 0.35 + i * 0.42 + t * 1.2;
+              ctx.strokeStyle = rgba(col[0], col[1], col[2], fade);
+              ctx.lineWidth = 3.5 - t;
+              ctx.beginPath();
+              ctx.arc(px, py, 20 + i * 3, ang, ang + 1.05);
+              ctx.stroke();
+            }
+            if (now - t0i >= 70) {
+              const lt = Math.min(1, Math.max(0, ((now - t0i) - 90) / 520));
+              const ease = 1 - Math.pow(1 - lt, 3);
+              const floatY = py - 8 - 40 * ease;
+              const scale = 0.5 + 0.58 * (1 - Math.pow(1 - Math.min(lt * 1.75, 1), 2));
+              const alpha = lt < 0.68 ? 1 : 1 - ((lt - 0.68) / 0.32);
+              ctx.translate(px, floatY);
+              ctx.scale(scale, scale);
+              ctx.font = 'bold 26px "Arial Black", Arial, sans-serif';
+              ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+              ctx.lineWidth = 5;
+              ctx.strokeStyle = `rgba(18,22,30,${clampAlpha(alpha).toFixed(2)})`;
+              ctx.fillStyle = `rgba(245,248,255,${clampAlpha(alpha).toFixed(2)})`;
+              ctx.strokeText('MISS!', 0, 0);
+              ctx.fillText('MISS!', 0, 0);
+            }
+          } else {
+            const a = 1 - t; const r = 14 + 24 * t;
+            ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2);
+            ctx.strokeStyle = rgba(col[0], col[1], col[2], a);
+            ctx.lineWidth = 3 - 1.5 * t; ctx.stroke();
+            for (let i = 0; i < 8; i++) {
+              const ang = (i / 8) * Math.PI * 2 + now * 0.004;
+              const len = 10 + 14 * t;
+              ctx.beginPath();
+              ctx.moveTo(px, py);
+              ctx.lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len);
+              ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1.3; ctx.stroke();
+            }
+          }
+          ctx.restore();
+          if (t < 1) requestAnimationFrame(loop); else { destroy(); resolve(); }
+        };
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(drawCharge);
+    });
+  });
+
+  // Noxious Breath: 15-ft poison cone from the caster toward the aimed square
+  // (``target_pos`` is the two-element direction point sent for cone
+  // selections). Green toxic plume with a lingering mist at the far end.
+  register('noxious_breath', function(payload){
+    return new Promise((resolve) => {
+      const srcId = payload && payload.source;
+      const src = centerForAttackEntity(payload, srcId, payload && payload.source_pos)
+        || (srcId ? centerOfEntity(srcId) : null);
+      if (!src) return resolve();
+      // Aim: prefer the server's direction point; fall back to the first
+      // target entity; else breathe to the right.
+      const aim = centerFromGridPos(payload && payload.target_pos)
+        || ensureArray(payload && payload.target).map((id) => centerOfEntity(id)).filter(Boolean)[0]
+        || { x: src.x + 1, y: src.y };
+      const ang = Math.atan2(aim.y - src.y, aim.x - src.x);
+
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const coneLen = tileSize * 3.0; // 15 ft
+      const halfSpread = Math.PI / 8; // 22.5° each side
+
+      const { overlay, ctx, destroy } = createOverlay(1103);
+      try { if (window.SFX && SFX.play) { SFX.play('poison_spray_cast'); } } catch (e) {}
+
+      const seed = Math.random() * 1000;
+      function vnoise(u, t){
+        return (
+          Math.sin(u * 2.11 + t * 1.73 + seed * 0.51) +
+          Math.sin(u * 3.97 + t * 1.11 + seed * 1.27) +
+          Math.sin(u * 5.63 + t * 0.69 + seed * 2.03)
+        ) / 3;
+      }
+
+      const particles = [];
+      for (let i = 0; i < 160; i++) {
+        particles.push({
+          ofs: Math.random() * 0.25 * coneLen,
+          speed: (0.6 + Math.random() * 0.8) * (tileSize * 3.0),
+          a: ang + (Math.random() * 2 - 1) * halfSpread * 0.92,
+          r: 1.5 + Math.random() * 2.5,
+          life: 0,
+        });
+      }
+
+      const start = performance.now();
+      const jetDur = 700;
+      const cloudDur = 600;
+      const dt = 16;
+
+      function drawCone(now){
+        const t = Math.min(1, (now - start) / jetDur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save(); ctx.globalCompositeOperation = 'lighter';
+
+        // Expanding cone plume
+        ctx.save();
+        ctx.translate(src.x, src.y);
+        ctx.rotate(ang);
+        const len = coneLen * (0.55 + 0.45 * t);
+        const spread = halfSpread * (0.8 + 0.2 * t);
+        const grad = ctx.createLinearGradient(0, 0, len, 0);
+        grad.addColorStop(0, 'rgba(150, 230, 110, 0.34)');
+        grad.addColorStop(0.7, 'rgba(110, 200, 80, 0.18)');
+        grad.addColorStop(1, 'rgba(80, 180, 60, 0.0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.arc(0, 0, len, -spread, spread);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        // Toxic particles streaming out
+        particles.forEach((p) => {
+          p.life += dt;
+          const wob = vnoise(p.life * 0.01 + p.ofs * 0.02, now * 0.002) * 0.12;
+          p.ofs += p.speed * (dt / 1000) * (0.5 + 0.5 * (1 - 0.5 * t));
+          const L = Math.min(p.ofs, coneLen);
+          const a = p.a + wob;
+          const x = src.x + Math.cos(a) * L;
+          const y = src.y + Math.sin(a) * L;
+          const life = Math.min(1, p.life / jetDur);
+          const size = p.r * (1 + 1.4 * life);
+          const alpha = 0.7 * (0.9 - 0.7 * t) * (0.6 + 0.4 * Math.random());
+          const col = `rgba(${(90 + 40 * Math.random()) | 0}, ${(200 + 30 * Math.random()) | 0}, ${(80 + 20 * Math.random()) | 0}, ${clampAlpha(alpha).toFixed(2)})`;
+          ctx.beginPath(); ctx.arc(x, y, size, 0, Math.PI * 2);
+          ctx.fillStyle = col; ctx.fill();
+        });
+
+        // Misty plume bands
+        ctx.save();
+        ctx.translate(src.x, src.y); ctx.rotate(ang);
+        const plumeLen = coneLen * (0.7 + 0.3 * t);
+        const plumeW = Math.max(20, tileSize * 0.45) * (0.7 + 0.6 * t);
+        ctx.globalAlpha = 0.08;
+        for (let i = 0; i < 6; i++) {
+          const yofs = (i - 3) * (plumeW / 6) * Math.sin((i - 3) * 0.4) * 1.6;
+          ctx.beginPath();
+          ctx.ellipse(plumeLen * 0.55, yofs, plumeLen * 0.45, plumeW * 0.8, 0, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgb(90,200,90)'; ctx.fill();
+        }
+        ctx.restore();
+
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(drawCone); else {
+          try { if (window.SFX && SFX.play) { SFX.play('poison_spray_hit'); } } catch (e) {}
+          // Lingering cloud at the cone's far edge
+          const cx = src.x + Math.cos(ang) * coneLen * 0.75;
+          const cy = src.y + Math.sin(ang) * coneLen * 0.75;
+          const t0 = performance.now();
+          requestAnimationFrame(function cloudLoop(now2){
+            const tt = Math.min(1, (now2 - t0) / cloudDur);
+            ctx.clearRect(0, 0, overlay.width, overlay.height);
+            ctx.save(); ctx.globalCompositeOperation = 'lighter';
+            for (let i = 0; i < 12; i++) {
+              const rr = Math.max(tileSize * 0.45, 18) * (0.7 + 0.6 * Math.random()) * (0.9 + 0.5 * tt);
+              const a = Math.random() * Math.PI * 2;
+              const rad = Math.max(tileSize * 0.5, 20) * (0.2 + 0.6 * Math.random());
+              const px = cx + Math.cos(a) * rad;
+              const py = cy + Math.sin(a) * rad;
+              const g = ctx.createRadialGradient(px, py, 2, px, py, rr);
+              g.addColorStop(0, `rgba(190,255,190,${(0.16 * (1 - tt)).toFixed(2)})`);
+              g.addColorStop(1, `rgba(60,160,60,${(0.08 * (1 - tt)).toFixed(2)})`);
+              ctx.fillStyle = g;
+              ctx.beginPath(); ctx.arc(px, py, rr, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.restore();
+            if (tt < 1) requestAnimationFrame(cloudLoop); else { destroy(); resolve(); }
+          });
+        }
+      }
+      requestAnimationFrame(drawCone);
+    });
+  });
+
   // Expose API
-  global.SpellEffects = { register, play };
+  global.SpellEffects = { register, play, has };
 })(window);
 
