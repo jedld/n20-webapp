@@ -51,6 +51,11 @@ class _StubPc:
     def label(self):
         return self._label
 
+    def languages(self):
+        # Real PlayerCharacters know Common; conversation rendering
+        # gibberish-translates speech in languages the listener lacks.
+        return ['common']
+
     def persuasion_check(self, description=None):
         self.persuasion_calls.append(description)
         return _StubRoll(14)

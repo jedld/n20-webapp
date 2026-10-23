@@ -18,6 +18,7 @@ class SlowSegmentMockProvider(MockCosyVoiceProvider):
         self._segment_lock = threading.Lock()
         self._active_segments = 0
         self._max_active_segments = 0
+        self._segment_windows = []
 
     def generate_stream(
         self,
@@ -35,6 +36,7 @@ class SlowSegmentMockProvider(MockCosyVoiceProvider):
                 self._max_active_segments,
                 self._active_segments,
             )
+        seg_start = time.monotonic()
         try:
             time.sleep(self._segment_delay_s)
             yield from super().generate_stream(
@@ -49,6 +51,9 @@ class SlowSegmentMockProvider(MockCosyVoiceProvider):
         finally:
             with self._segment_lock:
                 self._active_segments -= 1
+                # Full segment window: lets assertions verify real overlap
+                # without relying on wall-clock budgets under CPU load.
+                self._segment_windows.append((seg_start, time.monotonic()))
 
 
 @pytest.fixture
@@ -113,13 +118,16 @@ def test_pipelined_concurrent_overlaps_segment_synthesis(slow_manager, monkeypat
     chunks = split_tts_text(text, config=get_model_config(manager.get_engine(), 'mock_cosyvoice'))
     assert len(chunks) >= 3
 
-    started = time.monotonic()
     pcm_chunks = list(manager.generate_stream(text, 'npc1'))
-    elapsed = time.monotonic() - started
 
     assert pcm_chunks
-    sequential_estimate = provider._segment_delay_s * len(chunks)
-    assert elapsed < sequential_estimate
+    # Directly prove overlap from measured segment windows instead of a
+    # wall-clock budget, which is flaky on loaded CI runners.
+    windows = sorted(provider._segment_windows)
+    assert len(windows) == len(chunks)
+    starts = [w[0] for w in windows]
+    ends = [w[1] for w in windows]
+    assert any(starts[i] < ends[i - 1] for i in range(1, len(starts)))
     assert provider._max_active_segments >= 2
 
 

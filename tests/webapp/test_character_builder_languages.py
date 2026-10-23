@@ -21,7 +21,10 @@ def test_filter_background_pool_excludes_granted():
     assert filtered == ['elvish', 'dwarvish']
 
 
-def test_validate_background_language_rejects_granted_pick():
+def test_validate_background_language_allows_granted_pick_from_pool():
+    # The server-side validator only enforces pool membership + count; the
+    # builder UI (filter_language_pool) is what hides already-granted
+    # languages from the visible pool.
     race_def = {'languages': ['common']}
     background_def = {
         'languages': [],
@@ -31,6 +34,22 @@ def test_validate_background_language_rejects_granted_pick():
     ok, err = validate_background_language_selections(
         background_def,
         ['common', 'elvish'],
+        race_def=race_def,
+    )
+    assert ok
+    assert err is None
+
+
+def test_validate_background_language_rejects_pick_outside_pool():
+    race_def = {'languages': ['common']}
+    background_def = {
+        'languages': [],
+        'languages_pool': ['common', 'elvish', 'dwarvish'],
+        'language_choice_count': 2,
+    }
+    ok, err = validate_background_language_selections(
+        background_def,
+        ['halfling', 'elvish'],
         race_def=race_def,
     )
     assert not ok

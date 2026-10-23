@@ -8,7 +8,8 @@ followed by useful content, and verifies that the content is properly returned.
 
 import os
 import sys
-from llm_handler import LLMHandler
+import tempfile
+from llm_handler import LLMHandler, SessionLogger
 
 class MockOllamaProvider:
     """Mock provider that simulates the real Ollama response from the log."""
@@ -78,6 +79,9 @@ def test_real_scenario():
     
     # Initialize the LLM handler
     handler = LLMHandler()
+    # Session logging is opt-in (no default log dir); give this scenario a
+    # temp log dir so the on-disk checks below can run.
+    handler.session_logger = SessionLogger(log_dir=tempfile.mkdtemp(prefix='n20_scenario_logs_'))
     
     # Get session info
     session_info = handler.get_session_info()

@@ -123,7 +123,18 @@ class TestCharacterBuilderUtils(unittest.TestCase):
     def test_spell_choice_caps_empty_class(self):
         """_spell_choice_caps returns zero caps for unknown class."""
         caps = self.mod._spell_choice_caps('Unknown', 1, {}, {})
-        self.assertEqual(caps, {'cantrip_cap': 0, 'level1_cap': 0, 'spellbook_cap': 0})
+        # The wrapper normalises the full caps dict (known/prepared/max level,
+        # pact slots and per-level slots) on top of the legacy three keys.
+        self.assertEqual(caps, {
+            'cantrip_cap': 0,
+            'level1_cap': 0,
+            'spellbook_cap': 0,
+            'spells_known_cap': 0,
+            'spells_prepared_cap': 0,
+            'max_spell_level': 0,
+            'pact_slot_level': 0,
+            'slots_by_level': {},
+        })
 
     def test_spell_choice_caps_none_class(self):
         """_spell_choice_caps handles None class."""
@@ -412,36 +423,45 @@ class TestCharacterBuilderUtils(unittest.TestCase):
             result = self.mod._can_edit_character('test')
             self.assertTrue(result)
 
+    # _can_edit_character lazily imports these helpers from their source
+    # modules, so patches must target those modules, not this one.
+    _ROLES = 'webapp.blueprints.helpers.auth_utils.roles_for_username'
+    _CONTROLLER_OF = 'webapp.blueprints.helpers.template_globals.controller_of'
+    _SELECTABLE = 'webapp.blueprints.helpers.pvp.selectable_character_entry'
+
     def test_can_edit_character_dm_role(self):
         """_can_edit_character returns True for DM users."""
         with patch.object(self.mod, 'get_builder_only_mode', return_value=False):
-            with patch('webapp.blueprints.helpers.character_builder_utils.roles_for_username', return_value=['dm']):
-                result = self.mod._can_edit_character('test')
-                self.assertTrue(result)
+            with patch('webapp.blueprints.helpers.character_builder_utils.flask_session', {'username': 'dm1'}):
+                with patch(self._ROLES, return_value=['dm']):
+                    result = self.mod._can_edit_character('test')
+                    self.assertTrue(result)
 
     def test_can_edit_character_controller(self):
         """_can_edit_character returns True for controller of character."""
         with patch.object(self.mod, 'get_builder_only_mode', return_value=False):
             with patch('webapp.blueprints.helpers.character_builder_utils.flask_session', {'username': 'player1'}):
-                with patch.object(self.mod, 'roles_for_username', return_value=['player1']):
-                    with patch.object(self.mod, '_controller_of', return_value=True):
+                with patch(self._ROLES, return_value=['player1']):
+                    with patch(self._CONTROLLER_OF, return_value=True):
                         result = self.mod._can_edit_character('test')
                         self.assertTrue(result)
 
     @patch('webapp.blueprints.helpers.character_builder_utils.flask_session', {'username': 'player1'})
-    @patch('webapp.blueprints.helpers.character_builder_utils.roles_for_username', return_value=['player1'])
-    @patch('webapp.blueprints.helpers.character_builder_utils._controller_of', return_value=False)
-    @patch('webapp.blueprints.helpers.character_builder_utils.selectable_character_entry', return_value=None)
-    def test_can_edit_character_no_access(self, mock_selectable, mock_ctrl, mock_roles, mock_session):
+    @patch(_ROLES, return_value=['player1'])
+    @patch(_CONTROLLER_OF, return_value=False)
+    @patch(_SELECTABLE, return_value=None)
+    def test_can_edit_character_no_access(self, mock_selectable, mock_ctrl, mock_roles):
         """_can_edit_character returns False when no access."""
         result = self.mod._can_edit_character('test')
         self.assertFalse(result)
 
     @patch('webapp.blueprints.helpers.character_builder_utils.flask_session', {})
-    def test_can_edit_character_not_logged_in(self, mock_session):
+    @patch(_ROLES, return_value=[])
+    def test_can_edit_character_not_logged_in(self, mock_roles):
         """_can_edit_character returns False when not logged in."""
-        result = self.mod._can_edit_character('test')
-        self.assertFalse(result)
+        with patch.object(self.mod, 'get_builder_only_mode', return_value=False):
+            result = self.mod._can_edit_character('test')
+            self.assertFalse(result)
 
     @patch('webapp.blueprints.helpers.character_builder_utils.os.makedirs')
     @patch('webapp.blueprints.helpers.character_builder_utils.os.path.join', side_effect=lambda *args: '/'.join(args))

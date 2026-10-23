@@ -349,7 +349,13 @@ def test_discover_reference_audio_cross_campaign(tmp_path):
         "npc_lenka_ash", None, None, npc_type=None
     )
     if found:
-        assert found.endswith("npc_lenka_ash.wav")
+        # Discovery picks the newest sample per stem; campaign asset
+        # refreshes convert references between wav and mp3, so only the
+        # stem is stable (the provider resamples either format to 24k).
+        import os
+        stem = os.path.splitext(os.path.basename(found))[0]
+        assert stem == "npc_lenka_ash"
+        assert found.lower().endswith((".wav", ".mp3"))
 
 
 def test_generate_retries_with_inline_ref_audio_on_clone_400(tmp_path):

@@ -91,7 +91,7 @@ def test_talk_continue_emits_next_beat():
     assert payload['success'] is True
     assert len(payload['replies']) == 0
     assert 'cont-1' not in service._reply_continuations
-    rag_handler.apply_conversation_keywords.assert_called_once()
+    rag_handler.apply_conversation_keywords_from_plan.assert_called_once()
 
 
 def test_split_segments_first_beat_defers_follow_up_lines():

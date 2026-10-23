@@ -303,19 +303,28 @@ class NpcMovementHelper:
             return None
 
         # Fast path: the A* below can only get "stuck at the actor's tile" when
-        # the actor has no traversable neighbor at all (with door navigation, a
-        # door object on an adjacent square still counts as traversable).  If
-        # any adjacent square is passable or holds a door, the route cannot be
-        # fully blocked, so skip the A* entirely — this is the common case for
-        # follow ticks and avoids a full path search on every 6s tick.
+        # the actor has no traversable neighbor at all.  Scan every adjacent
+        # square (no early break: the door may sit on any side); if there is an
+        # open non-door neighbor and no adjacent door at all, the route cannot
+        # be blocked by a door, so skip the A* entirely — this is the common
+        # case for follow ticks and avoids a full path search every 6s tick.
         sx, sy = source
         max_x, max_y = battle_map.size
         has_open_neighbor = False
+        has_door_neighbor = False
         for nx in range(max(0, sx - 1), min(max_x, sx + 2)):
             for ny in range(max(0, sy - 1), min(max_y, sy + 2)):
                 if (nx, ny) == (sx, sy):
                     continue
                 try:
+                    if any(
+                        self._is_door_object(obj)
+                        for obj in battle_map.objects_at(nx, ny)
+                    ):
+                        # An adjacent door (open or closed) may be the blocker
+                        # the door-aware A* truncates at; never short-circuit.
+                        has_door_neighbor = True
+                        continue
                     if battle_map.bidirectionally_passable(
                         actor,
                         nx,
@@ -326,18 +335,9 @@ class NpcMovementHelper:
                         ignore_opposing=True,
                     ):
                         has_open_neighbor = True
-                        break
-                    for obj in battle_map.objects_at(nx, ny):
-                        if self._is_door_object(obj):
-                            has_open_neighbor = True
-                            break
                 except Exception:
                     continue
-                if has_open_neighbor:
-                    break
-            if has_open_neighbor:
-                break
-        if has_open_neighbor:
+        if has_open_neighbor and not has_door_neighbor:
             return None
 
         path_compute = PathCompute(None, battle_map, actor, ignore_opposing=True)

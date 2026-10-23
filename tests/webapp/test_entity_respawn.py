@@ -155,4 +155,4 @@ def test_ensure_user_entities_spawned_logs_missing_assignment_once(monkeypatch):
     registry.ensure_user_entities_spawned('shorvalu')
 
     assert len(warnings) == 1
-    assert 'Could not materialize assigned character shorvalu for user shorvalu' in warnings[0]
+    assert 'materialize_failed entity=shorvalu user=shorvalu' in warnings[0]

@@ -7,7 +7,8 @@ This script demonstrates how the session-based logging works for LLM interaction
 
 import os
 import sys
-from llm_handler import LLMHandler
+import tempfile
+from llm_handler import LLMHandler, SessionLogger
 
 def test_llm_logging():
     """Test the LLM logging functionality."""
@@ -16,6 +17,9 @@ def test_llm_logging():
     
     # Initialize the LLM handler
     handler = LLMHandler()
+    # Session logging is opt-in (no default log dir); point the session
+    # logger at a temp dir so this test can inspect the log file.
+    handler.session_logger = SessionLogger(log_dir=tempfile.mkdtemp(prefix='n20_llm_logs_'))
     
     # Get session info
     session_info = handler.get_session_info()

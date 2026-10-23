@@ -475,7 +475,14 @@ def register_effect_listeners(record_narration_fn):
 
                 def record_narration_fn(narration, map_name=None, target_uids=None, source=None)
     """
-    event_manager = get_event_manager()
+    try:
+        event_manager = get_event_manager()
+    except Exception:
+        # Bootstrap ordering can race; skip listener registration instead of
+        # crashing the whole app (same tolerance as on_battle_end below).
+        logger.warning('Event manager unavailable; effect listeners not registered',
+                       exc_info=True)
+        return
 
     # Wrap _emit_narration_overlay to inject the record function
     def _emit_narration_overlay_wrapped(event):

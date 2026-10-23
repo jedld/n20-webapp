@@ -44,6 +44,8 @@ class TestLlmInit(unittest.TestCase):
     @patch.dict(os.environ, {'LLM_PROVIDER': 'openai'})
     def test_configure_llm_handler_openai_no_key(self, *args):
         """configure_llm_handler_from_environment returns False when no OpenAI key."""
+        # The developer's shell may already export a key; force it absent.
+        os.environ.pop('OPENAI_API_KEY', None)
         handler = MagicMock()
         result = self.mod.configure_llm_handler_from_environment(handler)
         self.assertFalse(result)
@@ -61,12 +63,13 @@ class TestLlmInit(unittest.TestCase):
             'model': 'claude-3-5-sonnet-20241022',
         })
 
-    @patch.dict(os.environ, {'LLM_PROVIDER': 'anthropic', 'ANTHROPIC_MODEL': 'claude-3-opus'})
+    @patch.dict(os.environ, {'LLM_PROVIDER': 'anthropic', 'ANTHROPIC_API_KEY': 'test_key', 'ANTHROPIC_MODEL': 'claude-3-opus'})
     def test_configure_llm_handler_anthropic_custom_model(self, *args):
         """configure_llm_handler_from_environment uses custom Anthropic model."""
         handler = MagicMock()
         handler.initialize_provider.return_value = True
         result = self.mod.configure_llm_handler_from_environment(handler)
+        self.assertTrue(result)
         handler.initialize_provider.assert_called_once_with('anthropic', {
             'api_key': 'test_key',
             'model': 'claude-3-opus',
@@ -179,11 +182,11 @@ class TestLlmInit(unittest.TestCase):
         handler_instance = MagicMock()
         handler_class.return_value = handler_instance
 
-        with patch.object(self.mod, 'configure_llm_handler_from_environment', return_value=True):
+        with patch.object(self.mod, 'configure_llm_handler_from_environment', return_value=True) as mock_configure:
             result = self.mod.initialize_llm_from_env(handler_class)
 
         handler_class.assert_called_once()
-        self.mod.configure_llm_handler_from_environment.assert_called_once_with(handler_instance)
+        mock_configure.assert_called_once_with(handler_instance)
         self.assertEqual(result, handler_instance)
 
     # ------------------------------------------------------------------ #

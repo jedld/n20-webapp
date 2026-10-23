@@ -3,6 +3,8 @@
 import unittest
 from unittest.mock import MagicMock, patch, call
 
+from natural20.player_character import PlayerCharacter
+
 
 class TestJournalUtils(unittest.TestCase):
     """Test cases for journal_utils module."""
@@ -28,12 +30,13 @@ class TestJournalUtils(unittest.TestCase):
         """_journal_owner_check returns 401 for unauthenticated users."""
         with patch.object(self.mod, 'user_role', return_value=['player1']):
             with patch('webapp.blueprints.helpers.journal_utils.session', {'username': None}):
-                character = MagicMock()
-                allowed, error = self.mod._journal_owner_check(character)
-                self.assertFalse(allowed)
-                self.assertIsNotNone(error)
-                response, status = error
-                self.assertEqual(status, 401)
+                with patch.object(self.mod, 'jsonify', side_effect=lambda **kw: kw):
+                    character = MagicMock()
+                    allowed, error = self.mod._journal_owner_check(character)
+                    self.assertFalse(allowed)
+                    self.assertIsNotNone(error)
+                    response, status = error
+                    self.assertEqual(status, 401)
 
     def test_journal_owner_check_owned_character(self):
         """_journal_owner_check allows players to edit their own characters."""
@@ -50,12 +53,13 @@ class TestJournalUtils(unittest.TestCase):
         with patch.object(self.mod, 'user_role', return_value=['player1']):
             with patch('webapp.blueprints.helpers.journal_utils.session', {'username': 'player1'}):
                 with patch.object(self.mod, 'entities_controlled_by', return_value=['pc2']):
-                    character = 'pc2'
-                    allowed, error = self.mod._journal_owner_check(character)
-                    self.assertFalse(allowed)
-                    self.assertIsNotNone(error)
-                    response, status = error
-                    self.assertEqual(status, 403)
+                    with patch.object(self.mod, 'jsonify', side_effect=lambda **kw: kw):
+                        character = 'pc-other'
+                        allowed, error = self.mod._journal_owner_check(character)
+                        self.assertFalse(allowed)
+                        self.assertIsNotNone(error)
+                        response, status = error
+                        self.assertEqual(status, 403)
 
     # ------------------------------------------------------------------ #
     # _serialize_journal
@@ -193,7 +197,7 @@ class TestJournalUtils(unittest.TestCase):
 
     def test_record_narration_for_pcs_with_target_uids(self):
         """_record_narration_for_pcs records for targeted PCs."""
-        mock_pc = MagicMock()
+        mock_pc = MagicMock(spec=PlayerCharacter)
         mock_pc.entity_uid = 'pc1'
         mock_pc.add_journal_entry.return_value = {'text': 'narration text'}
 
@@ -215,7 +219,7 @@ class TestJournalUtils(unittest.TestCase):
 
     def test_record_narration_for_pcs_all_on_map(self):
         """_record_narration_for_pcs records for all PCs on map when no targets."""
-        mock_pc = MagicMock()
+        mock_pc = MagicMock(spec=PlayerCharacter)
         mock_pc.entity_uid = 'pc1'
         mock_pc.add_journal_entry.return_value = {'text': 'narration text'}
 
@@ -256,7 +260,7 @@ class TestJournalUtils(unittest.TestCase):
 
     def test_record_narration_for_pcs_tags(self):
         """_record_narration_for_pcs includes outcome and tpk in tags."""
-        mock_pc = MagicMock()
+        mock_pc = MagicMock(spec=PlayerCharacter)
         mock_pc.entity_uid = 'pc1'
         mock_pc.add_journal_entry.return_value = {'text': 'narration text'}
 

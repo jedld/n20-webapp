@@ -23,6 +23,19 @@ from webapp.blueprints.assets import (  # noqa: E402
 from webapp.blueprints.helpers import runtime_state  # noqa: E402
 from natural20.map_set import MapSetRegistry  # noqa: E402
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_runtime_globals():
+    """These tests replace the process-wide runtime_state globals (current_game
+    etc.) with fakes via register_globals; restore them afterwards so later
+    test modules (any that hit real routes) are not polluted."""
+    snapshot = dict(runtime_state._globals)
+    yield
+    runtime_state._globals.clear()
+    runtime_state._globals.update(snapshot)
+
 
 class _FakeMap:
     def __init__(self, background):

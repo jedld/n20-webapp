@@ -38,7 +38,14 @@ class FakeMap:
         return (viewer.entity_uid, subject.entity_uid) in self.visible_pairs
 
     def entities_in_range(self, source, distance_ft):
-        return list(self.in_range.get((source.entity_uid, distance_ft), []))
+        # Production audibility queries a shout+modifier search radius
+        # (larger than the conversation distance); return every entity whose
+        # registered distance for this source fits within the query.
+        found = []
+        for (src_uid, radius), entities in self.in_range.items():
+            if src_uid == source.entity_uid and radius <= distance_ft:
+                found.extend(entities)
+        return found
 
 
 class FakeGame:

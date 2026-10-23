@@ -163,7 +163,19 @@ class TestNpcMovementDoorNavigation(unittest.TestCase):
         move_action = self.helper.build_move_step(npc, target_info)
         self.assertIsNotNone(move_action)
         dest = tuple(move_action.move_path[-1])
-        self.assertIn(dest, {(9, 15), (9, 16)})
+        # The route into the upstairs landmark runs through the tavern
+        # (stairs tile is inside the building), so the NPC's first step must
+        # make progress along the door-aware cross-map plan toward the
+        # building/portal rather than a hardcoded square.
+        from natural20.ai.path_compute import PathCompute
+        plan = PathCompute(None, town, npc, ignore_opposing=True).compute_cross_map_path(
+            town, 9, 14, upstairs, 7, 1, door_navigation=True,
+        )
+        self.assertTrue(plan)
+        waypoint = tuple(plan[0]['path'][-1])
+        dist = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1])
+        self.assertIn(dest, {(9, 15), (8, 14), (10, 14)})
+        self.assertLess(dist(dest, waypoint), dist((9, 14), waypoint))
 
     def test_movement_reached_false_until_on_landmark_map(self):
         town = self.session.maps['town_market']
@@ -315,6 +327,7 @@ class TestNpcMovementManager(unittest.TestCase):
                 'npc-1',
                 get_llm.return_value,
                 triggered_by_follow=True,
+                allow_movement_llm=True,
             )
 
 
@@ -338,7 +351,9 @@ class TestEntityRagMovementDirectives(unittest.TestCase):
 
         follow_target = Mock()
         follow_target.entity_uid = 'pc-1'
-        self.rag_handler.resolve_named_target = Mock(return_value=follow_target)
+        # FOLLOW resolves via resolve_action_target (named target + perception
+        # gate), so patch at that call site.
+        self.rag_handler.resolve_action_target = Mock(return_value=follow_target)
 
         directives = self.rag_handler.parse_action_directives(
             "[MOVE: x=4, y=7] [FOLLOW: target=speaker, distance=10] [STOP_MOVE]",

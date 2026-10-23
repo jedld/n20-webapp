@@ -25,6 +25,7 @@ dependencies = [
     "mutagen",
     "pandas",
     "openpyxl",
+    "scipy",
 ]
 
 [project.optional-dependencies]

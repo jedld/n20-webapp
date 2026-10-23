@@ -16,8 +16,21 @@ template_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 os.environ.setdefault('TEMPLATE_DIR', template_root)
 
 from webapp.app import app, game_session, index_data
+from natural20.player_character import PlayerCharacter
 
 app.config['CHARACTER_BUILDER_ONLY'] = False
+
+
+def _created_entity_via_sheet(game_session, safe_name, entity_uid):
+    """The default templates campaign uses defer_player_spawn: a new PC joins
+    the selection list at creation and is only loaded/placed once a player
+    selects it. Verify the selection entry plus that the written sheet loads,
+    instead of requiring live registry registration."""
+    assert any(
+        str(c.get('name', '')).lower() == entity_uid
+        for c in index_data.get('selectable_characters', [])
+    )
+    return PlayerCharacter.load(game_session, f'characters/{safe_name}.yml')
 
 
 def test_create_warlock_character():
@@ -76,7 +89,7 @@ def test_create_warlock_character():
         assert expected_spells.issubset(set(spells))
         assert len(spells) == len(set(spells))
 
-        created_entity = game_session.entity_by_uid(entity_uid)
+        created_entity = _created_entity_via_sheet(game_session, safe_name, entity_uid)
         assert created_entity is not None
     finally:
         if os.path.exists(char_path):
@@ -212,7 +225,7 @@ def test_create_kender_character_with_racial_options():
         skills = set(pc_data.get('skills', []))
         assert {'athletics', 'perception', 'stealth'}.issubset(skills)
 
-        created_entity = game_session.entity_by_uid(entity_uid)
+        created_entity = _created_entity_via_sheet(game_session, safe_name, entity_uid)
         assert created_entity is not None
         assert created_entity.class_feature('fearless')
 
@@ -304,7 +317,7 @@ def test_create_druid_character_with_spell_choices():
         assert {'guidance', 'shillelagh', 'cure_wounds', 'healing_word', 'thunderwave'}.issubset(spells)
 
         entity_uid = re.sub(r'[^a-zA-Z0-9_\-]', '_', name).lower()
-        created_entity = game_session.entity_by_uid(entity_uid)
+        created_entity = _created_entity_via_sheet(game_session, safe_name, entity_uid)
         assert created_entity is not None
     finally:
         if os.path.exists(char_path):

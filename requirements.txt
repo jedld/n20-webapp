@@ -15,5 +15,6 @@ python-dotenv
 mutagen
 pandas
 openpyxl
+scipy
 pytest
 pytest-xdist

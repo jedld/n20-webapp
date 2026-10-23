@@ -284,7 +284,6 @@ en:
     component_pouch: Component Pouch
     door:
       door_blocked: (door is blocked)
-      key_required: (missing key)
       lock: clink. door is now locked
       unlock: Ka-chink! door is now unlocked
     equip_problem:

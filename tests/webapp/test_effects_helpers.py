@@ -31,10 +31,10 @@ class TestEffectsHelpers(unittest.TestCase):
         self.assertIsNone(self.mod._entity_brief(None))
 
     def test_entity_brief_with_uid_and_name(self):
-        """_entity_brief extracts uid and name."""
+        """_entity_brief extracts uid and display label."""
         entity = MagicMock()
         entity.entity_uid = 'test_entity'
-        entity.name = 'Test Entity'
+        entity.label.return_value = 'Test Entity'
         result = self.mod._entity_brief(entity)
         self.assertEqual(result['uid'], 'test_entity')
         self.assertEqual(result['name'], 'Test Entity')
@@ -322,7 +322,9 @@ class TestEffectsHelpers(unittest.TestCase):
     @patch('webapp.blueprints.helpers.effects._select_outcome_narration')
     def test_on_battle_end_narrate_no_battle(self, mock_select, mock_socketio):
         """_on_battle_end_narrate returns False when no battle."""
-        result = self.mod._on_battle_end_narrate(None, MagicMock(), lambda *a, **k: None)
+        game = MagicMock()
+        game.get_current_battle.return_value = None
+        result = self.mod._on_battle_end_narrate(game, MagicMock(), lambda *a, **k: None)
         self.assertFalse(result)
 
     @patch('webapp.blueprints.helpers.effects.get_socketio')
@@ -386,9 +388,12 @@ class TestEffectsHelpers(unittest.TestCase):
                     with patch.object(self.mod, 'get_active_effects') as mock_effects:
                         with patch.object(self.mod, 'get_active_effects_map'):
                             with patch.object(self.mod, 'get_socketio'):
-                                with patch('webapp.blueprints.helpers.effects.filter_effect_payloads', return_value=[mock_effect]):
-                                    with patch('webapp.blueprints.helpers.effects.map_default_effect_payloads', return_value=[]):
-                                        with patch('webapp.blueprints.helpers.effects.point_fire_effect_payload', return_value=None):
+                                # These helpers are lazily imported from
+                                # .special_effects inside the function, so
+                                # patches must target that module.
+                                with patch('webapp.blueprints.helpers.special_effects.filter_effect_payloads', return_value=[mock_effect]):
+                                    with patch('webapp.blueprints.helpers.special_effects.map_default_effect_payloads', return_value=[]):
+                                        with patch('webapp.blueprints.helpers.special_effects.point_fire_effect_payload', return_value=None):
                                             mock_effects.return_value = {'test_level': {'effect1': mock_effect}}
                                             mock_game.return_value.get_map_for_user.return_value = None
                                             self.mod.emit_active_effects_for_client(emit_fn)

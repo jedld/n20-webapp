@@ -88,6 +88,9 @@ def test_turn_panel_shows_end_legendary_action_button():
     battle.end_turn()
     battle.begin_legendary_phase()
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(TEMPLATES))
+    # turn.jinja uses app-registered filters; provide the ones it references.
+    from webapp.blueprints.helpers.template_globals import resource_pool_label
+    env.filters['resource_pool_label'] = resource_pool_label
     template = env.get_template('turn.jinja')
 
     controller_html = template.render(battle=battle, username='dm', controller_of=lambda uid, user: True)

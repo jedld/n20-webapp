@@ -29,8 +29,9 @@ def test_mock_provider():
     success = mock_provider.initialize({})
     print(f"Mock provider initialization: {'SUCCESS' if success else 'FAILED'}")
     
-    # Test message sending
-    response = mock_provider.send_message("Tell me about the map")
+    # Test message sending (providers receive chat-style message lists)
+    response = mock_provider.send_message(
+        [{"role": "user", "content": "Tell me about the map"}])
     print(f"Mock response: {response}")
     
     # Test with context
@@ -39,7 +40,9 @@ def test_mock_provider():
         "entities": [{"name": "Player 1", "type": "PlayerCharacter"}],
         "battle": False
     }
-    response_with_context = mock_provider.send_message("What's happening?", context)
+    response_with_context = mock_provider.send_message(
+        [{"role": "system", "content": json.dumps(context)},
+         {"role": "user", "content": "What's happening?"}])
     print(f"Mock response with context: {response_with_context}")
     
     return success
