@@ -33,6 +33,24 @@ def _created_entity_via_sheet(game_session, safe_name, entity_uid):
     return PlayerCharacter.load(game_session, f'characters/{safe_name}.yml')
 
 
+class _IndexSnapshot:
+    """Snapshot of the campaign index.json plus the app's in-memory
+    selectable_characters, so tests that create/import characters (which
+    register into both) leave the bundled templates campaign untouched."""
+
+    def __init__(self):
+        self.path = os.path.join(game_session.root_path, 'index.json')
+        with open(self.path, 'r', encoding='utf-8') as fh:
+            self.original_text = fh.read()
+
+    def restore(self):
+        with open(self.path, 'w', encoding='utf-8') as fh:
+            fh.write(self.original_text)
+        index_data['selectable_characters'] = json.loads(
+            self.original_text
+        ).get('selectable_characters', [])
+
+
 def test_create_warlock_character():
     app.config['TESTING'] = True
     client = app.test_client()
@@ -426,27 +444,29 @@ def test_import_dndbeyond_route_saves_character(monkeypatch):
 
     monkeypatch.setattr(character_module, 'import_character_from_dndbeyond', _fake_import)
 
+    index_snap = _IndexSnapshot()
     app.config['TESTING'] = True
     client = app.test_client()
     with client.session_transaction() as sess:
         sess['username'] = 'dm'
 
-    response = client.post(
-        '/character_builder/import_dndbeyond',
-        json={'url': 'https://www.dndbeyond.com/characters/999001'},
-    )
-    assert response.status_code == 200
-    body = response.get_json()
-    assert body.get('status') == 'ok'
-    assert body.get('character_name', '').startswith('DDB Import')
-    redirect = body.get('redirect', '')
-    assert '/character_editor/' in redirect
-    assert 'next=' in redirect
-
-    char_file = body.get('character_file', '')
-    assert char_file.startswith('characters/')
-    char_path = os.path.join(game_session.root_path, char_file)
+    char_path = None
     try:
+        response = client.post(
+            '/character_builder/import_dndbeyond',
+            json={'url': 'https://www.dndbeyond.com/characters/999001'},
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body.get('status') == 'ok'
+        assert body.get('character_name', '').startswith('DDB Import')
+        redirect = body.get('redirect', '')
+        assert '/character_editor/' in redirect
+        assert 'next=' in redirect
+
+        char_file = body.get('character_file', '')
+        assert char_file.startswith('characters/')
+        char_path = os.path.join(game_session.root_path, char_file)
         assert os.path.exists(char_path)
         with open(char_path, 'r', encoding='utf-8') as fh:
             saved = yaml.safe_load(fh)
@@ -454,8 +474,9 @@ def test_import_dndbeyond_route_saves_character(monkeypatch):
         assert saved['classes'] == {'wizard': 2}
         assert saved.get('background') == 'sage'
     finally:
-        if os.path.exists(char_path):
+        if char_path and os.path.exists(char_path):
             os.remove(char_path)
+        index_snap.restore()
 
 
 
@@ -493,6 +514,7 @@ def test_create_level5_wizard_with_subclass_and_asi():
         'asi_boosts': json.dumps({'int': 2}),
     }
 
+    index_snap = _IndexSnapshot()
     try:
         response = client.post('/create_character', data=payload)
         assert response.status_code == 200, response.get_json()
@@ -514,6 +536,7 @@ def test_create_level5_wizard_with_subclass_and_asi():
     finally:
         if os.path.exists(char_path):
             os.remove(char_path)
+        index_snap.restore()
 
 
 def test_create_level5_cleric_life_domain():
@@ -549,6 +572,7 @@ def test_create_level5_cleric_life_domain():
         'asi_boosts': json.dumps({'wis': 2}),
     }
 
+    index_snap = _IndexSnapshot()
     try:
         response = client.post('/create_character', data=payload)
         assert response.status_code == 200, response.get_json()
@@ -567,6 +591,7 @@ def test_create_level5_cleric_life_domain():
     finally:
         if os.path.exists(char_path):
             os.remove(char_path)
+        index_snap.restore()
 
 
 def test_import_dndbeyond_route_rejects_bad_url():
