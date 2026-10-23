@@ -16,6 +16,17 @@ import os
 
 import pytest
 
+# The committed route-inventory / endpoint-name baselines include the tts.*
+# routes.  webapp.app registers the TTS blueprint only when TTS_ENABLED is
+# set in the environment at *import* time; CI runners have no webapp/.env,
+# and by the time a parity test sets the flag another module has already
+# imported (and fully initialized) webapp.app.  Pin the flag here — conftest
+# is imported before any test module — so every worker registers the TTS
+# routes, matching the baseline.  TTS_PROVIDER/TTS_DEVICE are deliberately
+# NOT pinned: app.py already defaults them to the lightweight mock provider
+# and cpu, and tests assert those library defaults against a clean shell.
+os.environ.setdefault('TTS_ENABLED', '1')
+
 # Snapshot taken at conftest import time: the shell environment, before any
 # test module has imported webapp.app (and thus run load_dotenv).
 _ENV_SNAPSHOT = dict(os.environ)
