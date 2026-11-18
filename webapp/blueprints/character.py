@@ -47,6 +47,7 @@ from .helpers.character_builder_utils import (
     _parse_spells_by_level_form,
     _apply_class_and_feat_choices,
     validate_weapon_mastery_selections,
+    mastery_weapon_options,
     _resolve_character_yaml_path,
     _can_edit_character,
     _load_character_image_from_request,
@@ -116,6 +117,13 @@ def _character_builder_view_context(*, edit_klass=None, **extra):
     for slug in restrictions.blacklisted_spells:
         spell_availability[slug] = False
 
+    # Weapon Mastery picks are weapon kinds (SRD 5.2 counts weapon kinds).
+    weapons_catalog = game_session.load_weapons() or {}
+    mastery_weapons = {
+        slug: mastery_weapon_options(cdef, weapons_catalog)
+        for slug, cdef in (classes or {}).items()
+    }
+
     ctx = {
         'title': get_title(),
         'races': game_session.load_races(),
@@ -123,6 +131,7 @@ def _character_builder_view_context(*, edit_klass=None, **extra):
         'backgrounds': restrictions.filter_backgrounds(game_session.load_backgrounds()),
         'equipment_packs': game_session.load_equipment_packs(),
         'spell_availability': spell_availability,
+        'mastery_weapons': mastery_weapons,
         'builder_restrictions': restrictions.to_client_dict(),
         'builder_min_level': restrictions.min_level,
         'builder_max_level': restrictions.max_level,
@@ -506,8 +515,12 @@ def update_character(character_name):
         existing_skills = list(pc.get('skills') or [])
         non_class_skills = [s for s in existing_skills if s not in class_skill_pool]
 
+        mastery_choices = [o['kind'] for o in mastery_weapon_options(
+            cdef, get_game_session().load_weapons() or {})]
+
         ok, mastery_error = validate_weapon_mastery_selections(
             klass, level, cdef, selected_weapon_masteries,
+            weapon_options=mastery_choices,
         )
         if not ok:
             return jsonify(error=mastery_error), 400
@@ -526,6 +539,7 @@ def update_character(character_name):
             asi_boosts=asi_boosts,
             restrictions=restrictions,
             selected_weapon_masteries=selected_weapon_masteries,
+            weapon_mastery_choice_options=mastery_choices,
         )
 
         if non_class_skills:
@@ -1031,8 +1045,12 @@ def create_character():
 
         # Validate and apply class choices from templates
         try:
+            mastery_choices = [o['kind'] for o in mastery_weapon_options(
+                cdef, get_game_session().load_weapons() or {})]
+
             ok, mastery_error = validate_weapon_mastery_selections(
                 klass, level, cdef, selected_weapon_masteries,
+                weapon_options=mastery_choices,
             )
             if not ok:
                 return jsonify(error=mastery_error), 400
@@ -1051,6 +1069,7 @@ def create_character():
                 asi_boosts=asi_boosts,
                 restrictions=restrictions,
                 selected_weapon_masteries=selected_weapon_masteries,
+                weapon_mastery_choice_options=mastery_choices,
             )
 
             # Apply equipment pack if selected (or background default)

@@ -975,6 +975,7 @@
 
   <script id="races-data" type="application/json">{{ races|tojson|safe }}</script>
   <script id="classes-data" type="application/json">{{ classes|tojson|safe }}</script>
+  <script id="mastery-weapons-data" type="application/json">{{ mastery_weapons|default({})|tojson|safe }}</script>
   <script id="spell-availability-data" type="application/json">{{ spell_availability|default({})|tojson|safe }}</script>
   <script id="backgrounds-data" type="application/json">{{ backgrounds|tojson|safe }}</script>
   <script id="builder-restrictions-data" type="application/json">{{ builder_restrictions|default({})|tojson|safe }}</script>

@@ -615,6 +615,59 @@ class TestCharacterBuilderUtils(unittest.TestCase):
         self.mod.apply_race_tool_proficiencies(pc, race_def, {}, ['smiths_tools'])
         self.assertEqual(pc['tool_proficiencies'], ['thieves_tools', 'smiths_tools'])
 
+    # ------------------------------------------------------------------ #
+    # Weapon Mastery picks count weapon kinds (SRD 5.2)
+    # ------------------------------------------------------------------ #
+
+    FIGHTER_DEF = {
+        'class_features': ['weapon_mastery'],
+        'weapon_mastery_known': 3,
+        'weapon_proficiencies': ['longsword', 'pike', 'longbow', 'dagger'],
+    }
+    WEAPONS = {
+        'longsword': {'name': 'Longsword', 'weapon_mastery': ['sap']},
+        'pike': {'name': 'Pike', 'weapon_mastery': ['push']},
+        'longbow': {'name': 'Longbow', 'weapon_mastery': ['slow']},
+        'dagger': {'name': 'Dagger', 'weapon_mastery': ['nick']},
+        'warhammer': {'name': 'Warhammer', 'weapon_mastery': ['push']},
+        'club': {'name': 'Club', 'weapon_mastery': ['slow']},
+    }
+
+    def test_mastery_weapon_options_lists_proficient_mastery_weapons(self):
+        options = self.mod.mastery_weapon_options(self.FIGHTER_DEF, self.WEAPONS)
+        kinds = [o['kind'] for o in options]
+        self.assertEqual(sorted(kinds), ['dagger', 'longbow', 'longsword', 'pike'])
+        longsword = next(o for o in options if o['kind'] == 'longsword')
+        self.assertEqual(longsword['masteries'], ['sap'])
+
+    def test_validate_weapon_mastery_selections_accepts_weapon_kinds(self):
+        ok, _ = self.mod.validate_weapon_mastery_selections(
+            'fighter', 1, self.FIGHTER_DEF, ['longsword', 'pike', 'longbow'],
+            weapon_options=['longsword', 'pike', 'longbow', 'dagger'],
+        )
+        self.assertTrue(ok)
+
+        # Too few picks, or a mastery *name* where a weapon kind is expected
+        # in a new-form campaign (names only allowed as legacy fallback).
+        ok, err = self.mod.validate_weapon_mastery_selections(
+            'fighter', 1, self.FIGHTER_DEF, ['longsword', 'pike'],
+            weapon_options=['longsword', 'pike', 'longbow', 'dagger'],
+        )
+        self.assertFalse(ok)
+        self.assertIn('Choose 3', err)
+
+    def test_apply_class_and_feat_choices_stores_weapon_kinds(self):
+        classes_def = {'fighter': dict(self.FIGHTER_DEF, progression={
+            'level_1': {'class_features': ['weapon_mastery']},
+        })}
+        pc = {}
+        self.mod._apply_class_and_feat_choices(
+            pc, 'fighter', 1, classes_def, [], [], [], [],
+            selected_weapon_masteries=['longsword', 'pike', 'longbow'],
+            weapon_mastery_choice_options=['longsword', 'pike', 'longbow', 'dagger'],
+        )
+        self.assertEqual(pc['known_weapon_masteries'], ['longsword', 'pike', 'longbow'])
+
 
 if __name__ == '__main__':
     unittest.main()

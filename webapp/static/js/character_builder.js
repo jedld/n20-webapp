@@ -339,16 +339,11 @@
       });
     }
 
-    const WEAPON_MASTERIES = [
-      {id:'cleave', label:'Cleave', blurb:'Hit a second creature within 5 ft after a melee hit (once/turn).'},
-      {id:'graze', label:'Graze', blurb:'On a miss, deal damage equal to the attack ability modifier.'},
-      {id:'nick', label:'Nick', blurb:'Make the extra Light-weapon attack as part of the Attack action.'},
-      {id:'push', label:'Push', blurb:'On a hit vs Large or smaller, push the target 10 feet.'},
-      {id:'sap', label:'Sap', blurb:'On a hit, disadvantage on the target’s next attack.'},
-      {id:'slow', label:'Slow', blurb:'On a damaging hit, −10 ft Speed until the start of your next turn.'},
-      {id:'topple', label:'Topple', blurb:'On a hit, CON save or the target has the Prone condition.'},
-      {id:'vex', label:'Vex', blurb:'On a hit, advantage on your next attack vs that creature.'},
-    ];
+    function getMasteryWeapons(){
+      const el = document.getElementById('mastery-weapons-data');
+      if(!el) return {};
+      try { return JSON.parse(el.textContent || '{}'); } catch(e){ return {}; }
+    }
 
     function masteryKnownCount(klassName, klassData, levelNum){
       const features = klassData.class_features || [];
@@ -378,22 +373,31 @@
 
     const nMastery = masteryKnownCount(klass, kdata, level);
     if(nMastery > 0){
+      // SRD 5.2: the number of Weapon Masteries counts *weapon kinds* you
+      // choose, not mastery names. The server sends the eligible weapons for
+      // this class (proficient weapons that have a Mastery).
+      const weaponOptions = getMasteryWeapons()[klass] || [];
       const mWrap = $('<div class="form-group" id="mastery-panel"/>');
       mWrap.attr('data-mastery-count', nMastery);
-      mWrap.append(`<label>Weapon Masteries: choose ${nMastery}</label>`);
+      mWrap.append(`<label>Weapon Masteries: choose ${nMastery} weapon${nMastery === 1 ? '' : 's'}</label>`);
       const row = $('<div class="row"/>');
-      WEAPON_MASTERIES.forEach((m, i)=>{
+      const masteryLabel = (id)=>{
+        const words = String(id || '').replace(/_/g, ' ').split(' ');
+        return words.map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(' ');
+      };
+      weaponOptions.forEach((opt, i)=>{
+        const masteries = (opt.masteries || []).map(masteryLabel).join(', ');
         const col = $('<div class="col-xs-6 col-sm-4 col-md-3"/>');
         col.append(`
           <div class="checkbox">
-            <label title="${m.blurb}">
-              <input type="checkbox" class="cb-mastery" data-name="${m.id}" id="mastery-${i}"> ${m.label}
+            <label title="${masteries ? masteries + ' Mastery' : ''}">
+              <input type="checkbox" class="cb-mastery" data-name="${opt.kind}" id="mastery-${i}"> ${opt.label}
             </label>
           </div>`);
         row.append(col);
       });
       mWrap.append(row);
-      mWrap.append(`<div class="helper" id="mastery-helper">${nMastery} remaining. You can change these after a Long Rest.</div>`);
+      mWrap.append(`<div class="helper" id="mastery-helper">${nMastery} remaining. Each Mastery belongs to the weapon you picked it for. You can change these after a Long Rest.</div>`);
       $body.append(mWrap);
       $body.on('change', '.cb-mastery', function(){
         const selected = $body.find('.cb-mastery:checked').length;

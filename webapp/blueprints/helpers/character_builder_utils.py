@@ -320,7 +320,8 @@ def _apply_class_and_feat_choices(pc, klass, level, classes_def, selected_skills
                                   selected_cantrips, selected_level1, selected_feats,
                                   spells_by_level=None, subclass_choice=None,
                                   asi_boosts=None, restrictions=None,
-                                  selected_weapon_masteries=None):
+                                  selected_weapon_masteries=None,
+                                  weapon_mastery_choice_options=None):
     """Apply class and feat choices to a player character dict.
 
     This function validates selections against the class definition, applies
@@ -407,9 +408,12 @@ def _apply_class_and_feat_choices(pc, klass, level, classes_def, selected_skills
 
     if 'weapon_mastery' in features:
         from natural20.weapon_mastery import MASTERY_PROPERTIES, known_mastery_count
-        allowed = set(MASTERY_PROPERTIES)
-        picked = [m for m in (selected_weapon_masteries or []) if str(m).lower() in allowed]
-        picked = list(dict.fromkeys(str(m).lower() for m in picked))
+        # Picks are weapon kinds (SRD 5.2 counts weapon kinds, not mastery
+        # names); mastery-name picks from older forms are still honoured.
+        allowed = set(weapon_mastery_choice_options or []) | set(MASTERY_PROPERTIES)
+        picked = [str(m).strip().lower() for m in (selected_weapon_masteries or [])
+                  if str(m).strip().lower() in allowed]
+        picked = list(dict.fromkeys(picked))
         cap = known_mastery_count(klass, level, cdef)
         if cap > 0:
             picked = picked[:cap]
@@ -421,8 +425,46 @@ def _apply_class_and_feat_choices(pc, klass, level, classes_def, selected_skills
         pc.pop('known_weapon_masteries', None)
 
 
-def validate_weapon_mastery_selections(klass, level, class_def, selected, features=None):
-    """Return (ok, error) for chargen Weapon Mastery picks."""
+def mastery_weapon_options(class_def, weapons_by_kind):
+    """Weapon kinds this class may pick a Weapon Mastery for (SRD 5.2: the
+    number of masteries counts *weapon kinds* you are proficient with that
+    have a Mastery).
+
+    ``weapons_by_kind`` maps weapon kind id -> weapon definition (use the
+    campaign's loaded weapons catalog). Returns ``[{kind, label, masteries}]``
+    sorted by label.
+    """
+    from natural20.weapon_mastery import weapon_masteries
+
+    profs = set()
+    for p in ((class_def or {}).get('weapon_proficiencies') or []):
+        profs.add(str(p).lower())
+
+    options = []
+    for kind, wdef in (weapons_by_kind or {}).items():
+        if not isinstance(wdef, dict):
+            continue
+        masteries = weapon_masteries(wdef)
+        if not masteries:
+            continue
+        name = str(wdef.get('name') or kind)
+        if name.lower() in profs or kind.lower() in profs:
+            options.append({
+                'kind': str(kind),
+                'label': name,
+                'masteries': masteries,
+            })
+    options.sort(key=lambda o: o['label'].lower())
+    return options
+
+
+def validate_weapon_mastery_selections(klass, level, class_def, selected, features=None,
+                                       weapon_options=None):
+    """Return (ok, error) for chargen Weapon Mastery picks.
+
+    Picks are weapon *kinds* (the rule counts weapon kinds, not mastery
+    names). Legacy mastery-name picks are still accepted.
+    """
     from natural20.weapon_mastery import MASTERY_PROPERTIES, known_mastery_count
 
     feature_list = features
@@ -433,8 +475,8 @@ def validate_weapon_mastery_selections(klass, level, class_def, selected, featur
     cap = known_mastery_count(klass, level, class_def)
     if cap <= 0:
         return True, ''
-    allowed = set(MASTERY_PROPERTIES)
-    picked = [str(m).lower() for m in (selected or []) if str(m).lower() in allowed]
+    allowed = set(weapon_options or []) | set(MASTERY_PROPERTIES)
+    picked = [str(m).strip().lower() for m in (selected or []) if str(m).strip().lower() in allowed]
     picked = list(dict.fromkeys(picked))
     if len(picked) != cap:
         plural = '' if cap == 1 else 'ies'
