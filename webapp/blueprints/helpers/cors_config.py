@@ -21,22 +21,32 @@ def get_allowed_origins():
         return origins
 
     if _is_production_env():
+        # No baked-in deployment hostnames: expose your instance by setting
+        # CORS_ORIGINS=https://your.host (comma-separated list). Wildcard "*"
+        # is not a sane default next to credentials: true; a production
+        # default of localhost keeps the app local unless configured.
         default_origins = [
-            "http://natural20-alb-1402295348.us-east-1.elb.amazonaws.com",
-            "https://natural20-alb-1402295348.us-east-1.elb.amazonaws.com",
-            "https://0ad1d39fb719.ngrok.app",
+            "http://localhost:5000",
+            "http://127.0.0.1:5000",
+            "http://localhost:5001",
+            "http://127.0.0.1:5001",
             "https://*.ngrok-free.dev",
             "http://*.ngrok-free.dev",
-            "*",
+            "https://*.ngrok-free.app",
+            "http://*.ngrok-free.app",
+            "https://*.ngrok.io",
+            "http://*.ngrok.io",
         ]
+        logger.warning(
+            "CORS_ORIGINS is not set; the production default only allows "
+            "localhost and ngrok tunnels. Set CORS_ORIGINS to your public "
+            "host(s) before deploying.")
     else:
         default_origins = [
             "http://localhost:5000",
             "http://127.0.0.1:5000",
             "http://localhost:5001",
             "http://127.0.0.1:5001",
-            "http://jedld-lab:5001",
-            "https://0ad1d39fb719.ngrok.app",
             "https://*.ngrok.io",
             "https://*.ngrok-free.app",
             "https://*.ngrok-free.dev",

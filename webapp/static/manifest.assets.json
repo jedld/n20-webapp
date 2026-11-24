@@ -52,7 +52,7 @@
     "status_effects.min.js": "91bc7c59c9",
     "utils.min.js": "599748674d",
     "utils_optimized.min.js": "d64c929e7e",
-    "js/character_builder.min.js": "1236889179",
+    "js/character_builder.min.js": "0a504ad681",
     "js/character_builder_images.min.js": "cb752ad32e",
     "js/chat.min.js": "5d89a28f5f",
     "js/local_conversation.min.js": "d47a766b54",
@@ -63,6 +63,6 @@
     "sheet.min.css": "e203710971",
     "styles.min.css": "efd344b0d2"
   },
-  "generatedAt": "2026-11-17T20:45:00.619Z",
-  "buildVersion": "be12a64abff0"
+  "generatedAt": "2026-11-24T14:41:33.968Z",
+  "buildVersion": "3e6a7daa906c"
 }

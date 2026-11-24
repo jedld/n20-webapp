@@ -21,12 +21,6 @@ from natural20.utils.character_profile import (
     sync_profile_keys,
 )
 
-from webapp.dndbeyond_import import (
-    import_character_from_dndbeyond,
-    parse_character_id_from_url,
-    prepare_imported_pc_dict,
-    download_ddb_character_portraits,
-)
 from .helpers.auth_utils import logged_in, user_role
 from .helpers.character_selection import (
     load_entity_for_selection_preview,
@@ -695,114 +689,6 @@ def update_entity_outward_appearance():
     except Exception:
         get_logger().exception('Failed to update outward appearance for %s', entity_id)
         return jsonify(error='Failed to update outward appearance'), 500
-
-
-# _register_new_character_in_campaign is imported from webapp.blueprints.helpers.character_builder_utils
-
-
-@character_bp.route('/character_builder/import_dndbeyond', methods=['POST'])
-def import_dndbeyond_character():
-  """Import a character sheet from a D&D Beyond URL and save it as campaign YAML."""
-  if not logged_in():
-    return jsonify(error='Not logged in'), 401
-
-  payload = request.get_json(silent=True) or {}
-  url = (payload.get('url') or request.form.get('url') or '').strip()
-  cobalt_token = (
-      (payload.get('cobalt_token') or request.form.get('cobalt_token') or '').strip()
-      or os.environ.get('DND_BEYOND_COBALT_TOKEN')
-      or os.environ.get('COBALT_SESSION')
-      or None
-  )
-
-  character_id = parse_character_id_from_url(url)
-  if character_id is None:
-    return jsonify(
-        error='Paste a D&D Beyond character sheet URL like '
-              'https://www.dndbeyond.com/characters/12345678'
-    ), 400
-
-  try:
-    pc, import_warnings, raw_data = import_character_from_dndbeyond(
-      character_id,
-      cobalt_token=cobalt_token,
-      campaign_root=get_game_session().root_path,
-    )
-  except RuntimeError as exc:
-    return jsonify(error=str(exc)), 500
-  except Exception as exc:
-    get_logger().exception('D&D Beyond import failed for character %s', character_id)
-    message = str(exc).strip() or 'Failed to import character from D&D Beyond'
-    if '401' in message or '403' in message or 'Unauthorized' in message:
-      message = (
-          'Could not access that character. For private sheets, paste your '
-          'CobaltSession cookie value (browser devtools → Application → Cookies '
-          '→ dndbeyond.com → CobaltSession) or set DND_BEYOND_COBALT_TOKEN on the server.'
-      )
-    return jsonify(error=message), 502
-
-  pc, safe_name = prepare_imported_pc_dict(pc)
-  if not pc.get('name'):
-    return jsonify(error='Imported character has no name'), 400
-
-  entity_uid = str(pc.get('entity_uid') or safe_name)
-  assets_dir = os.path.join(get_game_session().root_path, 'assets')
-  os.makedirs(assets_dir, exist_ok=True)
-  import_warnings.extend(
-      download_ddb_character_portraits(
-          raw_data,
-          entity_uid=entity_uid,
-          assets_dir=assets_dir,
-          cobalt_token=cobalt_token,
-      )
-  )
-
-  races_def = get_game_session().load_races() or {}
-  if pc.get('race') and pc['race'] not in races_def:
-    return jsonify(
-        error=f"Race '{pc.get('race')}' is not available in this campaign"
-    ), 400
-
-  classes_def = get_game_session().load_classes() or {}
-  for klass in (pc.get('classes') or {}):
-    if klass not in classes_def:
-      return jsonify(
-          error=f"Class '{klass}' is not available in this campaign"
-      ), 400
-
-  backgrounds_def = get_game_session().load_backgrounds() or {}
-  bg = pc.get('background')
-  if bg and bg not in backgrounds_def:
-    return jsonify(
-        error=f"Background '{bg}' is not available in this campaign"
-    ), 400
-
-  chars_dir = os.path.join(get_game_session().root_path, 'characters')
-  os.makedirs(chars_dir, exist_ok=True)
-  yml_path = os.path.join(chars_dir, f'{safe_name}.yml')
-  if os.path.exists(yml_path):
-    return jsonify(error='A character with that name already exists'), 400
-
-  with open(yml_path, 'w', encoding='utf-8') as fh:
-    yaml.safe_dump(pc, fh, sort_keys=False, allow_unicode=True)
-
-  _register_new_character_in_campaign(pc, safe_name)
-
-  next_url = '/character_selection' if 'dm' not in user_role() else '/'
-  if get_builder_only_mode():
-    next_url = url_for('character.character_builder')
-  # Editor / selection auth keys off selectable name + entity_uid (e.g. ddb-123),
-  # not the display-name YAML basename (e.g. Oogway.yml).
-  editor_key = str(pc.get('entity_uid') or entity_uid or safe_name).strip() or safe_name
-  redirect_to = url_for('character.character_editor', character_name=editor_key, next=next_url)
-
-  return jsonify(
-      status='ok',
-      redirect=redirect_to,
-      character_name=pc.get('name'),
-      character_file=f'characters/{safe_name}.yml',
-      warnings=import_warnings,
-  )
 
 
 @character_bp.route('/create_character', methods=['POST'])

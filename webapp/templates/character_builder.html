@@ -289,16 +289,6 @@
     .item-name { color: #eee; text-transform: capitalize; }
     .item-qty { color: #9cdcfe; font-weight: bold; margin-left: 8px; }
 
-    .ddb-import-panel {
-      padding: 0;
-      background: transparent;
-      border: none;
-    }
-    .ddb-import-panel h4 { margin: 0 0 8px 0; color: #f5deb3; font-size: 16px; }
-    .ddb-import-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
-    .ddb-import-actions .form-control { flex: 1 1 280px; min-width: 200px; }
-    .ddb-import-msg { margin-top: 12px; }
-    .ddb-import-msg .alert { margin-bottom: 0; white-space: pre-wrap; }
 
     #inventory-table, #inventory-table > thead > tr > th, #inventory-table > tbody > tr > td { border-color: #444; }
     #inventory-table > thead > tr > th { background: #3a2a1a; color: #f5deb3; border-bottom: 2px solid #70532f; }
@@ -454,16 +444,13 @@
     <div class="builder-layout">
       <nav class="builder-nav" id="builderNav" aria-label="Character builder sections">
         <div class="builder-nav-label">Sections</div>
-        {% if not edit_mode %}
-        <a href="#section-import" data-section="section-import"><span class="nav-step">1</span> Import</a>
-        {% endif %}
-        <a href="#section-identity" data-section="section-identity"><span class="nav-step">{{ 2 if not edit_mode else 1 }}</span> Identity</a>
-        <a href="#section-origin" data-section="section-origin"><span class="nav-step">{{ 3 if not edit_mode else 2 }}</span> Origin</a>
-        <a href="#section-personality" data-section="section-personality"><span class="nav-step">{{ 4 if not edit_mode else 3 }}</span> Personality</a>
-        <a href="#section-class" data-section="section-class"><span class="nav-step">{{ 5 if not edit_mode else 4 }}</span> Class</a>
-        <a href="#section-abilities" data-section="section-abilities"><span class="nav-step">{{ 6 if not edit_mode else 5 }}</span> Abilities</a>
-        <a href="#section-appearance" data-section="section-appearance"><span class="nav-step">{{ 7 if not edit_mode else 6 }}</span> Portrait</a>
-        <a href="#section-gear" data-section="section-gear"><span class="nav-step">{{ 8 if not edit_mode else 7 }}</span> Gear</a>
+        <a href="#section-identity" data-section="section-identity"><span class="nav-step">1</span> Identity</a>
+        <a href="#section-origin" data-section="section-origin"><span class="nav-step">2</span> Origin</a>
+        <a href="#section-personality" data-section="section-personality"><span class="nav-step">3</span> Personality</a>
+        <a href="#section-class" data-section="section-class"><span class="nav-step">4</span> Class</a>
+        <a href="#section-abilities" data-section="section-abilities"><span class="nav-step">5</span> Abilities</a>
+        <a href="#section-appearance" data-section="section-appearance"><span class="nav-step">6</span> Portrait</a>
+        <a href="#section-gear" data-section="section-gear"><span class="nav-step">7</span> Gear</a>
       </nav>
 
       <div class="builder-main">
@@ -472,42 +459,9 @@
               data-submit-url="{{ ('/update_character/' ~ editing_character) if edit_mode else '/create_character' }}">
           <input type="hidden" name="next" value="{{ cancel_url or '/' }}">
 
-          {% if not edit_mode %}
-          <section class="builder-section" id="section-import">
-            <div class="builder-section-header">
-              <span class="builder-section-num">1</span>
-              <div>
-                <h2>Import (optional)</h2>
-                <p>Pull an existing sheet from D&amp;D Beyond instead of building from scratch.</p>
-              </div>
-            </div>
-            <div class="builder-section-body">
-              <div class="ddb-import-panel">
-                <div class="form-group">
-                  <label for="ddb-url">Character sheet URL</label>
-                  <input type="url" class="form-control" id="ddb-url" name="ddb_url"
-                         placeholder="https://www.dndbeyond.com/characters/…" autocomplete="off">
-                </div>
-                <div class="form-group">
-                  <label for="ddb-cobalt">CobaltSession cookie <span class="text-muted">(optional)</span></label>
-                  <input type="password" class="form-control" id="ddb-cobalt" name="ddb_cobalt"
-                         placeholder="For private sheets only"
-                         autocomplete="off">
-                  <p class="helper" style="margin-top:6px;">Public sheets work without a cookie. Private sheets need your CobaltSession from dndbeyond.com.</p>
-                </div>
-                <div class="ddb-import-actions">
-                  <button type="button" class="btn btn-warning" id="ddb-import-btn">Import from D&amp;D Beyond</button>
-                  <span class="helper" id="ddb-import-status"></span>
-                </div>
-                <div id="ddb-import-msg" class="ddb-import-msg" role="alert" aria-live="polite"></div>
-              </div>
-            </div>
-          </section>
-          {% endif %}
-
           <section class="builder-section" id="section-identity">
             <div class="builder-section-header">
-              <span class="builder-section-num">{{ 2 if not edit_mode else 1 }}</span>
+              <span class="builder-section-num">1</span>
               <div>
                 <h2>Identity</h2>
                 <p>Name, pronouns, and how others see your hero.</p>
@@ -539,7 +493,7 @@
 
           <section class="builder-section" id="section-origin">
             <div class="builder-section-header">
-              <span class="builder-section-num">{{ 3 if not edit_mode else 2 }}</span>
+              <span class="builder-section-num">2</span>
               <div>
                 <h2>Origin</h2>
                 <p>Race, subrace, and background — the story before the adventure.</p>
@@ -593,7 +547,7 @@
 
           <section class="builder-section" id="section-personality">
             <div class="builder-section-header">
-              <span class="builder-section-num">{{ 4 if not edit_mode else 3 }}</span>
+              <span class="builder-section-num">3</span>
               <div>
                 <h2>Personality &amp; Characteristics</h2>
                 <p>Alignment, traits, bonds, and physical details. NPCs still perceive you via Outward Appearance above.</p>
@@ -722,7 +676,7 @@
 
           <section class="builder-section" id="section-class">
             <div class="builder-section-header">
-              <span class="builder-section-num">{{ 5 if not edit_mode else 4 }}</span>
+              <span class="builder-section-num">4</span>
               <div>
                 <h2>Class &amp; Level</h2>
                 <p>Combat role, spell choices, subclass, and feats.
@@ -769,7 +723,7 @@
 
           <section class="builder-section" id="section-abilities">
             <div class="builder-section-header">
-              <span class="builder-section-num">{{ 6 if not edit_mode else 5 }}</span>
+              <span class="builder-section-num">5</span>
               <div>
                 <h2>Ability Scores</h2>
                 <p>Point buy or roll — assign your six core stats.</p>
@@ -822,7 +776,7 @@
 
           <section class="builder-section" id="section-appearance">
             <div class="builder-section-header">
-              <span class="builder-section-num">{{ 7 if not edit_mode else 6 }}</span>
+              <span class="builder-section-num">6</span>
               <div>
                 <h2>Portrait &amp; Token</h2>
                 <p>Character art for the sheet and the battle map.</p>
@@ -879,7 +833,7 @@
 
           <section class="builder-section" id="section-gear">
             <div class="builder-section-header">
-              <span class="builder-section-num">{{ 8 if not edit_mode else 7 }}</span>
+              <span class="builder-section-num">7</span>
               <div>
                 <h2>Gear &amp; Inventory</h2>
                 <p>Starting equipment packs and individual items.</p>

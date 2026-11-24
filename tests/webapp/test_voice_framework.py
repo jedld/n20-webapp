@@ -43,7 +43,7 @@ class TestVoiceProfileDesignPrompt:
 
     def test_design_prompt_eastern_european_is_specific(self):
         profile = VoiceProfile(
-            npc_uid="npc_strahd",
+            npc_uid="npc_vampire",
             prompt="Ancient aristocratic vampire lord",
             gender="male",
             accent="eastern european",
@@ -82,7 +82,7 @@ class TestExternalBakeProvider:
             resolved_strategy="design",
             reference_audio=None,
             campaign_root=str(tmp_path),
-            npc_uid="npc_strahd_von_zarovich",
+            npc_uid="npc_vampire_count_aldegrim",
         ) is False
 
     def test_elevenlabs_bake_provider_skips_qwen3_voicedesign(self, monkeypatch, tmp_path):
@@ -91,14 +91,14 @@ class TestExternalBakeProvider:
             resolved_strategy="design",
             reference_audio=None,
             campaign_root=str(tmp_path),
-            npc_uid="npc_strahd_von_zarovich",
+            npc_uid="npc_vampire_count_aldegrim",
         ) is False
         monkeypatch.delenv("N20_TTS_BAKE_PROVIDER", raising=False)
         assert should_bake_qwen3_design_voice(
             resolved_strategy="design",
             reference_audio=None,
             campaign_root=str(tmp_path),
-            npc_uid="npc_strahd_von_zarovich",
+            npc_uid="npc_vampire_count_aldegrim",
         ) is True
 
 
@@ -184,9 +184,9 @@ class TestBuildVoiceProfileFromEntity:
 
     def test_eastern_european_accent_leads_entity_design_prompt(self):
         entity = SimpleNamespace(
-            entity_uid="npc_strahd_von_zarovich",
+            entity_uid="npc_vampire_count_aldegrim",
             properties={
-                "label": "Strahd",
+                "label": "Count Aldegrim",
                 "gender": "male",
                 "voice": {
                     "prompt": "Ancient aristocratic vampire lord",

@@ -1963,7 +1963,7 @@ class EntityRAGHandler:
             text = str(setting).strip()
         if not text:
             return ''
-        return f"Campaign setting (Forgotten Realms backdrop — treat as established local knowledge):\n{text}"
+        return f"Campaign setting (treat as established local knowledge):\n{text}"
 
     def npc_backstory_prompt(self, entity: Entity) -> str:
         """Return formatted backstory text for use in NPC conversation system prompts.

@@ -1844,14 +1844,14 @@ class TestEntityRAGHandler(unittest.TestCase):
     def test_campaign_setting_prompt_from_game_properties(self):
         self.mock_game_session.game_properties = {
             'campaign_setting': {
-                'world': 'Forgotten Realms',
+                'world': 'Verdan Vale',
                 'location': 'Amphail',
                 'summary': 'A cattle town on the Long Road.',
             },
         }
         prompt = self.rag_handler.campaign_setting_prompt()
         self.assertIn('Amphail', prompt)
-        self.assertIn('Forgotten Realms', prompt)
+        self.assertIn('Verdan Vale', prompt)
 
     def test_parse_action_directives_use_item_self_target(self):
         actor = Mock()

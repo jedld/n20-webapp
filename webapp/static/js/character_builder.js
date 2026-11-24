@@ -1487,85 +1487,6 @@
       });
     });
   }
-
-  function setupDndBeyondImport(){
-    if(editMode) return;
-    const $btn = $('#ddb-import-btn');
-    const $url = $('#ddb-url');
-    const $cobalt = $('#ddb-cobalt');
-    const $status = $('#ddb-import-status');
-    const $importMsg = $('#ddb-import-msg');
-    if(!$btn.length || !$url.length) return;
-
-    function escapeHtml(text){
-      return $('<div>').text(text == null ? '' : String(text)).html();
-    }
-
-    function showImportAlert(kind, messageHtml){
-      const html = `<div class="alert alert-${kind}">${messageHtml}</div>`;
-      if($importMsg.length){
-        $importMsg.html(html);
-      }
-      $('#builder-msg').html(html);
-      if($importMsg.length && $importMsg[0].scrollIntoView){
-        $importMsg[0].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    }
-
-    $btn.on('click', function(){
-      const sheetUrl = ($url.val() || '').trim();
-      if(!sheetUrl){
-        showImportAlert('danger', 'Enter a D&amp;D Beyond character sheet URL.');
-        $status.text('');
-        return;
-      }
-      $btn.prop('disabled', true);
-      $status.text('Importing…');
-      showImportAlert('info', 'Fetching character from D&amp;D Beyond…');
-
-      $.ajax({
-        type: 'POST',
-        url: '/character_builder/import_dndbeyond',
-        contentType: 'application/json',
-        data: JSON.stringify({
-          url: sheetUrl,
-          cobalt_token: ($cobalt.val() || '').trim() || undefined,
-        }),
-        dataType: 'json',
-        success: function(resp){
-          if(resp.error){
-            showImportAlert('danger', escapeHtml(resp.error));
-            $status.text('Failed');
-            $btn.prop('disabled', false);
-            return;
-          }
-          let html = `<div class="alert alert-success">Imported <strong>${escapeHtml(resp.character_name || 'character')}</strong>.</div>`;
-          if(resp.warnings && resp.warnings.length){
-            const list = resp.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('');
-            html += `<div class="alert alert-warning" style="margin-top:8px;"><strong>Some data was skipped:</strong><ul style="margin:8px 0 0 18px;">${list}</ul></div>`;
-          }
-          if($importMsg.length){
-            $importMsg.html(html);
-          }
-          $('#builder-msg').html(html);
-          $status.text('Done');
-          const next = resp.redirect || '/';
-          setTimeout(()=> { window.location.href = next; }, resp.warnings && resp.warnings.length ? 1800 : 900);
-        },
-        error: function(xhr){
-          let msg = 'Failed to import from D&amp;D Beyond.';
-          try {
-            const body = xhr.responseJSON || JSON.parse(xhr.responseText || '{}');
-            if(body && body.error) msg = body.error;
-          } catch(e) { /* ignore */ }
-          showImportAlert('danger', escapeHtml(msg));
-          $status.text('Failed');
-          $btn.prop('disabled', false);
-        }
-      });
-    });
-  }
-
   // ---- Inventory Manager ----
   function setupInventoryManager(){
     // State
@@ -1734,6 +1655,5 @@
   prefillEditCharacter();
   setupProfileRandomize();
   setupEquipmentPackPreview();
-  setupDndBeyondImport();
   setupInventoryManager();
 })();

@@ -976,22 +976,6 @@
     "rule": "/character_builder/combo_backgrounds"
   },
   {
-    "endpoint": "character.import_dndbeyond_character",
-    "methods": [
-      "OPTIONS",
-      "POST"
-    ],
-    "rule": "/character_builder/import_dndbeyond"
-  },
-  {
-    "endpoint": "import_dndbeyond_character",
-    "methods": [
-      "OPTIONS",
-      "POST"
-    ],
-    "rule": "/character_builder/import_dndbeyond"
-  },
-  {
     "endpoint": "character.character_builder_items",
     "methods": [
       "GET",

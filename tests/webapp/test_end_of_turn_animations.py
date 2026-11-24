@@ -16,7 +16,7 @@ def _game(animation_log):
 
 def test_legendary_move_animates_without_an_early_map_refresh():
     path = [[35, 10], [34, 11], [33, 12]]
-    gm, battle = _game([['npc_strahd', path, {'type': 'move'}]])
+    gm, battle = _game([['npc_vampire', path, {'type': 'move'}]])
 
     gm.push_end_of_turn_animations(battle)
 

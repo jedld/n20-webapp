@@ -384,10 +384,6 @@
     "rule": "/create_character"
   },
   {
-    "endpoint": "character.import_dndbeyond_character",
-    "rule": "/character_builder/import_dndbeyond"
-  },
-  {
     "endpoint": "character.inventory_container_retrieve",
     "rule": "/inventory/container/retrieve"
   },
@@ -1022,10 +1018,6 @@
   {
     "endpoint": "health_check",
     "rule": "/health"
-  },
-  {
-    "endpoint": "import_dndbeyond_character",
-    "rule": "/character_builder/import_dndbeyond"
   },
   {
     "endpoint": "index",

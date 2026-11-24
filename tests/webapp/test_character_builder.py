@@ -413,74 +413,6 @@ def test_update_character_editor_saves_spells_and_feats():
             os.remove(char_path)
 
 
-def test_import_dndbeyond_route_saves_character(monkeypatch):
-    import webapp.blueprints.character as character_module
-    from webapp.dndbeyond_import import import_character_from_dndbeyond as _real_import
-
-    webapp_repo = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    wizard_fixture = next(
-        (
-            path
-            for path in (
-                os.path.join(webapp_repo, 'tests', 'fixtures', 'dndbeyond_wizard.json'),
-                os.path.join(webapp_repo, '..', 'tests', 'fixtures', 'dndbeyond_wizard.json'),
-            )
-            if os.path.isfile(path)
-        ),
-        None,
-    )
-    if wizard_fixture is None:
-        pytest.skip('dndbeyond_wizard.json fixture not available')
-
-    def _fake_import(character_id, cobalt_token=None, campaign_root=None):
-        pc, warnings, raw_data = _real_import(
-            character_id,
-            input_path=wizard_fixture,
-            campaign_root=campaign_root,
-        )
-        pc = dict(pc)
-        pc['name'] = f"DDB Import {uuid.uuid4().hex[:8]}"
-        return pc, warnings, raw_data
-
-    monkeypatch.setattr(character_module, 'import_character_from_dndbeyond', _fake_import)
-
-    index_snap = _IndexSnapshot()
-    app.config['TESTING'] = True
-    client = app.test_client()
-    with client.session_transaction() as sess:
-        sess['username'] = 'dm'
-
-    char_path = None
-    try:
-        response = client.post(
-            '/character_builder/import_dndbeyond',
-            json={'url': 'https://www.dndbeyond.com/characters/999001'},
-        )
-        assert response.status_code == 200
-        body = response.get_json()
-        assert body.get('status') == 'ok'
-        assert body.get('character_name', '').startswith('DDB Import')
-        redirect = body.get('redirect', '')
-        assert '/character_editor/' in redirect
-        assert 'next=' in redirect
-
-        char_file = body.get('character_file', '')
-        assert char_file.startswith('characters/')
-        char_path = os.path.join(game_session.root_path, char_file)
-        assert os.path.exists(char_path)
-        with open(char_path, 'r', encoding='utf-8') as fh:
-            saved = yaml.safe_load(fh)
-        assert saved['race'] == 'elf'
-        assert saved['classes'] == {'wizard': 2}
-        assert saved.get('background') == 'sage'
-    finally:
-        if char_path and os.path.exists(char_path):
-            os.remove(char_path)
-        index_snap.restore()
-
-
-
-
 def test_create_level5_wizard_with_subclass_and_asi():
     app.config['TESTING'] = True
     client = app.test_client()
@@ -594,15 +526,3 @@ def test_create_level5_cleric_life_domain():
         index_snap.restore()
 
 
-def test_import_dndbeyond_route_rejects_bad_url():
-    app.config['TESTING'] = True
-    client = app.test_client()
-    with client.session_transaction() as sess:
-        sess['username'] = 'dm'
-
-    response = client.post(
-        '/character_builder/import_dndbeyond',
-        json={'url': 'https://example.com/not-a-ddb-character'},
-    )
-    assert response.status_code == 400
-    assert 'dndbeyond.com/characters' in (response.get_json() or {}).get('error', '').lower()

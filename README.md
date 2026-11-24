@@ -78,4 +78,31 @@ docker run --env-file webapp/.env \
 | `tests/webapp/` | HTTP/SocketIO parity tests |
 | `scripts/minify.mjs` | JS asset pipeline (`npm run build:assets`) |
 
-See also: [Repository split guide](https://github.com/your-org/natural_20.py/blob/master/docs/REPOSITORY_SPLIT.md) in the engine repo.
+See also: [Repository split guide](https://github.com/jedld/natural_20.py/blob/master/docs/REPOSITORY_SPLIT.md) in the engine repo.
+
+## Production deploy
+
+Set these before serving beyond localhost (see `webapp/env.example`):
+
+- `N20_SECRET_KEY` — session signing key (`openssl rand -hex 32`). If unset a
+  random key is generated per process, which is safe but ends sessions on
+  every restart. Never commit a key.
+- `CORS_ORIGINS` — comma-separated list of your public origins. The default
+  only allows localhost and ngrok tunnels; wildcards are not enabled by
+  default because CORS runs with credentials.
+- `FLASK_ENV=production` (or `N20_USE_MINIFIED_ASSETS=1`) to serve the
+  minified JS/CSS built by `npm run build:assets`.
+
+## License & attribution
+
+- Code in this repository is MIT licensed — see [`LICENSE.md`](LICENSE.md).
+- Game statistics and rules text follow the **System Reference Document 5.2.1**
+  (CC BY 4.0); the engine repository carries the full notice in
+  [`docs/ATTRIBUTION_SRD.md`](https://github.com/jedld/natural_20.py/blob/master/docs/ATTRIBUTION_SRD.md).
+- Icons include **Font Awesome Free 6** (icons CC BY 4.0, fonts SIL OFL 1.1,
+  code MIT, Copyright Fonticons Inc.) and **Bootstrap**/**jQuery**/**Socket.IO**
+  (MIT); headers ship with the bundled files under `webapp/static/libs/`.
+- VTT art assets were generated for this project.
+- *Dungeons & Dragons, D&D and related marks are trademarks of Wizards of the
+  Coast LLC. This project is not affiliated with, endorsed by, or sponsored by
+  Wizards of the Coast.*
