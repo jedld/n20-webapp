@@ -17,8 +17,24 @@ jobs:
       - name: Checkout engine
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.NATURAL20_ENGINE_REPO || 'your-org/natural_20.py' }}
+          repository: ${{ vars.NATURAL20_ENGINE_REPO || 'jedld/natural_20.py' }}
           path: natural_20.py
+
+      # Several webapp tests load campaigns from user_levels/ relative to the
+      # repo root (Session(root_path='user_levels/...')) or from the parent of
+      # the webapp checkout (dirname(tests/webapp/x.py)/../../..). The
+      # campaigns repo is private: expose it via the read-only deploy key
+      # secret N20_CAMPAIGNS_SSH_KEY (add one under Settings -> Deploy keys).
+      - name: Checkout campaigns
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.N20_CAMPAIGNS_REPO || 'jedld/n20-campaigns' }}
+          path: user_levels
+          ssh-key: ${{ secrets.N20_CAMPAIGNS_SSH_KEY }}
+          lfs: true
+
+      - name: Expose campaigns to parent-path tests
+        run: ln -s "$GITHUB_WORKSPACE/user_levels" "$(dirname "$GITHUB_WORKSPACE")/user_levels"
 
       - name: Set up Python
         uses: actions/setup-python@v5
