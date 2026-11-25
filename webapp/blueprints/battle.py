@@ -943,6 +943,16 @@ def handle_reaction():
         with get_current_game().game_state_lock:
             battle.action(handler.action)
             battle.commit(handler.action)
+            interrupted = getattr(handler, 'interrupted_action', None)
+            if interrupted is not None and interrupted is not handler.action:
+                # The reaction interrupted an action (e.g. the mover's
+                # Shield against an opportunity attack). 5e: the attack
+                # interrupts the move, it does not end it — replay the
+                # interrupted action now that the reaction has resolved.
+                # Already-spent reactions are skipped by
+                # retrieve_opportunity_attacks, so the path runs clean.
+                battle.action(interrupted)
+                battle.commit(interrupted)
         get_socketio().emit('message', {'type': 'dismiss_reaction', 'message': {}})
 
         # Resumes mid-turn, or (end_turn_state) moves on to the next turn.
