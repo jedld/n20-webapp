@@ -36,6 +36,17 @@ jobs:
       - name: Expose campaigns to parent-path tests
         run: ln -s "$GITHUB_WORKSPACE/user_levels" "$(dirname "$GITHUB_WORKSPACE")/user_levels"
 
+      # Many webapp tests load engine fixtures via Session(root_path='tests/fixtures')
+      # relative to CWD, and some resolve them relative to the checkout's parent
+      # (dirname(tests/webapp/x.py)/../../..). The standalone webapp checkout has no
+      # tests/fixtures tree of its own, so symlink the engine's fixtures into both
+      # locations the tests probe (same trick as user_levels above).
+      - name: Expose engine test fixtures
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/natural_20.py/tests/fixtures" "$GITHUB_WORKSPACE/tests/fixtures"
+          mkdir -p "$(dirname "$GITHUB_WORKSPACE")/tests"
+          ln -sfn "$GITHUB_WORKSPACE/natural_20.py/tests/fixtures" "$(dirname "$GITHUB_WORKSPACE")/tests/fixtures"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
