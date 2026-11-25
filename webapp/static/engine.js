@@ -8579,16 +8579,27 @@ $(document).ready(() => {
   });
 
   // --- Floating Menu Handlers ---
+  const closeVttMenu = () => {
+    if (!$("#menu").is(":visible")) return;
+    $("#menu").fadeOut();
+    $("#expand-menu").show().attr('aria-expanded', 'false');
+    $("#collapse-menu").hide().attr('aria-expanded', 'false');
+  };
+
   $("#expand-menu").click(() => {
     $("#menu").fadeIn();
     $("#expand-menu").hide().attr('aria-expanded', 'false');
     $("#collapse-menu").show().attr('aria-expanded', 'true');
   });
 
-  $("#collapse-menu").click(() => {
-    $("#menu").fadeOut();
-    $("#expand-menu").show().attr('aria-expanded', 'false');
-    $("#collapse-menu").hide().attr('aria-expanded', 'false');
+  $("#collapse-menu").click(closeVttMenu);
+
+  // Auto-dismiss the menu when an item is picked, so panels/modals the item
+  // opens (NPC spawner, combat log, map modals, ...) are not left hidden
+  // underneath the open menu. Esc also closes it.
+  $("#menu").on("click", ".vtt-menu-item", () => closeVttMenu());
+  $(document).on("keydown", (e) => {
+    if (e.key === "Escape") closeVttMenu();
   });
 
   $("#start-battle").click(() => {
@@ -8854,18 +8865,231 @@ $(document).ready(() => {
   let availableNpcs = [];
   const npcCrGroupCollapsed = {};
 
-  $("#toggle-npc-spawner").click(() => {
-    const $npcSpawner = $("#npc-spawner");
-    if ($npcSpawner.is(":visible")) {
-      $npcSpawner.hide();
+  // --- Combined Spawner panel (NPC / PC / Object tabs) ---
+  const spawnerTabLoaders = {
+    npc: () => loadAvailableNPCs(),
+    pc: () => loadPCs(),
+    object: () => {
+      renderTerrainPresets();
+      loadAvailableObjects();
+    },
+  };
+  let spawnerActiveTab = 'npc';
+
+  function showSpawnerTab(tab) {
+    if (!spawnerTabLoaders[tab]) tab = 'npc';
+    spawnerActiveTab = tab;
+    $('#spawner .spawner-tab').each(function () {
+      const active = String($(this).data('spawner-tab')) === tab;
+      $(this).toggleClass('active', active).attr('aria-selected', active ? 'true' : 'false');
+    });
+    $('#spawner .spawner-pane').each(function () {
+      $(this).toggle(String($(this).data('spawner-pane')) === tab);
+    });
+    $('#spawner').attr('data-spawner-tab', tab);
+    spawnerTabLoaders[tab]();
+  }
+
+  $("#toggle-spawner").click(() => {
+    const $spawner = $("#spawner");
+    if ($spawner.is(":visible")) {
+      $spawner.hide();
     } else {
-      loadAvailableNPCs();
-      $npcSpawner.show();
+      $spawner.show();
+      showSpawnerTab(spawnerActiveTab);
     }
   });
 
-  $("#close-npc-spawner").click(() => {
-    $("#npc-spawner").hide();
+  $("#close-spawner").click(() => {
+    $("#spawner").hide();
+  });
+
+  $('#spawner').on('click', '.spawner-tab', function () {
+    showSpawnerTab(String($(this).data('spawner-tab')));
+  });
+
+  // --- Campaign spawner library actions (add / delete / unique / duplicate) ---
+  // Adding or deleting here changes the campaign-level YAML (npcs/<slug>.yml or
+  // items/objects.yml), not just the runtime map state.
+  function postCampaignLibrary(payload, onOk, onErr) {
+    $.ajax({
+      url: '/dm/library',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify(payload),
+      success: (data) => onOk(data || {}),
+      error: (xhr) => {
+        const msg = (xhr.responseJSON && xhr.responseJSON.error) || xhr.statusText || 'Request failed';
+        onErr(msg);
+      },
+    });
+  }
+
+  // PC tab: adding a PC opens the Character Builder in a new browser tab.
+  $('#pc-create-btn').on('click', function () {
+    window.open('/character_builder', '_blank');
+  });
+
+  // NPC tab: create-form toggle + base-type dropdown.
+  $('#npc-create-toggle').on('click', function () {
+    const $form = $('#npc-create-form');
+    if ($form.is(':visible')) {
+      $form.hide();
+      return;
+    }
+    const $base = $('#npc-create-base');
+    if (!$base.data('filled') && availableNpcs.length) {
+      availableNpcs.forEach((npc) => {
+        $base.append(`<option value="${npcSpawnerEscape(npc.id)}">${npcSpawnerEscape(npc.name)} (CR ${npcSpawnerEscape(npc.cr_label || npc.cr)})</option>`);
+      });
+      $base.data('filled', 1);
+    }
+    $('#npc-create-error').text('');
+    $form.show();
+  });
+
+  $('#npc-create-submit').on('click', function () {
+    const name = ($('#npc-create-name').val() || '').trim();
+    if (!name) {
+      $('#npc-create-error').text('Name is required');
+      return;
+    }
+    const payload = {
+      op: 'create_npc',
+      name: name,
+      base_type: $('#npc-create-base').val() || null,
+      unique: !!$('#npc-create-unique').is(':checked'),
+    };
+    const hp = parseInt($('#npc-create-hp').val(), 10);
+    const ac = parseInt($('#npc-create-ac').val(), 10);
+    const desc = ($('#npc-create-desc').val() || '').trim();
+    if (!isNaN(hp)) payload.max_hp = hp;
+    if (!isNaN(ac)) payload.default_ac = ac;
+    if (desc) payload.description = desc;
+
+    const $btn = $(this).prop('disabled', true);
+    postCampaignLibrary(payload, () => {
+      $btn.prop('disabled', false);
+      $('#npc-create-form').hide();
+      $('#npc-create-name, #npc-create-hp, #npc-create-ac, #npc-create-desc').val('');
+      $('#npc-create-unique').prop('checked', false);
+      $('#npc-create-base').data('filled', 0).find('option:gt(0)').remove();
+      loadAvailableNPCs();
+    }, (err) => {
+      $btn.prop('disabled', false);
+      $('#npc-create-error').text(err);
+    });
+  });
+
+  // NPC row actions: unique toggle, duplicate, delete.
+  $('#npc-list').on('click', '.npc-action-unique', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const $item = $(this).closest('.npc-item');
+    const npcType = $item.data('npc-type');
+    const makeUnique = String($item.attr('data-unique')) !== '1';
+    postCampaignLibrary({ op: 'set_unique_npc', npc_type: npcType, unique: makeUnique },
+      () => loadAvailableNPCs(),
+      (err) => alert(`Could not update "${npcType}": ${err}`));
+  });
+
+  $('#npc-list').on('click', '.npc-action-duplicate', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const $btn = $(this).prop('disabled', true);
+    const npcType = $(this).closest('.npc-item').data('npc-type');
+    $.ajax({
+      url: '/spawn_npc',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({ npc_type: npcType, duplicate: true }),
+      success: () => {
+        $btn.prop('disabled', false);
+        loadAvailableNPCs();
+      },
+      error: (xhr) => {
+        $btn.prop('disabled', false);
+        const msg = (xhr.responseJSON && xhr.responseJSON.error) || xhr.statusText;
+        alert(`Could not duplicate "${npcType}": ${msg}`);
+      },
+    });
+  });
+
+  $('#npc-list').on('click', '.npc-action-delete', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const $item = $(this).closest('.npc-item');
+    const npcType = $item.data('npc-type');
+    const name = $item.find('.npc-item-name').text() || npcType;
+    if (!window.confirm(`Delete "${name}" from this campaign?\n\nIts campaign YAML sheet is removed. If a bundled NPC with the same name exists it will reappear.`)) {
+      return;
+    }
+    postCampaignLibrary({ op: 'delete_npc', npc_type: npcType },
+      () => loadAvailableNPCs(),
+      (err) => alert(`Could not delete "${name}": ${err}`));
+  });
+
+  // Object tab: create-form toggle + submit.
+  $('#object-create-toggle').on('click', function () {
+    const $form = $('#object-create-form');
+    if ($form.is(':visible')) {
+      $form.hide();
+      return;
+    }
+    const $cat = $('#object-create-category');
+    if (!$cat.data('filled')) {
+      const cats = (objectSpawnerCategories || []).filter((c) => c.id !== 'all');
+      $cat.empty();
+      cats.forEach((c) => $cat.append(`<option value="${c.id}">${c.label}</option>`));
+      if (!cats.length) {
+        $cat.append('<option value="props">Props</option>');
+      }
+      $cat.data('filled', 1);
+    }
+    $('#object-create-error').text('');
+    $form.show();
+  });
+
+  $('#object-create-submit').on('click', function () {
+    const name = ($('#object-create-name').val() || '').trim();
+    if (!name) {
+      $('#object-create-error').text('Name is required');
+      return;
+    }
+    const payload = {
+      op: 'create_object',
+      name: name,
+      description: ($('#object-create-desc').val() || '').trim(),
+      category: $('#object-create-category').val() || 'props',
+      color: ($('#object-create-color').val() || '').trim() || undefined,
+      passable: !!$('#object-create-passable').is(':checked'),
+      interactable: !!$('#object-create-interactable').is(':checked'),
+    };
+    const $btn = $(this).prop('disabled', true);
+    postCampaignLibrary(payload, () => {
+      $btn.prop('disabled', false);
+      $('#object-create-form').hide();
+      $('#object-create-name, #object-create-desc, #object-create-color').val('');
+      $('#object-create-passable, #object-create-interactable').prop('checked', false);
+      loadAvailableObjects();
+    }, (err) => {
+      $btn.prop('disabled', false);
+      $('#object-create-error').text(err);
+    });
+  });
+
+  $('#object-list').on('click', '.object-action-delete', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const $item = $(this).closest('.object-item');
+    const objectType = $item.data('object-type');
+    const name = $item.find('.object-item-name').text() || objectType;
+    if (!window.confirm(`Delete "${name}" from this campaign?`)) {
+      return;
+    }
+    postCampaignLibrary({ op: 'delete_object', object_id: objectType },
+      () => loadAvailableObjects(),
+      (err) => alert(`Could not delete "${name}": ${err}`));
   });
 
   // Load available NPCs function
@@ -8900,6 +9124,14 @@ $(document).ready(() => {
     const onMapBadge = onMap
       ? `<span class="npc-on-map-badge" title="Already on ${npcSpawnerEscape(onMap)} — drop to move">On ${npcSpawnerEscape(onMap)}</span>`
       : '';
+    const actionButtons = [];
+    if (unique) {
+      actionButtons.push('<button type="button" class="spawner-item-btn npc-action-duplicate" draggable="false" title="Duplicate — place a second independent copy of this unique NPC (auto-placed)">&#x29C9;</button>');
+    }
+    actionButtons.push(`<button type="button" class="spawner-item-btn npc-action-unique${unique ? ' is-on' : ''}" draggable="false" title="${unique ? 'Un-mark unique (allow multiple instances; removes the authored uid from the campaign sheet)' : 'Mark unique (one instance per map set; writes an authored entity_uid at the campaign level)'}">&#9733;</button>`);
+    if (npc.campaign_owned) {
+      actionButtons.push('<button type="button" class="spawner-item-btn spawner-item-btn--danger npc-action-delete" draggable="false" title="Delete this campaign NPC type (removes its campaign YAML sheet)">&#10005;</button>');
+    }
     const titleParts = [`AC: ${npc.ac}`, `HP: ${npc.hp}`];
     if (unique) {
       titleParts.push(onMap ? `Drop to move from ${onMap}` : 'Unique NPC');
@@ -8914,7 +9146,7 @@ $(document).ready(() => {
            data-on-map="${npcSpawnerEscape(onMap)}"
            data-search="${npcSpawnerEscape(haystack)}"
            title="${npcSpawnerEscape(titleParts.join(', '))}">
-        <img class="npc-item-image" src="/assets/${npcSpawnerEscape(npc.image)}" alt="${npcSpawnerEscape(npc.name)}" onerror="this.onerror=null;this.src='/static/assets/token_player.png'">
+        <img class="npc-item-image" src="/assets/${npcSpawnerEscape(npc.image)}" alt="${npcSpawnerEscape(npc.name)}" onerror="this.onerror=null;this.src='/assets/token_player.png'">
         <div class="npc-item-info">
           <div class="npc-item-name-row">
             <div class="npc-item-name">${npcSpawnerEscape(npc.name)}</div>
@@ -8922,10 +9154,12 @@ $(document).ready(() => {
           </div>
           <div class="npc-item-type">CR ${npcSpawnerEscape(npc.cr)} • ${npcSpawnerEscape(npc.size)} • AC ${npcSpawnerEscape(npc.ac)}${onMapBadge ? ' ' + onMapBadge : ''}</div>
         </div>
+        <div class="spawner-item-actions">${actionButtons.join('')}</div>
       </div>
     `);
     $npcItem.on('click', function (e) {
       e.stopPropagation();
+      if ($(e.target).closest('.spawner-item-btn').length) return;
       const npcType = $(this).data('npc-type');
       const entityUid = $(this).attr('data-entity-uid');
       const alreadyOnMap = $(this).attr('data-on-map');
@@ -9207,21 +9441,7 @@ $(document).ready(() => {
     $(".tile").removeClass("battlefield-drop-zone drag-over notebook-map-drop-target");
   });
 
-  // PC Spawner functionality
-  $("#toggle-pc-spawner").click(() => {
-    const $pcSpawner = $("#pc-spawner");
-    if ($pcSpawner.is(":visible")) {
-      $pcSpawner.hide();
-    } else {
-      loadPCs();
-      $pcSpawner.show();
-    }
-  });
-
-  $("#close-pc-spawner").click(() => {
-    $("#pc-spawner").hide();
-  });
-
+  // PC Spawner functionality (content of the combined #spawner panel)
   // Load PCs from server
   function loadPCs() {
     Utils.ajaxGet("/available_pcs", {}, (data) => {
@@ -9256,7 +9476,7 @@ $(document).ready(() => {
 
       const $pcItem = $(`
         <div class="pc-item" draggable="true" data-entity-uid="${pc.entity_uid}" title="${raceLabel} · ${classInfo}">
-          <img class="pc-item-image" src="/assets/${pc.token_image}" alt="${pc.name}" onerror="this.onerror=null;this.src='/static/assets/token_player.png'">
+          <img class="pc-item-image" src="/assets/${pc.token_image}" alt="${pc.name}" onerror="this.onerror=null;this.src='/assets/token_player.png'">
           <div class="pc-item-info">
             <div class="pc-item-name">${pc.label}</div>
             <div class="pc-item-type">${raceLabel} · ${classInfo}</div>
@@ -9393,21 +9613,7 @@ $(document).ready(() => {
     });
   }
 
-  $("#toggle-object-spawner").click(() => {
-    const $objectSpawner = $("#object-spawner");
-    if ($objectSpawner.is(":visible")) {
-      $objectSpawner.hide();
-    } else {
-      renderTerrainPresets();
-      loadAvailableObjects();
-      $objectSpawner.show();
-    }
-  });
-
-  $("#close-object-spawner").click(() => {
-    $("#object-spawner").hide();
-  });
-
+  // Object spawner content (combined #spawner panel; opened via showSpawnerTab)
   function loadAvailableObjects() {
     $.get("/available_objects", (data) => {
       availableObjects = data.objects || [];
@@ -9479,6 +9685,10 @@ $(document).ready(() => {
       const categoryLabel = (objectSpawnerCategories.find((cat) => cat.id === object.category) || {}).label
         || (object.category || 'Props').replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
 
+      const objectActions = object.campaign_defined
+        ? '<div class="spawner-item-actions"><button type="button" class="spawner-item-btn spawner-item-btn--danger object-action-delete" draggable="false" title="Delete this campaign object type (removes it from the campaign objects catalogue)">&#10005;</button></div>'
+        : '';
+
       const $objectItem = $(`
         <div class="object-item"
              draggable="true"
@@ -9491,6 +9701,7 @@ $(document).ready(() => {
             <div class="object-item-name">${object.name}</div>
             <div class="object-item-type">${object.id} • ${categoryLabel} • AC ${object.ac} • HP ${object.hp} • ${passableText}</div>
           </div>
+          ${objectActions}
         </div>
       `);
 
@@ -11117,7 +11328,7 @@ $(document).ready(() => {
     const tokenPath = entity && entity.token_image;
     const profilePath = entity && entity.profile_image;
     const hasFullPortrait = !!(entity && entity.has_full_portrait) || gallery.length > 0;
-    const tokenSrc = dialogAssetUrl(tokenPath) || '/static/assets/token_player.png';
+    const tokenSrc = dialogAssetUrl(tokenPath) || '/assets/token_player.png';
     const profileSrc = dialogAssetUrl(profilePath) || tokenSrc;
 
     let preferredSrc = hasFullPortrait ? profileSrc : tokenSrc;
@@ -11141,11 +11352,11 @@ $(document).ready(() => {
         $img.attr('src', tokenSrc);
         $img.on('error.dialogPortrait', function onTokenError() {
           $img.off('error.dialogPortrait');
-          $img.attr('src', '/static/assets/token_player.png');
+          $img.attr('src', '/assets/token_player.png');
         });
         return;
       }
-      $img.attr('src', '/static/assets/token_player.png');
+      $img.attr('src', '/assets/token_player.png');
     });
     $portrait.attr('src', preferredSrc);
     $portrait.attr('alt', (entity && entity.name) ? `${entity.name} portrait` : 'Entity portrait');

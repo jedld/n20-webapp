@@ -887,21 +887,9 @@
                 <h2 class="vtt-menu-section-label">Spawn</h2>
                 <ul>
                     <li>
-                      <button type="button" id="toggle-npc-spawner" class="vtt-menu-item">
-                        <span class="glyphicon glyphicon-user" aria-hidden="true"></span>
-                        <span class="vtt-menu-label">NPC Spawner</span>
-                      </button>
-                    </li>
-                    <li>
-                      <button type="button" id="toggle-pc-spawner" class="vtt-menu-item">
-                        <span class="glyphicon glyphicon-star" aria-hidden="true"></span>
-                        <span class="vtt-menu-label">PC Spawner</span>
-                      </button>
-                    </li>
-                    <li>
-                      <button type="button" id="toggle-object-spawner" class="vtt-menu-item">
+                      <button type="button" id="toggle-spawner" class="vtt-menu-item">
                         <span class="glyphicon glyphicon-th-large" aria-hidden="true"></span>
-                        <span class="vtt-menu-label">Object Spawner</span>
+                        <span class="vtt-menu-label">Spawner</span>
                       </button>
                     </li>
                     <li>
@@ -1590,47 +1578,75 @@
         </div>
     </div>
     {% if 'dm' in role %}
-    <!-- NPC Spawner Window -->
-    <div id="npc-spawner" class="floating-window" style="display: none; position: fixed; top: 350px; left: 10px; width: 300px; height: 400px;">
+    <!-- Combined Spawner Window (NPC / PC / Object tabs) -->
+    <div id="spawner" class="floating-window spawner-window" style="display: none; position: fixed; top: 120px; left: 10px; width: 340px; height: 520px;">
         <div class="header" style="cursor: move; background-color: #5cb85c; color: white; text-align: center; padding: 5px;">
-            <span>NPC Spawner</span>
-            <button id="close-npc-spawner" style="float: right; background: none; border: none; color: white; font-size: 16px;">&times;</button>
+            <span>Spawner</span>
+            <button id="close-spawner" style="float: right; background: none; border: none; color: white; font-size: 16px;">&times;</button>
         </div>
-        <div class="npc-spawner-content" style="padding: 10px; height: calc(100% - 35px); overflow-y: auto;">
-            <div class="npc-search" style="margin-bottom: 10px;">
+        <div class="spawner-tabs" role="tablist" aria-label="Spawner type">
+            <button type="button" class="spawner-tab active" role="tab" aria-selected="true" data-spawner-tab="npc">NPCs</button>
+            <button type="button" class="spawner-tab" role="tab" aria-selected="false" data-spawner-tab="pc">PCs</button>
+            <button type="button" class="spawner-tab" role="tab" aria-selected="false" data-spawner-tab="object">Objects</button>
+        </div>
+        <div class="spawner-pane" data-spawner-pane="npc">
+            <div class="spawner-pane-toolbar">
                 <input type="text" id="npc-search-input" class="form-control" placeholder="Search by name, CR, or unique..." style="font-size: 12px;">
+                <button type="button" id="npc-create-toggle" class="spawner-create-btn" title="Add a new NPC type to this campaign">+ New</button>
+            </div>
+            <div id="npc-create-form" class="spawner-create-form" style="display: none;">
+                <div class="spawner-create-title">New campaign NPC</div>
+                <input type="text" id="npc-create-name" class="form-control" placeholder="Name (e.g. Bandit Captain)">
+                <select id="npc-create-base" class="form-control">
+                    <option value="">Blank sheet (no base)</option>
+                </select>
+                <div class="spawner-create-row">
+                    <input type="number" id="npc-create-hp" class="form-control" min="1" placeholder="HP">
+                    <input type="number" id="npc-create-ac" class="form-control" min="1" placeholder="AC">
+                </div>
+                <textarea id="npc-create-desc" class="form-control" rows="2" placeholder="Description"></textarea>
+                <label class="spawner-create-check"><input type="checkbox" id="npc-create-unique"> Unique (one instance per map set)</label>
+                <div class="spawner-create-actions">
+                    <button type="button" id="npc-create-submit" class="btn btn-xs btn-success">Create NPC</button>
+                    <span id="npc-create-error" class="spawner-create-error"></span>
+                </div>
             </div>
             <div id="npc-list">
                 <!-- NPCs will be loaded here -->
             </div>
         </div>
-    </div>
-    
-    <!-- PC Spawner Window -->
-    <div id="pc-spawner" class="floating-window" style="display: none; position: fixed; top: 350px; left: 320px; width: 300px; height: 400px;">
-        <div class="header" style="cursor: move; background-color: #0275d8; color: white; text-align: center; padding: 5px;">
-            <span>PC Spawner</span>
-            <button id="close-pc-spawner" style="float: right; background: none; border: none; color: white; font-size: 16px;">&times;</button>
-        </div>
-        <div class="pc-spawner-content" style="padding: 10px; height: calc(100% - 35px); overflow-y: auto;">
-            <div class="pc-search" style="margin-bottom: 10px;">
+        <div class="spawner-pane" data-spawner-pane="pc" style="display: none;">
+            <div class="spawner-pane-toolbar">
                 <input type="text" id="pc-search-input" class="form-control" placeholder="Search PCs..." style="font-size: 12px;">
+                <button type="button" id="pc-create-btn" class="spawner-create-btn" title="Open the Character Builder in a new tab to create a PC">+ New</button>
             </div>
             <div id="pc-list">
                 <!-- PCs will be loaded here -->
             </div>
         </div>
-    </div>
-    
-    <!-- Object Spawner Window -->
-    <div id="object-spawner" class="floating-window" style="display: none; position: fixed; top: 350px; left: 640px; width: 300px; height: 400px;">
-        <div class="header" style="cursor: move; background-color: #f0ad4e; color: white; text-align: center; padding: 5px;">
-            <span>Object Spawner</span>
-            <button id="close-object-spawner" style="float: right; background: none; border: none; color: white; font-size: 16px;">&times;</button>
-        </div>
-        <div class="object-spawner-content" style="padding: 10px; height: calc(100% - 35px); overflow-y: auto;">
+        <div class="spawner-pane" data-spawner-pane="object" style="display: none;">
+            <div class="spawner-pane-toolbar">
+                <span class="terrain-spawner-heading" style="margin: 0;">Terrain</span>
+                <button type="button" id="object-create-toggle" class="spawner-create-btn" title="Add a new object type to this campaign">+ New</button>
+            </div>
+            <div id="object-create-form" class="spawner-create-form" style="display: none;">
+                <div class="spawner-create-title">New campaign object</div>
+                <input type="text" id="object-create-name" class="form-control" placeholder="Name (e.g. Grandfather Clock)">
+                <textarea id="object-create-desc" class="form-control" rows="2" placeholder="Description"></textarea>
+                <div class="spawner-create-row">
+                    <select id="object-create-category" class="form-control">
+                        <option value="props">Props</option>
+                    </select>
+                    <input type="text" id="object-create-color" class="form-control" placeholder="color (brown)">
+                </div>
+                <label class="spawner-create-check"><input type="checkbox" id="object-create-passable"> Passable</label>
+                <label class="spawner-create-check"><input type="checkbox" id="object-create-interactable"> Interactable (search / open / push)</label>
+                <div class="spawner-create-actions">
+                    <button type="button" id="object-create-submit" class="btn btn-xs btn-success">Create Object</button>
+                    <span id="object-create-error" class="spawner-create-error"></span>
+                </div>
+            </div>
             <div class="terrain-spawner-section" style="margin-bottom: 12px;">
-                <div class="terrain-spawner-heading">Terrain</div>
                 <div id="terrain-list" class="terrain-list">
                     <!-- Terrain presets loaded by engine.js -->
                 </div>
@@ -1742,6 +1758,10 @@
                     <option value="manual" {% if DEFAULT_NPC_CONTROLLER == 'manual' %}selected{% endif %}>Manual</option>
                     <option value="ai" {% if DEFAULT_NPC_CONTROLLER == 'ai' %}selected{% endif %}>AI</option>
                     <option value="llm" {% if DEFAULT_NPC_CONTROLLER == 'llm' %}selected{% endif %}>LLM</option>
+                    <option value="hybrid" {% if DEFAULT_NPC_CONTROLLER == 'hybrid' %}selected{% endif %}>Hybrid (LLM plans + JEV)</option>
+                    {% for agent in ai_agent_options() %}
+                    <option value="agent:{{ agent.name }}" {% if DEFAULT_NPC_CONTROLLER == 'agent:' + agent.name %}selected{% endif %}>{{ agent.label }} (agent: {{ agent.controller }})</option>
+                    {% endfor %}
                   </select>
                   {% if NPC_LLM_COMBAT_ENABLED %}
                   <small class="text-muted" style="margin-left: 8px;">NPC combat uses LLM via <code>NPC_LLM_COMBAT_ENABLED</code></small>

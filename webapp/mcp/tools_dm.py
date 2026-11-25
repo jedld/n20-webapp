@@ -327,10 +327,12 @@ def register(registry: ToolRegistry) -> None:
         name='dm.spawn_npc',
         description='Spawn an NPC of `npc_type` at (x, y) on the given map. '
                     'Unique NPCs already on the same map set are moved instead of duplicated. '
+                    'Set duplicate=true to force a fresh independent copy even for unique '
+                    'NPCs (x/y optional; the first free square is chosen). '
                     'Returns the entity uid and whether the token was moved.',
         input_schema={
             'type': 'object',
-            'required': ['npc_type', 'x', 'y'],
+            'required': ['npc_type'],
             'properties': {
                 'npc_type': {'type': 'string'},
                 'x': {'type': 'integer', 'minimum': 0},
@@ -338,22 +340,26 @@ def register(registry: ToolRegistry) -> None:
                 'map_name': {'type': 'string'},
                 'group': {'type': 'string', 'default': 'b'},
                 'rand_life': {'type': 'boolean', 'default': True},
+                'duplicate': {'type': 'boolean', 'default': False},
             },
         },
         category='dm',
     )
-    def spawn_npc(context: MCPContext, npc_type: str, x: int, y: int,
+    def spawn_npc(context: MCPContext, npc_type: str, x: Optional[int] = None, y: Optional[int] = None,
                   map_name: Optional[str] = None, group: str = 'b',
-                  rand_life: bool = True):
+                  rand_life: bool = True, duplicate: bool = False):
         from natural20.map_set import spawn_or_move_npc
+
+        if not duplicate and (x is None or y is None):
+            raise tool_error('x and y are required unless duplicate=true')
 
         battle_map = context.resolve_map(map_name)
         if battle_map is None:
             raise tool_error(f'Map not found: {map_name}')
         try:
             result = spawn_or_move_npc(
-                context.game_session, npc_type, battle_map, int(x), int(y),
-                group=group, rand_life=bool(rand_life),
+                context.game_session, npc_type, battle_map, x, y,
+                group=group, rand_life=bool(rand_life), duplicate=bool(duplicate),
             )
         except FileNotFoundError:
             raise tool_error(f'NPC type "{npc_type}" not found')
@@ -362,7 +368,8 @@ def register(registry: ToolRegistry) -> None:
         except Exception as exc:
             raise tool_error(f'Failed to create NPC: {exc}')
         verb = 'moved' if result.get('moved') else 'spawned'
-        context.log_dm(f"DM {verb} {npc_type} at ({x},{y}) on {battle_map.name}")
+        placed_at = result.get('position') or [x, y]
+        context.log_dm(f"DM {verb} {npc_type} at ({placed_at[0]},{placed_at[1]}) on {battle_map.name}")
         context.emit_refresh()
         return result
 
@@ -451,6 +458,85 @@ def register(registry: ToolRegistry) -> None:
         )
         context.emit_refresh()
         result['near'] = {'entity_uid': target.entity_uid, 'name': target.label()}
+        return result
+
+    @tool(
+        registry,
+        name='dm.library',
+        description='Campaign-level spawner library edits. op=create_npc '
+                    '(name, optional base_type/unique/description/max_hp/default_ac/speed) '
+                    'adds <campaign>/npcs/<slug>.yml; op=delete_npc (npc_type) removes a '
+                    'campaign-authored NPC type (bundled types and placed ones are refused); '
+                    'op=set_unique_npc (npc_type, unique) marks a NPC type unique — one '
+                    'instance per map set — by writing an authored entity_uid at the campaign '
+                    'level; op=create_object (name, optional description/category/color/'
+                    'passable/interactable) adds a campaign items/objects.yml entry; '
+                    'op=delete_object (object_id) removes a campaign entry or tombstones a '
+                    'bundled one for this campaign.',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {'type': 'string', 'enum': [
+                    'create_npc', 'delete_npc', 'set_unique_npc',
+                    'create_object', 'delete_object']},
+                'name': {'type': 'string'},
+                'npc_type': {'type': 'string'},
+                'base_type': {'type': 'string'},
+                'unique': {'type': 'boolean', 'default': True},
+                'object_id': {'type': 'string'},
+                'description': {'type': 'string'},
+                'category': {'type': 'string'},
+                'color': {'type': 'string'},
+                'passable': {'type': 'boolean'},
+                'interactable': {'type': 'boolean'},
+                'max_hp': {'type': 'integer'},
+                'default_ac': {'type': 'integer'},
+                'speed': {'type': 'integer'},
+            },
+        },
+        category='dm',
+    )
+    def library(context: MCPContext, op: str, **kwargs):
+        from webapp.blueprints.helpers import campaign_library
+        from webapp.blueprints.helpers.runtime_state import get_app
+
+        session_obj = context.game_session
+        try:
+            if op == 'create_npc':
+                result = campaign_library.create_npc_type(
+                    session_obj,
+                    name=kwargs.get('name', ''),
+                    base_type=kwargs.get('base_type'),
+                    unique=bool(kwargs.get('unique')),
+                    fields={k: kwargs.get(k) for k in
+                            ('description', 'max_hp', 'default_ac', 'speed')
+                            if kwargs.get(k) is not None},
+                )
+            elif op == 'delete_npc':
+                result = campaign_library.delete_npc_type(session_obj, kwargs.get('npc_type', ''))
+            elif op == 'set_unique_npc':
+                result = campaign_library.set_npc_unique(
+                    session_obj, kwargs.get('npc_type', ''), bool(kwargs.get('unique', True)))
+            elif op == 'create_object':
+                result = campaign_library.create_object_type(
+                    session_obj,
+                    name=kwargs.get('name', ''),
+                    fields={k: kwargs.get(k) for k in
+                            ('id', 'description', 'category', 'color', 'passable',
+                             'opaque', 'interactable', 'default_ac', 'max_hp',
+                             'item_class', 'token')
+                            if kwargs.get(k) is not None},
+                )
+            elif op == 'delete_object':
+                result = campaign_library.delete_object_type(session_obj, kwargs.get('object_id', ''))
+            else:
+                raise tool_error(f'Unknown library op: {op}')
+        except campaign_library.SpawnerLibraryError as exc:
+            raise tool_error(str(exc))
+
+        campaign_library.invalidate_spawner_caches(_safe_call(get_app), session_obj)
+        context.log_dm(f"DM campaign library {op}: {result}")
         return result
 
     @tool(
@@ -933,7 +1019,7 @@ def register(registry: ToolRegistry) -> None:
         description='Mid-battle initiative/group management. '
                     'op: add_combatant | remove_combatant | reorder | set_group | set_initiative | next_turn | pacing. '
                     '- add_combatant: adds entity to active battle; optional initiative int; '
-                    'optional controller manual|ai|llm (PCs default to manual when omitted).\n'
+                    'optional controller manual|ai|llm|hybrid (PCs default to manual when omitted).\n'
                     '- remove_combatant: drops entity from initiative without removing from map.\n'
                     '- reorder: takes `order` array of entity_uids.\n'
                     '- set_group: requires `group` (e.g. "a"/"b"/"c").\n'
@@ -957,8 +1043,10 @@ def register(registry: ToolRegistry) -> None:
                 'initiative': {'type': 'integer'},
                 'controller': {
                     'type': 'string',
-                    'enum': ['manual', 'ai', 'llm'],
-                    'description': 'Combat controller for add_combatant (DM override; PCs default manual).',
+                    'pattern': '^(manual|ai|llm|hybrid|agent:.+)$',
+                    'description': 'Combat controller for add_combatant: manual | ai | llm | '
+                                   'hybrid | agent:<name> (named .ai.yaml bundle). '
+                                   'DM override; PCs default manual.',
                 },
             },
         },
@@ -1023,13 +1111,18 @@ def register(registry: ToolRegistry) -> None:
         registry,
         name='dm.set_controller',
         description='Set the engine-side controller for an entity. '
-                    'kind: manual (DM web controller) | ai (heuristic) | llm (LlmMcpController).',
+                    'kind: manual (DM web controller) | ai (heuristic) | llm (LlmMcpController) | '
+                    'hybrid (generative LLM strategist plans each turn, JEV executes) | '
+                    'agent:<name> (a named bundle from the .ai.yaml agents: registry).',
         input_schema={
             'type': 'object',
             'required': ['entity_uid', 'kind'],
             'properties': {
                 'entity_uid': {'type': 'string'},
-                'kind': {'type': 'string', 'enum': ['manual', 'ai', 'llm']},
+                'kind': {'type': 'string',
+                         'pattern': '^(manual|ai|llm|hybrid|agent:.+)$',
+                         'description': "Controller kind or 'agent:<name>' "
+                                        '(see agent_names in the AI config).'},
             },
         },
         category='dm',
@@ -1046,22 +1139,25 @@ def register(registry: ToolRegistry) -> None:
                 ctrl.add_user('dm')
                 if hasattr(cg, 'web_controllers'):
                     cg.web_controllers[ent] = ctrl
-            elif kind == 'ai':
-                from natural20.generic_controller import GenericController
-                ctrl = GenericController(context.game_session)
-            elif kind == 'llm':
-                from natural20.llm_controller import LlmMcpController
-                # Per-NPC AI settings profile -> combat default -> battle provider -> DM provider.
+            else:
+                # 'ai' | 'llm' | 'hybrid' | 'agent:<name>' via the shared spec
+                # dispatcher (per-NPC profile -> agent bundle -> combat
+                # default -> battle provider -> DM provider).
                 try:
                     from webapp.blueprints.helpers.runtime_state import get_llm_handler
                     _handler = get_llm_handler()
                 except Exception:
                     _handler = None
-                from webapp.ai_config import combat_llm_provider_for
-                _provider = combat_llm_provider_for(_handler, ent) if _handler is not None else None
-                ctrl = LlmMcpController(context.game_session, llm_provider=_provider)
-            else:
-                raise tool_error("kind must be 'manual', 'ai' or 'llm'")
+                from webapp.ai_config import build_combat_controller_for_spec
+                ctrl = build_combat_controller_for_spec(
+                    context.game_session, _handler, ent, kind)
+                if ctrl is None:
+                    if kind.startswith('agent:'):
+                        raise tool_error(
+                            f"Unknown agent bundle {kind[6:]!r}; "
+                            "see agent_names in the AI config")
+                    raise tool_error("kind must be 'manual', 'ai', 'llm', 'hybrid' "
+                                     "or 'agent:<name>'")
         except tool_error.__class__:
             raise
         except Exception as exc:

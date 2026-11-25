@@ -84,6 +84,12 @@ class MCPContext:
         if socketio is None:
             return
         try:
+            # /update caches rendered map HTML keyed on the render epoch: any
+            # refresh_map push must advance the epoch first, or clients keep
+            # pulling a stale snapshot (tokens appear to vanish).
+            bump = getattr(self.current_game, 'bump_render_epoch', None)
+            if bump is not None:
+                bump()
             socketio.emit('message', {'type': 'refresh_map'})
         except Exception:
             pass

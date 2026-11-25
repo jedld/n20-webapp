@@ -99,6 +99,11 @@ class FakeGame:
                 return map_obj
         return None
 
+    def bump_render_epoch(self, username=None):
+        # /update caches map HTML keyed on the render epoch; every route that
+        # pushes refresh_map bumps it first (see WEBAPP_BLUEPRINTS.md).
+        pass
+
     def get_current_battle(self):
         return self._battle
 

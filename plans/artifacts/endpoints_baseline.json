@@ -624,6 +624,10 @@
     "rule": "/award_xp"
   },
   {
+    "endpoint": "dm.campaign_library_admin",
+    "rule": "/dm/library"
+  },
+  {
     "endpoint": "dm.delete_entity",
     "rule": "/delete_entity"
   },

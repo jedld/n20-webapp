@@ -29,6 +29,7 @@ from .helpers.npc_spawner_utils import (
     build_available_npc_entry,
     enrich_npc_spawner_entries,
 )
+from .helpers import campaign_library
 from .helpers.object_spawner_utils import SPAWNER_CATEGORIES, build_available_objects_list
 from .helpers.special_effects import special_effects_enabled, is_heavy_special_effect
 from .helpers.template_globals import controller_of
@@ -111,6 +112,7 @@ def _emit_xp_events(awards):
         get_socketio().emit('message', {'type': 'xp_awarded', 'message': payload})
         if payload.get('levels_available', 0) > 0:
             get_socketio().emit('message', {'type': 'level_up_available', 'message': payload})
+    get_current_game().bump_render_epoch()
     get_socketio().emit('message', {'type': 'refresh_map'})
     return payloads
 
@@ -228,6 +230,7 @@ def admin_load():
         except Exception:
             pass
         # Ensure any tile/object overlays are rebuilt
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         get_socketio().emit('message', {'type': 'turn', 'message': {'game_time': get_current_game().game_session.game_time}})
         return jsonify(status='ok')
@@ -542,6 +545,10 @@ def get_available_npcs():
         except Exception:
             battle_map = None
         npc_list = enrich_npc_spawner_entries(get_game_session(), cached, battle_map)
+        # Spawner UI: which types live in the campaign folder (deletable).
+        owned = campaign_library.campaign_npc_stems(get_game_session())
+        for item in npc_list:
+            item['campaign_owned'] = item.get('id') in owned
         return jsonify(npcs=npc_list)
 
     except Exception as e:
@@ -560,6 +567,10 @@ def get_available_objects():
         if cached is None:
             all_objects = get_game_session().load_yaml_file('items', 'objects')
             object_list = build_available_objects_list(all_objects)
+            # Spawner UI: which entries the campaign file itself defines.
+            defined = campaign_library.campaign_object_stems(get_game_session())
+            for item in object_list:
+                item['campaign_defined'] = item.get('id') in defined
             cached = {
                 'objects': object_list,
                 'categories': list(SPAWNER_CATEGORIES),
@@ -585,8 +596,9 @@ def spawn_npc():
     npc_type = request.json.get('npc_type')
     x = request.json.get('x')
     y = request.json.get('y')
-    
-    if not npc_type or x is None or y is None:
+    duplicate = bool(request.json.get('duplicate'))
+
+    if not npc_type or ((x is None or y is None) and not duplicate):
         return jsonify(error='Missing required parameters'), 400
     
     try:
@@ -596,18 +608,21 @@ def spawn_npc():
 
         try:
             result = spawn_or_move_npc(
-                get_game_session(), npc_type, battle_map, int(x), int(y), group='b'
+                get_game_session(), npc_type, battle_map, x, y, group='b',
+                duplicate=duplicate,
             )
         except FileNotFoundError:
             return jsonify(error=f'NPC type "{npc_type}" not found'), 400
         except ValueError as e:
             return jsonify(error=str(e)), 400
 
+        placed_at = result.get('position') or [x, y]
         get_logger().info(
             f"DM {session['username']} {'moved' if result.get('moved') else 'spawned'} "
-            f"{npc_type} at ({x}, {y})"
+            f"{npc_type} at ({placed_at[0]}, {placed_at[1]})"
         )
 
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
 
         return jsonify(status='ok', **result)
@@ -615,6 +630,61 @@ def spawn_npc():
     except Exception as e:
         get_logger().error(f"Error spawning NPC: {str(e)}")
         return jsonify(error=f'Failed to spawn NPC: {str(e)}'), 500
+
+@dm_bp.route('/dm/library', methods=['POST'])
+def campaign_library_admin():
+    """Campaign-level spawner library edits (NPC / object types).
+
+    Ops: ``create_npc``, ``delete_npc``, ``set_unique_npc``, ``create_object``,
+    ``delete_object``. Adds/removes the corresponding YAML at the campaign
+    level (see ``webapp/blueprints/helpers/campaign_library.py``).
+    """
+    if 'dm' not in user_role():
+        return jsonify(error='Only DMs can edit the campaign spawner library'), 403
+
+    data = request.get_json(silent=True) or {}
+    op = str(data.get('op') or '').strip()
+    game_session = get_game_session()
+
+    try:
+        if op == 'create_npc':
+            result = campaign_library.create_npc_type(
+                game_session,
+                name=data.get('name', ''),
+                base_type=data.get('base_type'),
+                unique=bool(data.get('unique')),
+                fields={k: data.get(k) for k in
+                        ('description', 'max_hp', 'default_ac', 'speed')
+                        if k in data},
+            )
+        elif op == 'delete_npc':
+            result = campaign_library.delete_npc_type(game_session, data.get('npc_type', ''))
+        elif op == 'set_unique_npc':
+            result = campaign_library.set_npc_unique(
+                game_session, data.get('npc_type', ''), bool(data.get('unique', True)))
+        elif op == 'create_object':
+            result = campaign_library.create_object_type(
+                game_session,
+                name=data.get('name', ''),
+                fields={k: data.get(k) for k in
+                        ('id', 'description', 'category', 'color', 'passable',
+                         'opaque', 'interactable', 'default_ac', 'max_hp',
+                         'item_class', 'token')
+                        if k in data},
+            )
+        elif op == 'delete_object':
+            result = campaign_library.delete_object_type(game_session, data.get('object_id', ''))
+        else:
+            return jsonify(error=f'Unknown library op: {op or "(missing)"}'), 400
+    except campaign_library.SpawnerLibraryError as e:
+        return jsonify(error=str(e)), e.status
+    except Exception as e:
+        get_logger().error(f"Error in /dm/library op={op}: {str(e)}")
+        return jsonify(error=f'Failed to update campaign library: {str(e)}'), 500
+
+    campaign_library.invalidate_spawner_caches(get_app(), game_session)
+    get_logger().info(f"DM {session['username']} campaign library {op}: {result}")
+    return jsonify(status='ok', **result)
 
 @dm_bp.route('/spawn_object', methods=['POST'])
 def spawn_object():
@@ -664,6 +734,7 @@ def spawn_object():
         get_logger().info(f"DM {session['username']} spawned {object_type} at ({x}, {y})")
         
         # Notify all clients of the map update
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         
         return jsonify(status='ok', entity_uid=object_instance.entity_uid)
@@ -678,6 +749,7 @@ def _emit_delete_undo_notifications(game):
     get_socketio().emit('message', {'type': 'initiative',
                                     'message': {'index': battle.current_turn_index if battle else None}})
     get_socketio().emit('message', {'type': 'turn', 'message': {}})
+    get_current_game().bump_render_epoch()
     get_socketio().emit('message', {'type': 'refresh_map'})
 
 
@@ -720,6 +792,7 @@ def delete_entity():
         get_logger().info(f"DM {session['username']} deleted entity {entity.label()} ({entity_uid})")
         
         # Notify all clients of the map update
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         
         return jsonify(status='ok', entity_uid=entity_uid)
@@ -754,9 +827,74 @@ def undo_delete_entity():
         _emit_delete_undo_notifications(get_current_game())
     return jsonify(payload), status
 
+
+def _validated_pc_sheet_ref(game_session, sheet):
+    """Guard against path traversal in client-supplied sheet refs."""
+    if not sheet:
+        return None
+    ref = str(sheet)
+    if ref.startswith(('/', '\\')) or '..' in ref.replace('\\', '/').split('/'):
+        return None
+    return ref
+
+
+def spawn_pc_token(current_game, game_session, target_map, entity_uid, x, y, sheet=None):
+    """Create a token for a PC that has no entity on any map yet.
+
+    Used when the DM drags a character from the PC tray onto the map: the tray
+    lists every campaign character sheet, but sheets that were never placed
+    (via Place Party or edit mode) have no registered entity. Materializes
+    the sheet and places it on ``target_map``. Returns the entity, or None
+    when no entity/sheet can be resolved.
+    """
+    entity = None
+    # Selectable / assigned characters (and map-declared player entries).
+    try:
+        from .helpers.pvp import ensure_character_entity_loaded
+
+        entity = ensure_character_entity_loaded(entity_uid)
+    except Exception:
+        get_logger().exception(f"Failed to materialize character {entity_uid}")
+
+    if entity is None and game_session is not None:
+        try:
+            from natural20.map_editor import find_character_sheet
+            from natural20.player_character import PlayerCharacter
+
+            sheet_ref = _validated_pc_sheet_ref(game_session, sheet) or \
+                find_character_sheet(game_session, entity_uid)
+            if sheet_ref:
+                entity = PlayerCharacter.load(
+                    game_session, sheet_ref, override={'entity_uid': str(entity_uid)}
+                )
+                game_session.register_entity(entity)
+        except Exception:
+            get_logger().exception(f"Failed to load character sheet for {entity_uid}")
+
+    if entity is None:
+        return None
+
+    # Do not stack a new token on top of one that appeared meanwhile.
+    if target_map.entity_at(int(x), int(y)):
+        return None
+
+    from natural20.map_set import place_entity_instance
+
+    try:
+        place_entity_instance(
+            game_session, entity, target_map, int(x), int(y),
+            group=getattr(entity, 'group', None) or 'a',
+        )
+    except Exception:
+        get_logger().exception(f"Failed to place {entity_uid} on {getattr(target_map, 'name', '?')}")
+        return None
+    return entity
+
+
 @dm_bp.route('/move_entity', methods=['POST'])
 def move_entity():
-    """Move an existing entity to a new position (for PCs that already exist)"""
+    """Move an existing entity, or spawn a PC token from its sheet when dragging
+    a not-yet-placed PC from the DM tray onto the map."""
     # Check if user is DM
     if 'dm' not in user_role():
         return jsonify(error='Only DMs can move entities'), 403
@@ -774,8 +912,6 @@ def move_entity():
     try:
         # Find the entity across all maps
         entity = get_current_game().get_entity_by_uid(entity_uid)
-        if not entity:
-            return jsonify(error='Entity not found'), 404
         
         # Get the target map (current map for user)
         target_map = get_current_game().get_map_for_user(session['username'])
@@ -787,6 +923,27 @@ def move_entity():
         # Check if the position is occupied by another entity
         if target_map.entity_at(x, y):
             return jsonify(error='Position is occupied'), 400
+        
+        # PC tray drag: materialize + place a token for sheets that have no
+        # entity on any map yet (never placed via Place Party or edit mode).
+        if entity is None:
+            entity = spawn_pc_token(
+                get_current_game(), get_game_session(), target_map,
+                entity_uid, x, y, request.json.get('sheet'),
+            )
+            if entity is None:
+                return jsonify(error=(
+                    f'Entity "{entity_uid}" not found: it is not on any map and no '
+                    'character sheet matches this uid. Re-open the PC tray, or use '
+                    'Place Party / edit mode to place it.'
+                )), 400
+            get_logger().info(
+                f"DM {session['username']} spawned PC {entity.label()} at ({x}, {y}) "
+                f"on map {getattr(target_map, 'name', '?')}"
+            )
+            get_current_game().bump_render_epoch()
+            get_socketio().emit('message', {'type': 'refresh_map'})
+            return jsonify(status='ok', entity_uid=entity_uid, spawned=True)
         
         # Operate on the instance in the destination map's set, never a twin elsewhere.
         session_obj = get_game_session()
@@ -918,6 +1075,7 @@ def update_npc():
         get_logger().info(f"DM {session['username']} updated NPC {entity_id}: name='{name}', group='{group}'")
         
         # Notify all clients of the entity update (in case name/group affects display)
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         
         return jsonify(success=True)
@@ -933,7 +1091,8 @@ def update_npc_default_controller():
     try:
         data = request.get_json() if request.is_json else request.form
         new_value = data.get('value')
-        if new_value not in ['manual', 'ai', 'llm']:
+        from webapp.ai_config import is_controller_spec
+        if not is_controller_spec(new_value):
             return jsonify({'success': False, 'error': 'Invalid controller value'}), 400
         get_current_game().npc_controller = new_value
         return jsonify({'success': True, 'npc_default_controller': get_current_game().npc_controller})
@@ -995,6 +1154,7 @@ def add():
 
         get_socketio().emit('message', {'type': 'initiative', 'message': {'index': battle.current_turn_index}})
         get_socketio().emit('message', {'type': 'turn', 'message': {}})
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         # Return the rendered turn-order row so the existing client code
         # (which appends the response to #turn-order) keeps working.
@@ -1037,6 +1197,7 @@ def remove_from_battle():
     get_socketio().emit('message', {'type': 'initiative',
                               'message': {'index': battle.current_turn_index if get_current_game().get_current_battle() else None}})
     get_socketio().emit('message', {'type': 'turn', 'message': {}})
+    get_current_game().bump_render_epoch()
     get_socketio().emit('message', {'type': 'refresh_map'})
     return jsonify(status='ok')
 
@@ -1097,6 +1258,7 @@ def unequip():
         # Invalidate the /update render cache so the client re-renders the map
         # with the new lighting state (e.g. removing a torch in a dark room).
         game.recalc_lights_for_user(session['username'])
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         return jsonify(status='ok')
     return jsonify(error="Entity not found"), 404
@@ -1118,6 +1280,7 @@ def equip():
         # Invalidate the /update render cache so the client re-renders the map
         # with the new lighting state (e.g. equipping a torch in a dark room).
         game.recalc_lights_for_user(session['username'])
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         return jsonify(status='ok')
 
@@ -1168,6 +1331,7 @@ def attunement():
 
     if result.get('status') in ('attuned', 'ended'):
         game.recalc_lights_for_user(session['username'])
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
     status = attunement_status(entity)
     return jsonify(success=True, op=op, result=result,
@@ -1309,6 +1473,7 @@ def dm_inventory_add():
     except Exception:
         pass
 
+    get_current_game().bump_render_epoch()
     get_socketio().emit('message', {'type': 'refresh_map'})
     new_qty = int((entity.inventory.get(item_name) or {}).get('qty', 0))
     return jsonify(success=True, item_name=item_name, qty=new_qty)
@@ -1346,6 +1511,7 @@ def dm_inventory_remove():
                 entity.unequip(item_name, transfer_inventory=False)
             except Exception as exc:
                 return jsonify(success=False, error=f'Failed to unequip: {exc}'), 500
+            get_current_game().bump_render_epoch()
             get_socketio().emit('message', {'type': 'refresh_map'})
             return jsonify(success=True, item_name=item_name, qty=0)
         return jsonify(success=False, error='Entity does not have that item'), 404
@@ -1365,6 +1531,7 @@ def dm_inventory_remove():
     except Exception:
         pass
 
+    get_current_game().bump_render_epoch()
     get_socketio().emit('message', {'type': 'refresh_map'})
     new_qty = int((entity.inventory.get(item_name) or {}).get('qty', 0))
     return jsonify(success=True, item_name=item_name, qty=new_qty)
@@ -1433,6 +1600,7 @@ def dm_container_add():
     if not ok:
         return jsonify(success=False, error=reason or 'Failed to add item to container'), 400
 
+    get_current_game().bump_render_epoch()
     get_socketio().emit('message', {'type': 'refresh_map'})
     status = entity.container_status(container_name, game_session)
     return jsonify(success=True, status=status)
@@ -1464,6 +1632,7 @@ def dm_container_remove():
     if not entity.remove_from_container(container_name, item_name, qty):
         return jsonify(success=False, error='Failed to remove item from container'), 400
 
+    get_current_game().bump_render_epoch()
     get_socketio().emit('message', {'type': 'refresh_map'})
     status = entity.container_status(container_name, game_session)
     return jsonify(success=True, status=status)
@@ -1589,15 +1758,18 @@ def update_controller():
             engine_controller = WebController(get_game_session(), None)
             engine_controller.add_user("dm")
             get_current_game().web_controllers[entity] = engine_controller
-        elif new_controller == 'ai':
-            engine_controller = GenericController(get_game_session())
-        elif new_controller == 'llm':
-            from natural20.llm_controller import LlmMcpController
-            from webapp.ai_config import combat_llm_provider_for
-            engine_controller = LlmMcpController(
-                get_game_session(),
-                llm_provider=combat_llm_provider_for(get_llm_handler(), entity),
-            )
+        else:
+            # 'ai' | 'llm' | 'hybrid' | 'agent:<name>' (named .ai.yaml bundle)
+            from webapp.ai_config import (build_combat_controller_for_spec,
+                                          is_controller_spec)
+            if not is_controller_spec(new_controller):
+                return jsonify(error=f"Unknown controller {new_controller!r}"), 400
+            engine_controller = build_combat_controller_for_spec(
+                get_game_session(), get_llm_handler(), entity, new_controller)
+            if engine_controller is None:  # manual-style agent bundle
+                engine_controller = WebController(get_game_session(), None)
+                engine_controller.add_user("dm")
+                get_current_game().web_controllers[entity] = engine_controller
 
         if engine_controller and battle:
             engine_controller.register_handlers_on(entity)
@@ -1795,6 +1967,7 @@ def grant_level_up():
             )
             if player.pending_level_ups() > 0:
                 get_socketio().emit('message', {'type': 'level_up_available', 'message': payload})
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         get_current_game().save_game_async()
     return jsonify({'success': True, 'grants': payloads})
@@ -1839,6 +2012,7 @@ def grant_event_level_up():
                     get_socketio().emit('message', {'type': 'level_up_available', 'message': payload})
         except ValueError as exc:
             return jsonify({'success': False, 'error': str(exc)}), 400
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         get_current_game().save_game_async()
     return jsonify({'success': True, 'event': event, 'grants': payloads})
@@ -1914,6 +2088,7 @@ def update_hp():
             entity._temp_hp = value
 
         # Emit update to refresh the UI for all connected clients
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         
         return jsonify({'success': True})
@@ -1953,6 +2128,7 @@ def update_inspiration():
             f"DM {'granted' if granted else 'cleared'} {label} on {entity.label()}",
             visibility='dm_only',
         )
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         return jsonify({
             'success': True,
@@ -2034,6 +2210,7 @@ def update_action_resources():
         )
         
         # Emit update to refresh the UI for all connected clients
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         
         return jsonify({
@@ -2093,6 +2270,7 @@ def update_resource_pool():
         f"DM updated {entity.label()}'s {resource_name.replace('_', ' ')} from {current_value} to {pool.current}",
         visibility='dm_only',
     )
+    get_current_game().bump_render_epoch()
     get_socketio().emit('message', {'type': 'refresh_map'})
 
     return jsonify({
@@ -2179,6 +2357,7 @@ def update_spell_slots():
         )
         
         # Emit update to refresh the UI for all connected clients
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         
         return jsonify({
@@ -2594,6 +2773,7 @@ def dm_move_entity():
         )
         
         # Emit update to refresh the UI for all connected clients
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
         
         return jsonify({
@@ -2672,6 +2852,7 @@ def admin_reset_campaign():
             pass
         try:
             get_socketio().emit('message', {'type': 'console', 'messages': []})
+            get_current_game().bump_render_epoch()
             get_socketio().emit('message', {'type': 'refresh_map'})
             get_socketio().emit(
                 'message',
@@ -3080,6 +3261,7 @@ def admin_activate_map_set():
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     try:
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
     except Exception:
         pass
@@ -3144,6 +3326,7 @@ def admin_place_party():
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     try:
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
     except Exception:
         pass
@@ -3213,6 +3396,7 @@ def admin_sidekick():
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     try:
+        get_current_game().bump_render_epoch()
         get_socketio().emit('message', {'type': 'refresh_map'})
     except Exception:
         pass

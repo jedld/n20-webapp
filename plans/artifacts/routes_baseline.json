@@ -1317,6 +1317,14 @@
     "rule": "/dm/items_catalog"
   },
   {
+    "endpoint": "dm.campaign_library_admin",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/dm/library"
+  },
+  {
     "endpoint": "dm.dm_notes_list",
     "methods": [
       "GET",

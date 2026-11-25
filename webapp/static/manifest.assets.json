@@ -32,13 +32,13 @@
     "styles.css": "styles.min.css"
   },
   "versions": {
-    "ai_config.min.js": "db4bf5dba5",
+    "ai_config.min.js": "d1cac392e7",
     "combat-log.min.js": "a8e282849c",
     "dm_notes.min.js": "a9c23e4e5d",
     "edit_mode.min.js": "7bd59c2b7c",
     "edit_properties.min.js": "9567e2667f",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "e8b09d9c2a",
+    "engine.min.js": "4721e87dc8",
     "grapple_links.min.js": "8c0dfdfd0a",
     "inert-polyfill.min.js": "fcce9c44c6",
     "map_annotations_edit.min.js": "a395fef84a",
@@ -61,8 +61,8 @@
     "journal.min.css": "51ba4e37df",
     "notebook.min.css": "e5ebb9b378",
     "sheet.min.css": "e203710971",
-    "styles.min.css": "efd344b0d2"
+    "styles.min.css": "762d067dba"
   },
-  "generatedAt": "2026-11-24T14:41:33.968Z",
-  "buildVersion": "3e6a7daa906c"
+  "generatedAt": "2026-11-25T05:02:58.285Z",
+  "buildVersion": "d29f101cb01a"
 }
