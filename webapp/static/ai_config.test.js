@@ -41,4 +41,18 @@ describe('ai_config panel helpers', () => {
   test('escapeHtml neutralizes markup', () => {
     expect(escapeHtml('<b a="1">&</b>')).toBe('&lt;b a=&quot;1&quot;&gt;&amp;&lt;/b&gt;');
   });
+
+  test('agentOptions lists configured and draft agent bundles with labels', () => {
+    const { Panel } = require('./ai_config');
+    const ctx = {
+      state: { agent_names: ['brute', 'skirmish'], agents: { brute: { label: 'Brute' } } },
+      draft: { agents: { local_agent: { controller: 'llm' } } },
+    };
+    const html = Panel.agentOptions.call(ctx, 'brute');
+    expect(html).toContain('value="brute" selected');
+    expect(html).toContain('Brute</option>');
+    expect(html).toContain('value="skirmish"');
+    expect(html).toContain('value="local_agent"');
+    expect(html).toContain('<option value="">inherit</option>');
+  });
 });

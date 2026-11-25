@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional, Tuple
@@ -31,18 +32,21 @@ SECRET_MASK = '********'
 
 PROVIDER_NAMES = ('llama_cpp', 'ollama', 'openai', 'anthropic', 'jev', 'mock')
 RESERVED_PROFILES = ('dm', 'npc', 'battle')
-CONTROLLER_KINDS = ('ai', 'llm', 'manual')
+CONTROLLER_KINDS = ('ai', 'llm', 'hybrid', 'manual')
 SCOPES = ('campaign', 'webapp')
 
 _PROFILE_STR_KEYS = ('provider', 'base_url', 'model', 'api_key', 'api_key_env', 'label')
 _PROFILE_INT_KEYS = ('context_window', 'timeout', 'max_tokens')
 _ENTITY_SECTIONS = {
-    'combat': {'controller': 'controller', 'provider': 'profile'},
+    'combat': {'controller': 'controller', 'provider': 'profile',
+               'strategist_provider': 'profile', 'agent': 'profile'},
     'conversation': {'provider': 'profile'},
     'tasks': {'enabled': 'bool', 'provider': 'profile'},
 }
 _GLOBAL_SECTIONS = {
-    'combat': {'npc_controller': 'controller', 'llm_provider': 'profile', 'force_llm': 'bool'},
+    'combat': {'npc_controller': 'controller', 'llm_provider': 'profile',
+               'strategist_provider': 'profile', 'npc_agent': 'profile',
+               'force_llm': 'bool'},
     'conversation': {'enabled': 'bool', 'provider': 'profile'},
     'tasks': {
         'provider': 'profile',
@@ -56,9 +60,15 @@ _GLOBAL_SECTIONS = {
 _ENTITY_FALLBACK = {
     ('combat', 'controller'): ('combat', 'npc_controller'),
     ('combat', 'provider'): ('combat', 'llm_provider'),
+    ('combat', 'agent'): ('combat', 'npc_agent'),
     ('conversation', 'provider'): ('conversation', 'provider'),
     ('tasks', 'provider'): ('tasks', 'provider'),
 }
+# Named agent bundles (the ``agents:`` top-level section): one place where a
+# controller kind + provider profiles + standing directives are packaged and
+# then referenced by name from npcs/sidekicks/the battle UI (like opencode /
+# openclaw agent configs).
+_AGENT_STR_KEYS = ('label', 'provider', 'strategist_provider', 'directives')
 
 _ENV_PROVIDER_VARS = {
     'llama_cpp': ('LLAMA_CPP_BASE_URL', 'LLAMA_CPP_MODEL', 'LLAMA_CPP_API_KEY'),
@@ -138,6 +148,8 @@ def _coerce(kind: str, value: Any) -> Any:
             return None
     if kind == 'controller':
         value = str(value).strip().lower()
+        if value.startswith('agent:'):
+            return value if value[len('agent:'):].strip() else None
         return value if value in CONTROLLER_KINDS else None
     if kind == 'profile':
         value = str(value).strip()
@@ -189,6 +201,28 @@ def _sanitize_entity(raw: Any) -> Dict[str, Any]:
     return out
 
 
+def _sanitize_agent(raw: Any) -> Dict[str, Any]:
+    """Validate one ``agents:`` bundle: controller kind + profile references +
+    free-text label/directives. Profiles are reference names, resolved later
+    against ``providers:`` (unknown names simply inherit the default chain)."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in _AGENT_STR_KEYS:
+        value = raw.get(key)
+        if value is None or str(value).strip() == '':
+            continue
+        out[key] = str(value).strip()
+    if raw.get('controller') not in (None, ''):
+        controller = _coerce('controller', raw.get('controller'))
+        if controller is None:
+            raise ValueError(
+                f"Unknown agent controller {raw.get('controller')!r}; "
+                f"expected one of {', '.join(CONTROLLER_KINDS)}")
+        out['controller'] = controller
+    return out
+
+
 def sanitize_layer(raw: Any) -> Dict[str, Any]:
     """Validate a layer payload; unknown keys are dropped, bad provider names raise."""
     if not isinstance(raw, dict):
@@ -202,6 +236,14 @@ def sanitize_layer(raw: Any) -> Dict[str, Any]:
             providers[name] = cleaned
     if providers:
         out['providers'] = providers
+    agents = {}
+    for name, definition in (raw.get('agents') or {}).items():
+        name = str(name or '').strip()
+        cleaned = _sanitize_agent(definition)
+        if name and cleaned:
+            agents[name] = cleaned
+    if agents:
+        out['agents'] = agents
     for section, schema in _GLOBAL_SECTIONS.items():
         cleaned = _sanitize_section(raw.get(section), schema)
         if cleaned:
@@ -356,6 +398,27 @@ class AiConfig:
             if name not in names:
                 names.append(name)
         return names
+
+    # -- named agent bundles --------------------------------------------
+    def agent(self, name: str) -> Optional[Dict[str, Any]]:
+        definition = (self.merged.get('agents') or {}).get(name)
+        return dict(definition) if isinstance(definition, dict) else None
+
+    def agent_names(self) -> list:
+        return list((self.merged.get('agents') or {}).keys())
+
+    def agent_for_entity(self, entity) -> Tuple[Optional[str], Optional[Dict[str, Any]], str]:
+        """``(agent_name, definition, source)`` for *entity*.
+
+        Resolution: per-NPC ``combat.agent`` -> sidekick default -> campaign
+        default ``combat.npc_agent``.
+        """
+        name, source = self.entity_setting(entity, 'combat', 'agent')
+        if not name:
+            return None, None, source
+        name = str(name).strip()
+        definition = self.agent(name)
+        return (name, definition, source) if definition else (name, None, source)
 
     # -- per-entity settings -------------------------------------------
     def _entity_keys(self, entity) -> Iterable[str]:
@@ -539,20 +602,39 @@ def provider_for_profile(handler, name: Optional[str]):
 
 
 def entity_combat_controller(entity) -> Optional[str]:
+    """Effective controller kind for *entity*.
+
+    Precedence: explicit per-NPC ``combat.controller`` -> the referenced
+    agent bundle's ``controller`` -> the campaign default
+    ``combat.npc_controller``.
+    """
     config = get_ai_config()
     if config is None or entity is None:
         return None
-    value, _source = config.entity_setting(entity, 'combat', 'controller')
-    return value if value in CONTROLLER_KINDS else None
+    value, source = config.entity_setting(entity, 'combat', 'controller')
+    if is_controller_spec(value) and source not in ('default', 'unset'):
+        return value
+    _name, definition, _source = config.agent_for_entity(entity)
+    if definition and definition.get('controller') in CONTROLLER_KINDS:
+        return definition['controller']
+    return value if is_controller_spec(value) else None
 
 
 def combat_llm_provider_for(handler, entity=None):
-    """Provider for an ``llm`` combat controller: per-NPC profile -> combat default -> battle slot."""
+    """Provider for an ``llm`` combat controller: per-NPC profile -> agent
+    bundle ``provider`` -> combat default -> battle slot -> DM slot."""
     config = get_ai_config()
-    if config is not None and entity is not None:
-        profile, _source = config.entity_setting(entity, 'combat', 'provider')
-    else:
-        profile = config.get('combat.llm_provider') if config is not None else None
+    profile = None
+    if config is not None:
+        if entity is not None:
+            profile, source = config.entity_setting(entity, 'combat', 'provider')
+            if source in ('default', 'unset'):
+                # Nothing explicit for this NPC: an agent bundle's provider
+                # takes precedence over the global combat default.
+                _name, definition, _s = config.agent_for_entity(entity)
+                profile = (definition or {}).get('provider') or profile
+        else:
+            profile = config.get('combat.llm_provider')
     provider = provider_for_profile(handler, profile) if profile else None
     if provider is not None:
         return provider
@@ -574,9 +656,212 @@ def _resolve_restored_combat_provider(entity):
     return combat_llm_provider_for(handler, entity)
 
 
+def strategist_llm_provider_for(handler, entity=None):
+    """Generative provider for a ``hybrid`` combat controller's strategist.
+
+    Per-NPC ``strategist_provider`` profile -> agent bundle
+    ``strategist_provider`` -> ``combat.strategist_provider`` -> the DM
+    provider. A JEV provider is never used here: JEV executes the hybrid
+    controller's decisions but cannot write plans (its ``send_message`` only
+    returns a note).
+    """
+    if handler is None:
+        return None
+    config = get_ai_config()
+    if config is not None and entity is not None:
+        profile, _source = config.entity_setting(entity, 'combat', 'strategist_provider')
+    else:
+        profile = None
+    if not profile and config is not None and entity is not None:
+        _name, definition, _s = config.agent_for_entity(entity)
+        profile = (definition or {}).get('strategist_provider')
+    if not profile and config is not None:
+        profile = config.get('combat.strategist_provider')
+    provider = provider_for_profile(handler, profile) if profile else None
+    if provider is None:
+        provider = getattr(handler, 'current_provider', None)
+    if provider is not None:
+        try:
+            from webapp.llm_handler import JevProvider
+            if isinstance(provider, JevProvider):
+                return None
+        except Exception:
+            pass
+    return provider
+
+
+def _resolve_restored_strategist_provider(entity):
+    """``HybridStrategistController.strategist_resolver``: rebind after a save."""
+    try:
+        from webapp.blueprints.helpers.runtime_state import get_llm_handler
+        handler = get_llm_handler()
+    except Exception:
+        return None
+    return strategist_llm_provider_for(handler, entity)
+
+
+def build_llm_combat_controller(game_session, handler, entity=None, kind='llm'):
+    """Build an ``llm`` or ``hybrid`` combat controller with the right providers.
+
+    - ``llm``: one provider for decisions (per-NPC profile -> agent bundle ->
+      combat default -> battle provider -> DM provider), as before.
+    - ``hybrid``: that same executor provider (typically JEV) plus a
+      generative strategist provider for turn plans.
+
+    When *entity* has a configured agent bundle, its directives and profile
+    references are stamped onto the controller (``agent_name`` /
+    ``agent_persona`` + ``state['agent_profile']``) so they survive saves.
+    """
+    from natural20.llm_controller import LlmMcpController, HybridStrategistController
+    provider = combat_llm_provider_for(handler, entity) if handler is not None else None
+    controller = None
+    if (kind or '').lower() == 'hybrid':
+        strategist = strategist_llm_provider_for(handler, entity)
+        controller = HybridStrategistController(
+            game_session, llm_provider=provider, strategist_provider=strategist)
+    else:
+        controller_class = LlmMcpController
+        utils_module = sys.modules.get('webapp.utils')
+        if utils_module is not None:
+            controller_class = getattr(utils_module, 'LlmMcpController', controller_class)
+        controller = controller_class(game_session, llm_provider=provider)
+    stamp_agent_identity_for_entity(controller, entity)
+    return controller
+
+
+# ---------------------------------------------------------------------- #
+# Named agent bundles (``agents:`` in .ai.yaml)                           #
+# ---------------------------------------------------------------------- #
+
+def parse_controller_spec(spec) -> Tuple[str, Optional[str]]:
+    """``'agent:<name>'`` -> ``('agent', name)``; otherwise ``('kind', kind)``."""
+    value = str(spec or '').strip().lower()
+    if value.startswith('agent:'):
+        return 'agent', value[len('agent:'):].strip()
+    return 'kind', value
+
+
+def is_controller_spec(spec) -> bool:
+    """True for ``manual``/``ai``/``llm``/``hybrid`` or ``agent:<configured>``."""
+    kind_or_agent, value = parse_controller_spec(spec)
+    if kind_or_agent == 'kind':
+        return value in CONTROLLER_KINDS
+    if not value:
+        return False
+    config = get_ai_config()
+    return bool(config and config.agent(value))
+
+
+def stamp_agent_identity(controller, agent_name: str, definition: Dict[str, Any]) -> None:
+    """Record the agent bundle on the controller for display, prompt context
+    (``agent_persona`` -> JEV / strategist context) and save-restore.
+
+    The engine controller persists these attributes (``to_dict``) and rebinds
+    profile references through ``profile_resolver`` after a load."""
+    if controller is None or not agent_name:
+        return
+    controller.agent_name = agent_name
+    controller.agent_persona = str((definition or {}).get('directives') or '').strip() or None
+    controller.agent_profile = (str(definition['provider'])
+                                if (definition or {}).get('provider') else None)
+    controller.agent_strategist_profile = (str(definition['strategist_provider'])
+                                           if (definition or {}).get('strategist_provider') else None)
+
+
+def stamp_agent_identity_for_entity(controller, entity) -> None:
+    """Stamp the entity's configured agent bundle (campaign ``combat.npc_agent``
+    or per-NPC ``combat.agent``) onto a controller built by kind."""
+    config = get_ai_config()
+    if config is None or controller is None or entity is None:
+        return
+    name, definition, _source = config.agent_for_entity(entity)
+    if definition:
+        stamp_agent_identity(controller, name, definition)
+
+
+def build_combat_controller_from_agent(game_session, handler, entity, agent_name):
+    """Build the controller packaged by a named ``agents:`` bundle.
+
+    Returns ``None`` when the bundle is unknown or asks for ``manual`` (the
+    caller keeps its own web/manual controller logic). The controller carries
+    ``agent_name`` / ``agent_persona`` and its profile references in
+    ``state`` so a save/restore rebinds to the same profiles.
+    """
+    config = get_ai_config()
+    definition = config.agent(agent_name) if config else None
+    if not definition:
+        return None
+    kind = (definition.get('controller') or 'llm').lower()
+    if kind == 'manual':
+        return None
+    if kind == 'ai':
+        from natural20.generic_controller import GenericController
+        controller = GenericController(game_session)
+    else:
+        provider = None
+        if handler is not None and definition.get('provider'):
+            provider = provider_for_profile(handler, definition['provider'])
+        if provider is None:
+            provider = combat_llm_provider_for(handler, entity) if handler is not None else None
+        if kind == 'hybrid':
+            from natural20.llm_controller import HybridStrategistController
+            strategist = None
+            if handler is not None and definition.get('strategist_provider'):
+                strategist = provider_for_profile(handler, definition['strategist_provider'])
+            if strategist is None:
+                strategist = strategist_llm_provider_for(handler, entity)
+            controller = HybridStrategistController(
+                game_session, llm_provider=provider, strategist_provider=strategist)
+        else:
+            from natural20.llm_controller import LlmMcpController
+            controller_class = LlmMcpController
+            utils_module = sys.modules.get('webapp.utils')
+            if utils_module is not None:
+                controller_class = getattr(utils_module, 'LlmMcpController', controller_class)
+            controller = controller_class(game_session, llm_provider=provider)
+    stamp_agent_identity(controller, agent_name, definition)
+    return controller
+
+
+def build_combat_controller_for_spec(game_session, handler, entity, spec):
+    """Build a combat controller from a UI/MCP spec string.
+
+    Accepted: ``manual`` | ``ai`` | ``llm`` | ``hybrid`` | ``agent:<name>``.
+    Returns ``None`` for ``manual``/unknown agents so callers keep their
+    existing manual-controller handling.
+    """
+    kind_or_agent, value = parse_controller_spec(spec)
+    if kind_or_agent == 'agent':
+        return build_combat_controller_from_agent(game_session, handler, entity, value)
+    if value == 'ai':
+        from natural20.generic_controller import GenericController
+        controller = GenericController(game_session)
+        stamp_agent_identity_for_entity(controller, entity)
+        return controller
+    if value in ('llm', 'hybrid'):
+        return build_llm_combat_controller(game_session, handler, entity, kind=value)
+    return None
+
+
+def _resolve_saved_agent_profile(profile_name):
+    """``LlmMcpController.profile_resolver``: rebind an agent bundle's profile
+    after a save (profile names, not live providers, are persisted)."""
+    try:
+        from webapp.blueprints.helpers.runtime_state import get_llm_handler
+        handler = get_llm_handler()
+    except Exception:
+        return None
+    if handler is None or not profile_name:
+        return None
+    return provider_for_profile(handler, str(profile_name))
+
+
 def install_combat_provider_resolver() -> None:
-    from natural20.llm_controller import LlmMcpController
+    from natural20.llm_controller import LlmMcpController, HybridStrategistController
     LlmMcpController.provider_resolver = staticmethod(_resolve_restored_combat_provider)
+    LlmMcpController.profile_resolver = staticmethod(_resolve_saved_agent_profile)
+    HybridStrategistController.strategist_resolver = staticmethod(_resolve_restored_strategist_provider)
+    HybridStrategistController.provider_resolver = staticmethod(_resolve_restored_combat_provider)
 
 
 def entity_tasks_enabled(entity) -> bool:
@@ -727,6 +1012,8 @@ def config_payload(game=None, handler=None) -> Dict[str, Any]:
             'layers': config.masked(),
             'effective': mask_layer(config.merged),
             'profiles': config.profile_names(),
+            'agents': copy.deepcopy(config.merged.get('agents') or {}),
+            'agent_names': config.agent_names(),
         })
     if handler is not None:
         status = {}

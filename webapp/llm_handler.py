@@ -1079,6 +1079,30 @@ class LlamaCppProvider(LLMProvider):
         return int(self.context_window) if self.context_window else None
 
 
+def _jev_env_request_logger() -> Optional[Callable[[Dict[str, Any]], None]]:
+    """File-backed JEV request logger used when no explicit one is installed.
+
+    Opt-in with ``N20_JEV_REQUEST_LOGS=1``: appends every ``decide_action`` /
+    ``decide_bool`` request+response (the *exact* state string the decision
+    model saw, including any ``commander's orders`` block) as one JSON line
+    to ``<N20_LOG_DIR>/jev_decisions.jsonl`` (default ``llm_logs/``). Lets a
+    DM verify live that strategist orders reach every JEV question."""
+    flag = (os.environ.get('N20_JEV_REQUEST_LOGS') or '').strip().lower()
+    if flag not in ('1', 'true', 'yes', 'on'):
+        return None
+
+    def _dump(record: Dict[str, Any]) -> None:
+        log_dir = Path(os.environ.get('N20_LOG_DIR', 'llm_logs'))
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with open(log_dir / 'jev_decisions.jsonl', 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as e:  # logging must never break combat
+            logger.warning("[JevProvider] request log write failed: %s", e)
+
+    return _dump
+
+
 class JevProvider(LLMProvider):
     """TypeSafe Jev "System One" decision-model provider.
 
@@ -1307,7 +1331,10 @@ class JevProvider(LLMProvider):
                           response: Optional[Dict[str, Any]] = None,
                           error: Optional[str] = None,
                           latency_ms: Optional[float] = None) -> None:
-        if not callable(self.request_logger):
+        logger_fn = self.request_logger
+        if not callable(logger_fn):
+            logger_fn = _jev_env_request_logger()
+        if not callable(logger_fn):
             return
         record = {
             'v': 1,
@@ -1324,7 +1351,7 @@ class JevProvider(LLMProvider):
             record['latency_ms'] = float(latency_ms)
         with self._request_log_lock:
             try:
-                self.request_logger(record)
+                logger_fn(record)
             except Exception as e:
                 logger.error(f"[JevProvider] request logger failed: {e}")
 

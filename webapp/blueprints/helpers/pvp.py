@@ -50,6 +50,21 @@ def selectable_character_entry(character_name):
                 return character
     except Exception:
         pass
+    try:
+        from .character_selection import map_defined_player_entries
+        for character in map_defined_player_entries(get_game_session()) or []:
+            if str(character.get('name', '')).lower() == target:
+                return character
+            overrides = character.get('overrides') or {}
+            if str(overrides.get('entity_uid') or '').lower() == target:
+                return character
+            sheet = str(character.get('sheet') or '')
+            if sheet:
+                sheet_stem = os.path.splitext(os.path.basename(sheet))[0].lower()
+                if sheet_stem == target:
+                    return character
+    except Exception:
+        pass
     return None
 
 

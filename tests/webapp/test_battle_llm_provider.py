@@ -344,5 +344,69 @@ class TestJevRequestLogging(unittest.TestCase):
         self.assertIsInstance(record['latency_ms'], float)
 
 
-if __name__ == '__main__':
-    unittest.main()
+class TestJevEnvRequestLogging(unittest.TestCase):
+    """``N20_JEV_REQUEST_LOGS=1`` dumps every JEV wire payload to llm_logs.
+
+    This is the live-game verification hook for the hybrid strategist: the
+    recorded ``state`` string is exactly what the decision model saw, so a
+    DM can grep it for the ``commander's orders`` block."""
+
+    _ENV_VARS = ('N20_JEV_REQUEST_LOGS', 'N20_LOG_DIR')
+
+    def setUp(self):
+        import tempfile
+        from webapp.llm_handler import JevProvider
+        self.JevProvider = JevProvider
+        self._saved = {k: os.environ.get(k) for k in self._ENV_VARS}
+        self.tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.tmpdir.cleanup()
+
+    def _mock_provider(self):
+        provider = self.JevProvider({})
+        provider.client = MagicMock()
+        provider.client.system_one.return_value = MagicMock(
+            choices={'action': MagicMock(choice='0', confidence=0.9,
+                                         probabilities=None)})
+        return provider
+
+    def _run_decide(self, provider):
+        with patch.object(self.JevProvider, '_import_sdk',
+                          return_value=(None, MagicMock(), None)):
+            provider.decide_action("state with commander's orders", ['alpha'])
+
+    def test_env_flag_writes_jsonl(self):
+        import json
+        os.environ['N20_JEV_REQUEST_LOGS'] = '1'
+        os.environ['N20_LOG_DIR'] = self.tmpdir.name
+        self._run_decide(self._mock_provider())
+        path = os.path.join(self.tmpdir.name, 'jev_decisions.jsonl')
+        with open(path, encoding='utf-8') as fh:
+            records = [json.loads(line) for line in fh]
+        self.assertEqual(len(records), 1)
+        self.assertIn("commander's orders", records[0]['request']['state'])
+
+    def test_off_by_default(self):
+        os.environ.pop('N20_JEV_REQUEST_LOGS', None)
+        os.environ['N20_LOG_DIR'] = self.tmpdir.name
+        self._run_decide(self._mock_provider())
+        self.assertEqual(os.listdir(self.tmpdir.name), [])
+
+    def test_explicit_logger_wins_over_env_file(self):
+        os.environ['N20_JEV_REQUEST_LOGS'] = '1'
+        os.environ['N20_LOG_DIR'] = self.tmpdir.name
+        records = []
+        provider = self.JevProvider({}, request_logger=records.append)
+        provider.client = MagicMock()
+        provider.client.system_one.return_value = MagicMock(
+            choices={'action': MagicMock(choice='0', confidence=0.9,
+                                         probabilities=None)})
+        self._run_decide(provider)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(os.listdir(self.tmpdir.name), [])

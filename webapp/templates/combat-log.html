@@ -18,6 +18,7 @@
             <!-- Combat log messages will be dynamically inserted here -->
         </div>
         <button id="refresh-log" class="btn btn-primary" style="margin-top: 20px;">Refresh Log</button>
+        <button id="copy-log" class="btn btn-default" style="margin-top: 20px;">Copy Log</button>
     </div>
     <script>
         $(document).ready(function() {
@@ -32,6 +33,40 @@
                 });
             }
 
+            // Copy the whole log (as plain text, one message per line)
+            function copyCombatLog() {
+                var lines = $('#console p').map(function() {
+                    return $(this).text();
+                }).get().join('\n');
+                var $button = $('#copy-log');
+                function flash(label) {
+                    var original = $button.data('label') || $button.text();
+                    $button.data('label', original).text(label);
+                    setTimeout(function() { $button.text(original); }, 1500);
+                }
+                function legacyCopy() {
+                    var $tmp = $('<textarea>').val(lines).css({
+                        position: 'fixed', top: 0, left: -9999
+                    }).appendTo(document.body);
+                    $tmp[0].select();
+                    var ok = false;
+                    try { ok = document.execCommand('copy'); } catch (e) {}
+                    $tmp.remove();
+                    flash(ok ? 'Copied!' : 'Copy failed');
+                }
+                if (!lines) {
+                    flash('Log is empty');
+                    return;
+                }
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(lines)
+                        .then(function() { flash('Copied!'); })
+                        .catch(legacyCopy);
+                } else {
+                    legacyCopy();
+                }
+            }
+
             // Initial fetch of combat log messages
             fetchCombatLog();
 
@@ -39,6 +74,9 @@
             $('#refresh-log').click(function() {
                 fetchCombatLog();
             });
+
+            // Copy log button click event
+            $('#copy-log').click(copyCombatLog);
         });
     </script>
 </body>

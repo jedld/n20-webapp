@@ -52,6 +52,10 @@
             <option value="manual" {% if ctrl_obj and ctrl_obj.__class__.__name__ == 'WebController' %}selected{% endif %}>M</option>
             <option value="ai" {% if ctrl_obj and ctrl_obj.__class__.__name__ == 'GenericController' %}selected{% endif %}>AI</option>
             <option value="llm" {% if ctrl_obj and ctrl_obj.__class__.__name__ == 'LlmMcpController' %}selected{% endif %}>LLM</option>
+            <option value="hybrid" {% if ctrl_obj and ctrl_obj.__class__.__name__ == 'HybridStrategistController' %}selected{% endif %}>H</option>
+            {% for agent in ai_agent_options() %}
+            <option value="agent:{{ agent.name }}" {% if ctrl_obj and ctrl_obj.agent_name == agent.name %}selected{% endif %}>{{ agent.label }} ({{ agent.controller }})</option>
+            {% endfor %}
           </select>
         </div>
         <div class="turn-order-col initiative-col">

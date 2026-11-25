@@ -404,6 +404,26 @@ def format_outward_appearance(entity):
     }
 
 
+def ai_agent_options():
+    """Named agent bundles from the ``.ai.yaml`` ``agents:`` registry.
+
+    Returns ``[{'name', 'label', 'controller'}, ...]`` for the controller
+    selects (turn order, add-to-combat, DM console default)."""
+    try:
+        from webapp.ai_config import get_ai_config
+        config = get_ai_config()
+        if config is None:
+            return []
+        return [
+            {'name': name,
+             'label': (definition or {}).get('label') or name,
+             'controller': (definition or {}).get('controller') or 'llm'}
+            for name, definition in (config.merged.get('agents') or {}).items()
+        ]
+    except Exception:
+        return []
+
+
 def register_template_globals(flask_app):
     """Register all template globals/filters on ``flask_app``."""
     from webapp.blueprints.helpers.action_utils import process_action_hash
@@ -433,6 +453,7 @@ def register_template_globals(flask_app):
     flask_app.add_template_global(describe_terrain, name='describe_terrain')
     flask_app.add_template_global(process_action_hash, name='process_action_hash')
     flask_app.add_template_global(reaction_template_for, name='reaction_template_for')
+    flask_app.add_template_global(ai_agent_options, name='ai_agent_options')
 
     from webapp.blueprints.helpers.campaign_config import character_description_suppressed_for, highlight_doors_enabled
 

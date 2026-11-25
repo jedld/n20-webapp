@@ -83,8 +83,97 @@ def load_character_selection_settings(
     }
 
 
+def _sheet_metadata(game_session, sheet: str) -> Dict[str, Any]:
+    """Read ``name``/``description`` from a character sheet YAML (inherit-aware)."""
+    import os
+
+    meta: Dict[str, Any] = {}
+    try:
+        from natural20.yaml_loader import load_yaml
+
+        path = str(sheet)
+        if not os.path.isabs(path):
+            root = getattr(game_session, 'root_path', None) or ''
+            if not path.endswith('.yml'):
+                path += '.yml'
+            path = os.path.join(root, path)
+        data = load_yaml(path, campaign_root=getattr(game_session, 'root_path', None))
+        if isinstance(data, dict):
+            meta['display_name'] = str(data.get('name') or '')
+            description = data.get('description')
+            if isinstance(description, str):
+                meta['description'] = description.strip()
+    except Exception:
+        pass
+    return meta
+
+
+def map_defined_player_entries(game_session=None) -> List[Dict[str, Any]]:
+    """Selectable PC entries derived from campaign map ``player:`` definitions.
+
+    Campaigns that author party members directly in map YAML (``player:`` with
+    ``sheet`` + ``overrides.entity_uid``) don't need a matching
+    ``index.json`` ``selectable_characters`` row for players to claim them at
+    login or for the DM to assign them in user management.
+    """
+    import os
+
+    if game_session is None:
+        from .runtime_state import get_game_session
+
+        try:
+            game_session = get_game_session()
+        except Exception:
+            game_session = None
+    if game_session is None:
+        return []
+
+    entries: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        maps = list((getattr(game_session, 'maps', None) or {}).values())
+    except Exception:
+        return []
+
+    for map_obj in maps:
+        try:
+            properties = getattr(map_obj, 'properties', None) or {}
+            player_defs = properties.get('player') or []
+            map_name = getattr(map_obj, 'name', None)
+        except Exception:
+            continue
+        for player_def in player_defs:
+            if not isinstance(player_def, dict):
+                continue
+            sheet = str(player_def.get('sheet') or '').strip()
+            if not sheet or sheet.startswith('npcs/'):
+                continue
+            overrides = dict(player_def.get('overrides') or {})
+            name = str(overrides.get('entity_uid') or '').strip()
+            if not name:
+                name = os.path.splitext(os.path.basename(sheet))[0]
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            overrides.setdefault('entity_uid', name)
+            entry: Dict[str, Any] = {
+                'name': name,
+                'sheet': sheet,
+                'overrides': overrides,
+                'map': map_name,
+                'source': 'map_player',
+            }
+            meta = _sheet_metadata(game_session, sheet)
+            if meta.get('display_name'):
+                entry['display_name'] = meta['display_name']
+            if meta.get('description'):
+                entry['description'] = meta['description']
+            entries.append(entry)
+    return entries
+
+
 def collect_selectable_entries(index_data: Optional[Dict[str, Any]] = None, game_session=None) -> List[Dict[str, Any]]:
-    """PC rows from ``index.json`` plus campaign ``selectable: true`` sidekicks."""
+    """PC rows from ``index.json``, campaign sidekicks, and map ``player:`` PCs."""
     if index_data is None:
         from .runtime_state import get_index_data
 
@@ -100,8 +189,14 @@ def collect_selectable_entries(index_data: Optional[Dict[str, Any]] = None, game
         except Exception:
             game_session = None
 
+    import os
+
     selectable = list(index_data.get('selectable_characters') or [])
     existing = {str(entry.get('name') or '').lower() for entry in selectable if isinstance(entry, dict)}
+    existing_stems = set()
+    for entry in selectable:
+        if isinstance(entry, dict) and entry.get('sheet'):
+            existing_stems.add(os.path.splitext(os.path.basename(str(entry['sheet'])))[0].lower())
     if game_session is None:
         return selectable
     try:
@@ -114,6 +209,16 @@ def collect_selectable_entries(index_data: Optional[Dict[str, Any]] = None, game
                 existing.add(name)
     except Exception:
         pass
+
+    for entry in map_defined_player_entries(game_session):
+        name = str(entry.get('name') or '').lower()
+        stem = os.path.splitext(os.path.basename(str(entry.get('sheet') or '')))[0].lower()
+        if name in existing or (stem and stem in existing_stems):
+            continue
+        selectable.append(entry)
+        existing.add(name)
+        if stem:
+            existing_stems.add(stem)
     return selectable
 
 

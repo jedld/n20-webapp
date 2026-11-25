@@ -23,7 +23,7 @@
     ['timeout', 'Timeout (s)', 'number'],
     ['max_tokens', 'Max tokens', 'number'],
   ];
-  const CONTROLLER_LABELS = { ai: 'Deterministic AI', llm: 'LLM', manual: 'Manual (owner / DM)' };
+  const CONTROLLER_LABELS = { ai: 'Deterministic AI', llm: 'LLM', hybrid: 'Hybrid (LLM plans + JEV)', manual: 'Manual (owner / DM)' };
 
   function getPath(obj, path) {
     return path.split('.').reduce((node, key) => (node && typeof node === 'object' ? node[key] : undefined), obj);
@@ -192,12 +192,14 @@
         <div class="ai-config-status"></div>
         <ul class="nav nav-pills ai-config-subnav">
           <li class="active"><a href="#ai-cfg-providers" data-toggle="pill">Providers</a></li>
+          <li><a href="#ai-cfg-agents" data-toggle="pill">Agents</a></li>
           <li><a href="#ai-cfg-combat" data-toggle="pill">Combat</a></li>
           <li><a href="#ai-cfg-npc-ai" data-toggle="pill">Conversation &amp; Tasks</a></li>
           <li><a href="#ai-cfg-npcs" data-toggle="pill">Per-NPC</a></li>
         </ul>
         <div class="tab-content ai-config-body">
           <div class="tab-pane active" id="ai-cfg-providers">${this.renderProviders()}</div>
+          <div class="tab-pane" id="ai-cfg-agents">${this.renderAgents()}</div>
           <div class="tab-pane" id="ai-cfg-combat">${this.renderCombat()}</div>
           <div class="tab-pane" id="ai-cfg-npc-ai">${this.renderNpcAi()}</div>
           <div class="tab-pane" id="ai-cfg-npcs">${this.renderNpcs()}</div>
@@ -286,6 +288,78 @@
         </div>`;
     },
 
+    agentOptions(selected, includeInherit = true, inheritLabel = 'inherit') {
+      const names = (this.state.agent_names || [])
+        .concat(Object.keys(this.draft.agents || {}))
+        .filter((name, idx, arr) => arr.indexOf(name) === idx);
+      let html = includeInherit ? `<option value="">${escapeHtml(inheritLabel)}</option>` : '';
+      names.forEach((name) => {
+        const label = ((this.state.agents || {})[name] || {}).label;
+        html += `<option value="${escapeHtml(name)}" ${selected === name ? 'selected' : ''}>${escapeHtml(label || name)}</option>`;
+      });
+      return html;
+    },
+
+    renderAgent(name) {
+      const base = `agents.${name}`;
+      const agent = getPath(this.draft, base) || {};
+      const elsewhere = !(this.draft.agents || {})[name];
+      const effective = (this.state.agents || {})[name] || {};
+      const shown = Object.assign({}, effective, agent);
+      return `
+        <div class="panel panel-default ai-config-profile ai-config-agent" data-agent="${escapeHtml(name)}">
+          <div class="panel-heading">
+            <strong>${escapeHtml(shown.label || name)}</strong>
+            <small class="text-muted">${escapeHtml(shown.controller || 'llm')}${shown.provider ? ` · ${escapeHtml(shown.provider)}` : ''}${shown.strategist_provider ? ` + ${escapeHtml(shown.strategist_provider)}` : ''}</small>
+            ${elsewhere ? '<span class="label label-default">defined in other layer</span>' : ''}
+            <span class="pull-right">
+              ${elsewhere ? '' : `<button type="button" class="btn btn-xs btn-danger ai-config-remove-agent" data-agent="${escapeHtml(name)}">Remove</button>`}
+            </span>
+          </div>
+          <div class="panel-body">
+            <div class="row">
+              <div class="col-sm-4 form-group ai-config-field">
+                <label>Controller kind</label>
+                <select class="form-control input-sm" data-path="${base}.controller">${this.controllerOptions(agent.controller)}</select>
+              </div>
+              <div class="col-sm-4 form-group ai-config-field">
+                <label>Combat / SystemOne profile</label>
+                <select class="form-control input-sm" data-path="${base}.provider">${this.profileOptions(agent.provider, true, 'default (combat → battle → dm)')}</select>
+              </div>
+              <div class="col-sm-4 form-group ai-config-field">
+                <label>Strategist profile (hybrid)</label>
+                <select class="form-control input-sm" data-path="${base}.strategist_provider">${this.profileOptions(agent.strategist_provider, true, 'default (combat → dm)')}</select>
+              </div>
+              <div class="col-sm-4 form-group ai-config-field">
+                <label>Display label</label>
+                <input class="form-control input-sm" type="text" data-path="${base}.label" data-kind="text"
+                  value="${escapeHtml(agent.label ?? '')}" placeholder="${escapeHtml(name)}" autocomplete="off">
+              </div>
+              <div class="col-sm-12 form-group ai-config-field">
+                <label>Standing orders / directives</label>
+                <textarea class="form-control input-sm" rows="3" data-path="${base}.directives" data-kind="text"
+                  placeholder="e.g. Focus archers and casters. Attackers open with the breath weapon, then hold the corridor. Never pursue.">${escapeHtml(agent.directives ?? '')}</textarea>
+                <p class="help-block">Fed into this agent's combat prompts every decision: the JEV state context, the LLM decision prompt and the hybrid strategist plan.</p>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    },
+
+    renderAgents() {
+      const names = (this.state.agent_names || [])
+        .concat(Object.keys(this.draft.agents || {}))
+        .filter((name, idx, arr) => arr.indexOf(name) === idx);
+      return `
+        <p class="help-block">Named agents package a controller kind, provider profiles (any LLM, including SystemOne/JEV) and standing orders in one place. Reference them from the Per-NPC tab, the sidekick defaults, the campaign "Default NPC agent", or live during combat from the turn-order controller select.</p>
+        ${names.map((name) => this.renderAgent(name)).join('')}
+        <div class="form-inline ai-config-add-profile">
+          <input type="text" class="form-control input-sm ai-config-new-agent" placeholder="agent name (e.g. brutal_warrior)">
+          <button type="button" class="btn btn-default btn-sm ai-config-add-agent-btn">Add agent</button>
+          <span class="help-block">Adds agents.&lt;name&gt; to this layer. Assign it per NPC, as the campaign default, or from the battle controller select (<code>agent:&lt;name&gt;</code>).</span>
+        </div>`;
+    },
+
     renderCombat() {
       return `
         <h5>NPC combat</h5>
@@ -295,6 +369,12 @@
             'Deterministic AI uses the built-in heuristics; LLM asks a model each turn and falls back to heuristics.')}</div>
           <div class="col-sm-6">${this.selectField('combat.llm_provider', 'LLM combat profile',
             this.profileOptions(getPath(this.draft, 'combat.llm_provider'), true, 'inherit (battle → dm)'))}</div>
+          <div class="col-sm-6">${this.selectField('combat.strategist_provider', 'Hybrid strategist profile',
+            this.profileOptions(getPath(this.draft, 'combat.strategist_provider'), true, 'inherit (dm)'),
+            'For Hybrid controllers: the generative model that writes step-by-step turn plans for the JEV executor (plans shown DM-only).')}</div>
+          <div class="col-sm-6">${this.selectField('combat.npc_agent', 'Default NPC agent',
+            this.agentOptions(getPath(this.draft, 'combat.npc_agent'), true, this.inheritLabel('combat.npc_agent')),
+            'Named agent bundle used for every NPC without its own controller or agent (see the Agents tab).')}</div>
           <div class="col-sm-6">${this.triSelect('combat.force_llm', 'Force LLM for every NPC', 'Overrides per-NPC controllers (NPC_LLM_COMBAT_ENABLED).')}</div>
         </div>
         <h5>Sidekicks in the party</h5>
@@ -304,6 +384,10 @@
             this.controllerOptions(getPath(this.draft, 'sidekicks.combat.controller'), 'inherit (owner, else NPC default)'))}</div>
           <div class="col-sm-6">${this.selectField('sidekicks.combat.provider', 'Sidekick LLM combat profile',
             this.profileOptions(getPath(this.draft, 'sidekicks.combat.provider'), true, 'inherit'))}</div>
+          <div class="col-sm-6">${this.selectField('sidekicks.combat.strategist_provider', 'Sidekick hybrid strategist profile',
+            this.profileOptions(getPath(this.draft, 'sidekicks.combat.strategist_provider'), true, 'inherit (combat → dm)'))}</div>
+          <div class="col-sm-6">${this.selectField('sidekicks.combat.agent', 'Sidekick agent',
+            this.agentOptions(getPath(this.draft, 'sidekicks.combat.agent'), true, 'inherit'))}</div>
         </div>`;
     },
 
@@ -359,7 +443,9 @@
             <div class="text-muted small">${escapeHtml(key)}${meta.map ? ` · ${escapeHtml(meta.map)}` : ''}</div>
           </td>
           <td>${sel('combat.controller', this.controllerOptions(getPath(this.draft, `${base}.combat.controller`)))}</td>
+          <td>${sel('combat.agent', this.agentOptions(getPath(this.draft, `${base}.combat.agent`)))}</td>
           <td>${sel('combat.provider', this.profileOptions(getPath(this.draft, `${base}.combat.provider`)))}</td>
+          <td>${sel('combat.strategist_provider', this.profileOptions(getPath(this.draft, `${base}.combat.strategist_provider`)))}</td>
           <td>${sel('conversation.provider', this.profileOptions(getPath(this.draft, `${base}.conversation.provider`)))}</td>
           <td>
             <select class="form-control input-sm" data-path="${base}.tasks.enabled" data-kind="tri">
@@ -395,8 +481,8 @@
         <p class="help-block">Blank = inherit (individual → type → sidekick defaults → general defaults). "→" shows what is in effect now.</p>
         <div class="ai-config-npc-table-wrap">
           <table class="table table-condensed ai-config-npc-table">
-            <thead><tr><th>NPC</th><th>Combat</th><th>Combat profile</th><th>Conversation</th><th>Tasks</th><th>Task profile</th></tr></thead>
-            <tbody>${rows.join('') || '<tr><td colspan="6" class="text-muted">No NPCs on loaded maps.</td></tr>'}</tbody>
+            <thead><tr><th>NPC</th><th>Combat</th><th>Agent</th><th>Combat profile</th><th>Strategist profile</th><th>Conversation</th><th>Tasks</th><th>Task profile</th></tr></thead>
+            <tbody>${rows.join('') || '<tr><td colspan="8" class="text-muted">No NPCs on loaded maps.</td></tr>'}</tbody>
           </table>
         </div>`;
     },
@@ -448,6 +534,20 @@
       this.$root.on('click', '.ai-config-remove-profile', function () {
         const name = $(this).data('profile');
         if (self.draft.providers) delete self.draft.providers[name];
+        self.markDirty();
+        self.render();
+      });
+      this.$root.on('click', '.ai-config-add-agent-btn', () => {
+        const name = (self.$root.find('.ai-config-new-agent').val() || '').trim().replace(/[^A-Za-z0-9_-]/g, '_');
+        if (!name) return;
+        if ((self.draft.agents || {})[name]) return;
+        setPath(self.draft, `agents.${name}.controller`, 'llm');
+        self.markDirty();
+        self.render();
+      });
+      this.$root.on('click', '.ai-config-remove-agent', function () {
+        const name = $(this).data('agent');
+        if (self.draft.agents) delete self.draft.agents[name];
         self.markDirty();
         self.render();
       });

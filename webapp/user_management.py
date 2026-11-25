@@ -9,6 +9,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from .blueprints.helpers.character_selection import collect_selectable_entries
 from .blueprints.helpers.pvp import (
     ensure_character_entity_loaded,
     selectable_character_entry,
@@ -149,7 +150,7 @@ def list_users() -> Dict[str, Any]:
         if controller.get('controllers'):
             taken.add(str(controller.get('entity_uid')))
 
-    for character in get_index_data().get('selectable_characters') or []:
+    for character in collect_selectable_entries(get_index_data(), get_game_session()):
         name = str(character.get('name') or '')
         selectable.append({
             'character_uid': name,

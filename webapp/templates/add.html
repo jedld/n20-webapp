@@ -10,6 +10,10 @@
       <option value="manual" {% if default_controller == 'manual' %}selected{% endif %}>Manual</option>
       <option value="ai" {% if default_controller == 'ai' %}selected{% endif %}>AI</option>
       <option value="llm" {% if default_controller == 'llm' %}selected{% endif %}>LLM</option>
+      <option value="hybrid" {% if default_controller == 'hybrid' %}selected{% endif %}>Hybrid</option>
+      {% for agent in ai_agent_options() %}
+      <option value="agent:{{ agent.name }}" {% if default_controller == 'agent:' + agent.name %}selected{% endif %}>{{ agent.label }} ({{ agent.controller }})</option>
+      {% endfor %}
     </select>
     <button class="remove-turn-order-item btn btn-danger" style="width: 100px; margin-left: 10px;">Remove</button>
   </form>

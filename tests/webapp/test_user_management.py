@@ -136,6 +136,49 @@ class TestUserManagement(unittest.TestCase):
         with self.assertRaises(UserManagementError):
             assign_character('alice', 'gomerin')
 
+    def test_map_defined_pc_visible_and_assignable(self):
+        """Party PCs authored only in map ``player:`` YAML can be assigned by the DM."""
+        import os
+        from types import SimpleNamespace
+
+        chars_dir = os.path.join(self.tmpdir, 'characters')
+        os.makedirs(chars_dir, exist_ok=True)
+        with open(os.path.join(chars_dir, 'goliath_paladin.yml'), 'w', encoding='utf-8') as fh:
+            fh.write('name: Karlach Goliath\nrace: goliath\n')
+        self.mock_session.maps = {
+            'priest_quarters': SimpleNamespace(
+                name='priest_quarters',
+                properties={'player': [
+                    {
+                        'position': [21, 14],
+                        'sheet': 'characters/goliath_paladin.yml',
+                        'overrides': {'entity_uid': 'ddb-142861711'},
+                    },
+                ]},
+            ),
+        }
+
+        listing = list_users()
+        row = next(
+            c for c in listing['selectable_characters']
+            if c['character_uid'] == 'ddb-142861711'
+        )
+        self.assertFalse(row['taken'])
+
+        self.ensure_patch.stop()
+        self.ensure_patch = patch(
+            'webapp.user_management.ensure_character_entity_loaded',
+            return_value=Mock(entity_uid='ddb-142861711'),
+        )
+        self.ensure_patch.start()
+
+        result = assign_character('alice', 'ddb-142861711', spawn=False)
+        self.assertEqual(result['character_uid'], 'ddb-142861711')
+        with open(self.index_path, encoding='utf-8') as handle:
+            saved = json.load(handle)
+        entry = next(item for item in saved['default_controllers'] if item['entity_uid'] == 'ddb-142861711')
+        self.assertEqual(entry['controllers'], ['alice'])
+
 
 if __name__ == '__main__':
     unittest.main()

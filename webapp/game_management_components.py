@@ -448,11 +448,45 @@ class GameControllerRegistry:
             controller = WebController(self.manager.game_session, None)
             controller.add_user('dm')
             return controller
+        # ``agent:<name>``: a named bundle from the .ai.yaml agents: registry
+        # (controller kind + provider profiles + standing directives).
+        if kind.startswith('agent:'):
+            try:
+                from webapp.blueprints.helpers.runtime_state import get_llm_handler
+                handler = get_llm_handler()
+            except Exception:
+                handler = None
+            from webapp.ai_config import build_combat_controller_from_agent
+            agent = build_combat_controller_from_agent(
+                self.manager.game_session, handler, entity, kind[len('agent:'):])
+            if agent is not None:
+                return agent
+            return None
         if kind == 'ai':
-            return GenericController(self.manager.game_session)
+            controller = GenericController(self.manager.game_session)
+            self._stamp_configured_agent(controller, entity)
+            return controller
+        if kind == 'hybrid':
+            # Generative LLM strategist writes turn plans; JEV (battle
+            # provider) executes them, including reactions on other turns.
+            try:
+                from webapp.blueprints.helpers.runtime_state import get_llm_handler
+                from webapp.ai_config import combat_llm_provider_for, strategist_llm_provider_for
+                handler = get_llm_handler()
+                provider = combat_llm_provider_for(handler, entity)
+                strategist = strategist_llm_provider_for(handler, entity)
+            except Exception:
+                provider = None
+                strategist = None
+            from natural20.llm_controller import HybridStrategistController
+            controller = HybridStrategistController(
+                self.manager.game_session, llm_provider=provider,
+                strategist_provider=strategist)
+            self._stamp_configured_agent(controller, entity)
+            return controller
         if kind == 'llm':
-            # Per-NPC AI settings profile -> combat default -> battle provider
-            # (BATTLE_LLM_PROVIDER, e.g. JEV) -> DM provider.
+            # Per-NPC AI settings profile -> agent bundle -> combat default ->
+            # battle provider (BATTLE_LLM_PROVIDER, e.g. JEV) -> DM provider.
             try:
                 # Never import webapp.app here: under `python -m webapp.app` that
                 # loads a second app instance with its own (non-JEV) handler.
@@ -465,8 +499,20 @@ class GameControllerRegistry:
             utils_module = sys.modules.get('webapp.utils')
             if utils_module is not None:
                 controller_class = getattr(utils_module, 'LlmMcpController', controller_class)
-            return controller_class(self.manager.game_session, llm_provider=provider)
+            controller = controller_class(self.manager.game_session, llm_provider=provider)
+            self._stamp_configured_agent(controller, entity)
+            return controller
         return None
+
+    @staticmethod
+    def _stamp_configured_agent(controller, entity):
+        """Attach the entity's configured ``.ai.yaml`` agent bundle (persona +
+        profile references) to a controller built by plain kind."""
+        try:
+            from webapp.ai_config import stamp_agent_identity_for_entity
+            stamp_agent_identity_for_entity(controller, entity)
+        except Exception:
+            pass
 
     def build_combat_controller_for_entity(self, entity, controller_kind=None):
         explicit = self._build_controller_by_kind(controller_kind, entity)
@@ -503,10 +549,11 @@ class GameControllerRegistry:
         if npc_controller == 'manual':
             return self.manual_controller_for_entity(entity)
 
-        if npc_controller == 'llm':
-            built = self._build_controller_by_kind('llm', entity)
-            if built is not None:
-                return built
+        # 'llm' | 'hybrid' | 'ai' | 'agent:<name>' (the campaign default may
+        # reference a named .ai.yaml agent bundle).
+        built = self._build_controller_by_kind(npc_controller, entity)
+        if built is not None:
+            return built
 
         return GenericController(self.manager.game_session)
 

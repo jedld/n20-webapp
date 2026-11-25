@@ -258,6 +258,29 @@ current_game = GameManagement(
 _pvp_cfg = index_data.get('pvp_teams') or {}
 current_game.pvp_enabled = bool(_pvp_cfg.get('enabled'))
 
+
+def _install_refresh_map_epoch_guard():
+    """Invariant: every server ``refresh_map`` push must advance the render
+    epoch first, because ``/update`` caches rendered map HTML keyed on the
+    epoch. Routes/helpers bump explicitly; this wrapper is the safety net for
+    any other emitter so clients never keep polling a stale map snapshot
+    (which makes freshly placed tokens appear to vanish)."""
+    _orig_emit = socketio.emit
+
+    def _emit(event, *args, **kwargs):
+        try:
+            if (event == 'message' and args and isinstance(args[0], dict)
+                    and args[0].get('type') == 'refresh_map'):
+                current_game.bump_render_epoch()
+        except Exception:
+            logger.exception('render-epoch bump failed before refresh_map emit')
+        return _orig_emit(event, *args, **kwargs)
+
+    socketio.emit = _emit
+
+
+_install_refresh_map_epoch_guard()
+
 output_logger.configure_persistence(
     campaign_log_db_getter=lambda: getattr(current_game, 'campaign_log_db', None)
 )
@@ -2658,13 +2681,17 @@ def start_battle_with_initiative():
             entity = current_game.get_entity_by_uid(param_item['id'])
 
             ctrl_kind = param_item.get('controller')
-            if ctrl_kind == 'ai':
-                controller = GenericController(game_session)
-            elif ctrl_kind == 'llm':
-                # Per-entity AI settings profile -> combat default -> battle provider -> DM provider.
-                from webapp.ai_config import combat_llm_provider_for
-                controller = LlmMcpController(game_session, llm_provider=combat_llm_provider_for(llm_handler, entity))
-            else:
+            controller = None
+            if ctrl_kind and ctrl_kind != 'manual':
+                # 'ai' | 'llm' | 'hybrid' | 'agent:<name>' (a named .ai.yaml
+                # agent bundle: providers + kind + standing directives).
+                from webapp.ai_config import (build_combat_controller_for_spec,
+                                              is_controller_spec)
+                if not is_controller_spec(ctrl_kind):
+                    return jsonify(error=f"Unknown controller {ctrl_kind!r}"), 400
+                controller = build_combat_controller_for_spec(
+                    game_session, llm_handler, entity, ctrl_kind)
+            if controller is None:
                 controller = current_game.get_controller_for_entity(entity)
 
             if controller is None:
@@ -2885,6 +2912,7 @@ def spawn_npc():
         logger.info(f"DM {session['username']} spawned {npc_type} at ({x}, {y})")
         
         # Notify all clients of the map update
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify(status='ok', entity_uid=npc.entity_uid)
@@ -2954,6 +2982,7 @@ def spawn_object():
         logger.info(f"DM {session['username']} spawned {object_type} at ({x}, {y})")
         
         # Notify all clients of the map update
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify(status='ok', entity_uid=object_instance.entity_uid)
@@ -3006,6 +3035,7 @@ def delete_entity():
         logger.info(f"DM {session['username']} deleted entity {entity.label()} ({entity_uid})")
         
         # Notify all clients of the map update
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify(status='ok', entity_uid=entity_uid)
@@ -3036,8 +3066,6 @@ def move_entity():
     try:
         # Find the entity across all maps
         entity = current_game.get_entity_by_uid(entity_uid)
-        if not entity:
-            return jsonify(error='Entity not found'), 404
         
         # Get the target map (current map for user)
         target_map = current_game.get_map_for_user(session['username'])
@@ -3049,6 +3077,29 @@ def move_entity():
         # Check if the position is occupied by another entity
         if target_map.entity_at(x, y):
             return jsonify(error='Position is occupied'), 400
+        
+        # PC tray drag: materialize + place a token for sheets that have no
+        # entity on any map yet (mirrors webapp.blueprints.dm.move_entity).
+        if entity is None:
+            from webapp.blueprints.dm import spawn_pc_token
+
+            entity = spawn_pc_token(
+                current_game, game_session, target_map,
+                entity_uid, x, y, request.json.get('sheet'),
+            )
+            if entity is None:
+                return jsonify(error=(
+                    f'Entity "{entity_uid}" not found: it is not on any map and no '
+                    'character sheet matches this uid. Re-open the PC tray, or use '
+                    'Place Party / edit mode to place it.'
+                )), 400
+            logger.info(
+                f"DM {session['username']} spawned PC {entity.label()} at ({x}, {y}) "
+                f"on map {getattr(target_map, 'name', '?')}"
+            )
+            current_game.bump_render_epoch()
+            socketio.emit('message', {'type': 'refresh_map'})
+            return jsonify(status='ok', entity_uid=entity_uid, spawned=True)
         
         # Find current map containing the entity
         current_map = None
@@ -3070,6 +3121,7 @@ def move_entity():
         logger.info(f"DM {session['username']} moved entity {entity.label()} to ({x}, {y})")
         
         # Notify all clients of the map update
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify(status='ok', entity_uid=entity_uid)
@@ -3163,6 +3215,7 @@ def update_npc():
         logger.info(f"DM {session['username']} updated NPC {entity_id}: name='{name}', group='{group}'")
         
         # Notify all clients of the entity update (in case name/group affects display)
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify(success=True)
@@ -4333,7 +4386,8 @@ def update_npc_default_controller():
     try:
         data = request.get_json() if request.is_json else request.form
         new_value = data.get('value')
-        if new_value not in ['manual', 'ai', 'llm']:
+        from webapp.ai_config import is_controller_spec
+        if not is_controller_spec(new_value):
             return jsonify({'success': False, 'error': 'Invalid controller value'}), 400
         current_game.npc_controller = new_value
         return jsonify({'success': True, 'npc_default_controller': current_game.npc_controller})
@@ -4395,6 +4449,7 @@ def add():
 
         socketio.emit('message', {'type': 'initiative', 'message': {'index': battle.current_turn_index}})
         socketio.emit('message', {'type': 'turn', 'message': {}})
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         # Return the rendered turn-order row so the existing client code
         # (which appends the response to #turn-order) keeps working.
@@ -4438,6 +4493,7 @@ def remove_from_battle():
     socketio.emit('message', {'type': 'initiative',
                               'message': {'index': battle.current_turn_index if current_game.get_current_battle() else None}})
     socketio.emit('message', {'type': 'turn', 'message': {}})
+    current_game.bump_render_epoch()
     socketio.emit('message', {'type': 'refresh_map'})
     return jsonify(status='ok')
 
@@ -4494,6 +4550,7 @@ def unequip():
     entity = battle_map.entity_by_uid(entity_id)
     if entity:
         entity.unequip(item_id)
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         return jsonify(status='ok')
     return jsonify(error="Entity not found"), 404
@@ -4512,6 +4569,7 @@ def equip():
             if not ok:
                 return jsonify(error=reason or 'Item is not in that container'), 400
         entity.equip(item_id)
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         return jsonify(status='ok')
 
@@ -4653,6 +4711,7 @@ def dm_inventory_add():
     except Exception:
         pass
 
+    current_game.bump_render_epoch()
     socketio.emit('message', {'type': 'refresh_map'})
     new_qty = int((entity.inventory.get(item_name) or {}).get('qty', 0))
     return jsonify(success=True, item_name=item_name, qty=new_qty)
@@ -4690,6 +4749,7 @@ def dm_inventory_remove():
                 entity.unequip(item_name, transfer_inventory=False)
             except Exception as exc:
                 return jsonify(success=False, error=f'Failed to unequip: {exc}'), 500
+            current_game.bump_render_epoch()
             socketio.emit('message', {'type': 'refresh_map'})
             return jsonify(success=True, item_name=item_name, qty=0)
         return jsonify(success=False, error='Entity does not have that item'), 404
@@ -4709,6 +4769,7 @@ def dm_inventory_remove():
     except Exception:
         pass
 
+    current_game.bump_render_epoch()
     socketio.emit('message', {'type': 'refresh_map'})
     new_qty = int((entity.inventory.get(item_name) or {}).get('qty', 0))
     return jsonify(success=True, item_name=item_name, qty=new_qty)
@@ -4762,6 +4823,7 @@ def dm_container_add():
     if not entity.add_to_container(container_name, item_name, qty):
         return jsonify(success=False, error='Failed to add item to container'), 500
     
+    current_game.bump_render_epoch()
     socketio.emit('message', {'type': 'refresh_map'})
     return jsonify(success=True)
 
@@ -4791,6 +4853,7 @@ def dm_container_remove():
     if not entity.remove_from_container(container_name, item_name, qty):
         return jsonify(success=False, error='Failed to remove item from container'), 500
     
+    current_game.bump_render_epoch()
     socketio.emit('message', {'type': 'refresh_map'})
     return jsonify(success=True)
 
@@ -4893,12 +4956,18 @@ def update_controller():
             engine_controller = WebController(game_session, None)
             engine_controller.add_user("dm")
             current_game.web_controllers[entity] = engine_controller
-        elif new_controller == 'ai':
-            engine_controller = GenericController(game_session)
-        elif new_controller == 'llm':
-            from natural20.llm_controller import LlmMcpController
-            from webapp.ai_config import combat_llm_provider_for
-            engine_controller = LlmMcpController(game_session, llm_provider=combat_llm_provider_for(llm_handler, entity))
+        else:
+            # 'ai' | 'llm' | 'hybrid' | 'agent:<name>' (named .ai.yaml bundle)
+            from webapp.ai_config import (build_combat_controller_for_spec,
+                                          is_controller_spec)
+            if not is_controller_spec(new_controller):
+                return jsonify(error=f"Unknown controller {new_controller!r}"), 400
+            engine_controller = build_combat_controller_for_spec(
+                game_session, llm_handler, entity, new_controller)
+            if engine_controller is None:  # manual-style agent bundle
+                engine_controller = WebController(game_session, None)
+                engine_controller.add_user("dm")
+                current_game.web_controllers[entity] = engine_controller
 
         if engine_controller and battle:
             engine_controller.register_handlers_on(entity)
@@ -4989,6 +5058,7 @@ def update_hp():
             entity._temp_hp = value
 
         # Emit update to refresh the UI for all connected clients
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify({'success': True})
@@ -5068,6 +5138,7 @@ def update_action_resources():
         )
         
         # Emit update to refresh the UI for all connected clients
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify({
@@ -5155,6 +5226,7 @@ def update_spell_slots():
         )
         
         # Emit update to refresh the UI for all connected clients
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify({
@@ -5421,6 +5493,7 @@ def take_rest():
         except Exception:
             pass
 
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         return jsonify({
             'success': True,
@@ -5502,6 +5575,7 @@ def dm_move_entity():
         )
         
         # Emit update to refresh the UI for all connected clients
+        current_game.bump_render_epoch()
         socketio.emit('message', {'type': 'refresh_map'})
         
         return jsonify({

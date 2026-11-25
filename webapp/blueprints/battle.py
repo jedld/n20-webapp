@@ -223,15 +223,17 @@ def start_battle_with_initiative():
 
         for param_item, entity in combatants:
             ctrl_kind = param_item.get('controller')
-            if ctrl_kind == 'ai':
-                controller = GenericController(get_game_session())
-            elif ctrl_kind == 'llm':
-                # Per-NPC AI settings profile -> combat default -> battle provider -> DM provider.
-                controller = LlmMcpController(
-                    get_game_session(),
-                    llm_provider=combat_llm_provider_for(get_llm_handler(), entity),
-                )
-            else:
+            controller = None
+            if ctrl_kind and ctrl_kind != 'manual':
+                # 'ai' | 'llm' | 'hybrid' | 'agent:<name>' (a named .ai.yaml
+                # agent bundle: providers + kind + standing directives).
+                from webapp.ai_config import (build_combat_controller_for_spec,
+                                              is_controller_spec)
+                if not is_controller_spec(ctrl_kind):
+                    return jsonify(error=f"Unknown controller {ctrl_kind!r}"), 400
+                controller = build_combat_controller_for_spec(
+                    get_game_session(), get_llm_handler(), entity, ctrl_kind)
+            if controller is None:
                 controller = current_game.controller_registry.manual_controller_for_entity(entity)
 
             controller.register_handlers_on(entity)

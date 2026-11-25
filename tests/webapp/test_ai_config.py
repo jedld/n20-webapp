@@ -217,6 +217,159 @@ def test_registry_uses_per_npc_controller(layers):
         assert isinstance(registry.build_combat_controller_for_entity(grunt), GenericController)
 
 
+# ---------------------------------------------------------------------- #
+# Named agent bundles (``agents:``)                                      #
+# ---------------------------------------------------------------------- #
+
+AGENT_YAML = {
+    'providers': {
+        'jev_fast': {'provider': 'jev', 'base_url': 'http://jev:8901'},
+        'story': {'provider': 'llama_cpp', 'model': 'big-model'},
+    },
+    'agents': {
+        'brute': {'label': 'Brute', 'controller': 'hybrid', 'provider': 'jev_fast',
+                  'strategist_provider': 'story',
+                  'directives': 'Focus archers.\nNever pursue.'},
+        'skirmish': {'controller': 'llm', 'provider': 'story'},
+    },
+}
+
+
+def test_sanitize_agents(layers):
+    config = layers(dict(AGENT_YAML))
+    assert config.agent_names() == ['brute', 'skirmish']
+    assert config.agent('brute')['controller'] == 'hybrid'
+    assert config.agent('brute')['directives'] == 'Focus archers.\nNever pursue.'
+    assert config.agent('missing') is None
+    with pytest.raises(ValueError):
+        ai_config.sanitize_layer({'agents': {'x': {'controller': 'magic-model'}}})
+    # agent:<name> is a valid per-NPC controller value
+    layer = ai_config.sanitize_layer({'npcs': {'g': {'combat': {'controller': 'agent:brute'}}}})
+    assert layer['npcs']['g']['combat']['controller'] == 'agent:brute'
+
+
+def test_agent_for_entity_precedence(layers):
+    config = layers({
+        **AGENT_YAML,
+        'combat': {'npc_agent': 'brute'},
+        'sidekicks': {'combat': {'agent': 'skirmish'}},
+        'npcs': {'boss_1': {'combat': {'agent': 'skirmish'}}},
+    }, session=MagicMock())
+    boss = _Npc(entity_uid='boss_1', npc_type='goblin')
+    grunt = _Npc(entity_uid='g_2', npc_type='goblin')
+    sidekick = _Npc(entity_uid='sk_1', npc_type='commoner')
+    plain = _Npc(entity_uid='v_1', npc_type='treeraptor')
+    with patch('natural20.sidekick.is_in_party_sidekick', side_effect=lambda _s, e: e is sidekick):
+        name, definition, source = config.agent_for_entity(boss)
+        assert (name, source) == ('skirmish', 'npc:boss_1')
+        assert definition['provider'] == 'story'
+        name, _definition, source = config.agent_for_entity(grunt)
+        assert (name, source) == ('brute', 'default')
+        name, _definition, source = config.agent_for_entity(sidekick)
+        assert (name, source) == ('skirmish', 'sidekicks')
+        # no fallback configured for this NPC kind chain
+        config.layers['campaign']['combat'].pop('npc_agent')
+        config.merged = ai_config.deep_merge(config.layers['webapp'], config.layers['campaign'])
+        name, definition, _source = config.agent_for_entity(plain)
+        assert name is None and definition is None
+
+
+def test_entity_combat_controller_uses_agent_kind(layers):
+    config = layers({
+        'combat': {'npc_controller': 'ai'},
+        'agents': {'brute': {'controller': 'hybrid'}},
+        'npcs': {'goblin': {'combat': {'agent': 'brute'}}},
+    })
+    grunt = _Npc(entity_uid='g_2', npc_type='goblin')
+    assert ai_config.entity_combat_controller(grunt) == 'hybrid'
+    # explicit per-NPC controller beats the agent bundle's kind
+    config.layers['campaign']['npcs']['goblin']['combat']['controller'] = 'llm'
+    config.merged = ai_config.deep_merge(config.layers['webapp'], config.layers['campaign'])
+    assert ai_config.entity_combat_controller(grunt) == 'llm'
+
+
+def test_agent_provider_beats_global_default(layers):
+    config = layers(dict(AGENT_YAML))
+    config.layers['campaign']['combat'] = {'npc_agent': 'brute',
+                                           'llm_provider': 'plain_default',
+                                           'strategist_provider': 'plain_default'}
+    config.merged = ai_config.deep_merge(config.layers['webapp'], config.layers['campaign'])
+    handler = _handler()
+    grunt = _Npc(entity_uid='g_2', npc_type='goblin')
+    with patch('webapp.ai_config.provider_for_profile') as pfp, \
+            patch('natural20.sidekick.is_in_party_sidekick', return_value=False):
+        pfp.return_value = 'agent-provider'
+        assert ai_config.combat_llm_provider_for(handler, grunt) == 'agent-provider'
+        pfp.assert_called_once_with(handler, 'jev_fast')
+        pfp.reset_mock()
+        pfp.return_value = 'strategist-provider'
+        assert ai_config.strategist_llm_provider_for(handler, grunt) == 'strategist-provider'
+        pfp.assert_called_once_with(handler, 'story')
+
+
+def test_controller_spec_parsing(layers):
+    layers(dict(AGENT_YAML))
+    assert ai_config.parse_controller_spec('agent:Brute') == ('agent', 'brute')
+    assert ai_config.parse_controller_spec('LLM') == ('kind', 'llm')
+    assert ai_config.is_controller_spec('hybrid')
+    assert ai_config.is_controller_spec('agent:brute')
+    assert not ai_config.is_controller_spec('agent:nope')
+    assert not ai_config.is_controller_spec('magic')
+    assert not ai_config.is_controller_spec(None)
+
+
+def test_build_combat_controller_from_agent(layers):
+    from natural20.llm_controller import HybridStrategistController, LlmMcpController
+    from natural20.generic_controller import GenericController
+
+    layers({**AGENT_YAML,
+            'agents': {**AGENT_YAML['agents'],
+                       'guard': {'controller': 'ai'},
+                       'handler': {'controller': 'manual'}}})
+    handler = _handler()
+    brute = ai_config.build_combat_controller_from_agent(None, handler, None, 'brute')
+    assert isinstance(brute, HybridStrategistController)
+    assert brute.agent_name == 'brute'
+    assert brute.agent_persona == 'Focus archers.\nNever pursue.'
+    assert brute.agent_profile == 'jev_fast'
+    assert brute.agent_strategist_profile == 'story'
+
+    skirmish = ai_config.build_combat_controller_from_agent(None, handler, None, 'skirmish')
+    assert isinstance(skirmish, LlmMcpController)
+    assert skirmish.agent_name == 'skirmish'
+
+    guard = ai_config.build_combat_controller_from_agent(None, handler, None, 'guard')
+    assert isinstance(guard, GenericController)
+
+    # unknown / manual bundles defer to the caller's manual handling
+    assert ai_config.build_combat_controller_from_agent(None, handler, None, 'nope') is None
+    assert ai_config.build_combat_controller_from_agent(None, handler, None, 'handler') is None
+
+    # unified spec dispatcher
+    spec = ai_config.build_combat_controller_for_spec(None, handler, None, 'agent:skirmish')
+    assert isinstance(spec, LlmMcpController) and spec.agent_name == 'skirmish'
+    assert ai_config.build_combat_controller_for_spec(None, handler, None, 'manual') is None
+    llm = ai_config.build_combat_controller_for_spec(None, handler, None, 'llm')
+    assert isinstance(llm, LlmMcpController) and llm.agent_name is None
+
+
+def test_registry_builds_agent_spec(layers):
+    from webapp.game_management_components import GameControllerRegistry
+    from natural20.llm_controller import HybridStrategistController
+
+    layers(dict(AGENT_YAML))
+    manager = SimpleNamespace(game_session=None, web_controllers={},
+                              force_llm_npc_combat=False, npc_controller='agent:brute')
+    registry = GameControllerRegistry(manager)
+    grunt = _Npc(entity_uid='g_2', npc_type='goblin', familiar=lambda: False)
+    with patch('natural20.sidekick.is_in_party_sidekick', return_value=False):
+        assert registry.effective_npc_combat_controller(grunt) == 'agent:brute'
+        controller = registry.build_combat_controller_for_entity(grunt)
+    assert isinstance(controller, HybridStrategistController)
+    assert controller.agent_name == 'brute'
+    assert controller.agent_persona == 'Focus archers.\nNever pursue.'
+
+
 def test_background_toggles(layers, monkeypatch):
     from webapp import npc_background_llm as bg
 

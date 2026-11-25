@@ -1,12 +1,94 @@
 """Tests for login character-selection PC vs sidekick helpers."""
 
+import os
+import tempfile
 import unittest
+from types import SimpleNamespace
 
 from webapp.blueprints.helpers.character_selection import (
+    collect_selectable_entries,
     is_sidekick_selectable,
     load_character_selection_settings,
+    map_defined_player_entries,
     partition_selectables,
 )
+
+
+class TestMapDefinedPlayerEntries(unittest.TestCase):
+    """Campaigns may define party PCs only in map ``player:`` YAML blocks."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        chars_dir = os.path.join(self.tmpdir, 'characters')
+        os.makedirs(chars_dir)
+        with open(os.path.join(chars_dir, 'goliath_paladin.yml'), 'w', encoding='utf-8') as fh:
+            fh.write('name: Karlach Goliath\nrace: goliath\ndescription: An Oath of Ancients paladin.\n')
+        with open(os.path.join(chars_dir, 'chestnut_latchlifter.yml'), 'w', encoding='utf-8') as fh:
+            fh.write('name: Chestnut Latchlifter\nrace: kender\n')
+        self.session = SimpleNamespace(
+            root_path=self.tmpdir,
+            maps={
+                'priest_quarters': SimpleNamespace(
+                    name='priest_quarters',
+                    properties={'player': [
+                        {
+                            'position': [21, 14],
+                            'sheet': 'characters/goliath_paladin.yml',
+                            'overrides': {'entity_uid': 'ddb-142861711'},
+                        },
+                        {
+                            'position': [22, 12],
+                            'sheet': 'characters/chestnut_latchlifter.yml',
+                        },
+                        {
+                            'position': [1, 1],
+                            'sheet': 'npcs/sidekick.yml',
+                            'overrides': {'entity_uid': 'npc_sidekick'},
+                        },
+                    ]},
+                ),
+                'start': SimpleNamespace(name='start', properties={'player': []}),
+            },
+        )
+
+    def test_derives_entries_from_map_player_defs(self):
+        entries = map_defined_player_entries(self.session)
+        by_name = {entry['name']: entry for entry in entries}
+        self.assertEqual(set(by_name), {'ddb-142861711', 'chestnut_latchlifter'})
+        karlach = by_name['ddb-142861711']
+        self.assertEqual(karlach['sheet'], 'characters/goliath_paladin.yml')
+        self.assertEqual(karlach['map'], 'priest_quarters')
+        self.assertEqual(karlach['source'], 'map_player')
+        self.assertEqual(karlach['display_name'], 'Karlach Goliath')
+        self.assertEqual(karlach['description'], 'An Oath of Ancients paladin.')
+        # NPC sheets are handled by sidekick selection, not PC claims.
+        self.assertNotIn('npc_sidekick', by_name)
+
+    def test_missing_uid_falls_back_to_sheet_stem(self):
+        entries = map_defined_player_entries(self.session)
+        entry = next(e for e in entries if e['name'] == 'chestnut_latchlifter')
+        self.assertEqual(entry['overrides']['entity_uid'], 'chestnut_latchlifter')
+
+    def test_collect_selectable_entries_merges_without_duplicates(self):
+        index_data = {
+            'selectable_characters': [
+                {
+                    'name': 'chestnut_latchlifter',
+                    'description': 'index entry wins',
+                    'sheet': 'characters/chestnut_latchlifter.yml',
+                },
+            ],
+        }
+        entries = collect_selectable_entries(index_data, self.session)
+        names = [entry['name'] for entry in entries]
+        self.assertEqual(names.count('chestnut_latchlifter'), 1)
+        index_row = next(e for e in entries if e['name'] == 'chestnut_latchlifter')
+        self.assertEqual(index_row.get('description'), 'index entry wins')
+        self.assertIn('ddb-142861711', names)
+
+    def test_no_session_yields_only_index_rows(self):
+        entries = collect_selectable_entries({'selectable_characters': [{'name': 'a'}]}, game_session=None)
+        self.assertEqual([e['name'] for e in entries], ['a'])
 
 
 class TestCharacterSelectionHelpers(unittest.TestCase):
