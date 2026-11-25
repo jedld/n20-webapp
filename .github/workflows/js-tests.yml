@@ -10,26 +10,28 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
       # path_compute.test.js loads path_compute_vectors.json from the engine's
-      # tests/fixtures tree (shared with the Python suite). The engine repo is
-      # public, so no deploy key is needed for this read-only checkout.
+      # tests/fixtures tree (shared with the Python suite). Reproduce the
+      # monorepo layout (engine root, this repo as n20-webapp/) so the
+      # ../../../tests/fixtures probe resolves. The engine repo is public, so
+      # no deploy key is needed for this read-only checkout.
       - name: Checkout engine
         uses: actions/checkout@v4
         with:
           repository: ${{ vars.NATURAL20_ENGINE_REPO || 'jedld/natural_20.py' }}
           path: natural_20.py
 
-      - name: Expose engine test fixtures
-        run: |
-          ln -sfn "$GITHUB_WORKSPACE/natural_20.py/tests/fixtures" "$GITHUB_WORKSPACE/tests/fixtures"
-          mkdir -p "$(dirname "$GITHUB_WORKSPACE")/tests"
-          ln -sfn "$GITHUB_WORKSPACE/natural_20.py/tests/fixtures" "$(dirname "$GITHUB_WORKSPACE")/tests/fixtures"
+      - name: Checkout webapp
+        uses: actions/checkout@v4
+        with:
+          path: natural_20.py/n20-webapp
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
+          cache-dependency-path: natural_20.py/n20-webapp/package-lock.json
       - run: npm ci
+        working-directory: natural_20.py/n20-webapp
       - run: npm run ci:test
+        working-directory: natural_20.py/n20-webapp
