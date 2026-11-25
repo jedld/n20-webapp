@@ -21,6 +21,39 @@ cp webapp/env.example webapp/.env   # then edit provider URLs/models
 be satisfied by an engine checkout (`pip install -e ../natural_20.py`) or a git
 URL (`pip install "natural20 @ git+https://github.com/jedld/natural_20.py.git@master"`).
 
+## Screenshots
+
+Shown against the bundled template campaign (SRD-only content).
+
+**The DM table** — server-rendered map with fog of war, token portraits, the
+on-map NPC tray, and local (in-world) chat:
+
+![VTT tabletop](docs/screenshots/vtt-tabletop.png)
+
+| Campaign spawner: NPC types grouped by CR — hover a row for its actions: mark unique (★), delete from the campaign (✕); unique NPCs also get Duplicate (⧉) | Creating a new campaign NPC type from a bundled base |
+|---|---|
+| ![Spawner NPCs](docs/screenshots/spawner-npcs.png) | ![New campaign NPC](docs/screenshots/spawner-npc-new.png) |
+
+| Objects and terrain palette, with the new-object form | Combat: initiative order, per-combatant group/controller, DM pacing, combat log |
+|---|---|
+| ![Spawner objects](docs/screenshots/spawner-objects.png) | ![Combat](docs/screenshots/combat.png) |
+
+| Campaign notebook (notes, folders, uploads, map pins) | DM AI assistant dock |
+|---|---|
+| ![Notebook](docs/screenshots/notebook.png) | ![AI assistant](docs/screenshots/ai-assistant.png) |
+
+| Character builder (opened by the PC tray's **+ New**) | Three.js tabletop client (`/3d`) |
+|---|---|
+| ![Character builder](docs/screenshots/character-builder.png) | ![3D client](docs/screenshots/vtt-3d.png) |
+
+Regenerate them against a running server:
+
+```bash
+./start_web.sh                                    # or any campaign you like
+pip install playwright && playwright install chromium
+python scripts/capture_readme_screenshots.py      # -> docs/screenshots/*.png
+```
+
 ## Campaign data
 
 Campaigns live in a separate repository (for example `n20-campaigns`). Point the
@@ -95,6 +128,7 @@ docker run --env-file webapp/.env \
 | `webapp/` | Flask app, blueprints, static assets, Jinja templates |
 | `tests/webapp/` | HTTP/SocketIO parity tests |
 | `scripts/minify.mjs` | JS asset pipeline (`npm run build:assets`) |
+| `scripts/capture_readme_screenshots.py` | Playwright capture of the README screenshots (`docs/screenshots/`) |
 
 See also: [Repository split guide](https://github.com/jedld/natural_20.py/blob/master/docs/REPOSITORY_SPLIT.md) in the engine repo.
 
