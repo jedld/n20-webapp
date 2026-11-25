@@ -1857,6 +1857,61 @@ def ready_action_endpoint():
                    action_spec=parsed['action_spec'])
 
 
+@battle_bp.route('/instruction', methods=['POST'])
+def instruction_start():
+    """Start a free-text player instruction (System One / JEV driven).
+
+    Body: ``{ id: <entity_uid>, instruction: "<player free text>" }``
+
+    The decision model fulfils the instruction one step at a time; call
+    ``/instruction/step`` to advance. Each response carries ``status``:
+    ``step`` (an action was committed), ``done`` (finished/stopped),
+    ``end_turn`` (the player asked to end the turn), or ``error``.
+    """
+    from webapp.blueprints.helpers.instruction_follow import start_instruction
+
+    payload = request.json or {}
+    entity_id = payload.get('id')
+    instruction = (payload.get('instruction') or '').strip()
+    if not entity_id:
+        return jsonify(status='error', message='Missing entity id'), 400
+    if not instruction:
+        return jsonify(status='error', message='Missing instruction'), 400
+
+    result, code = start_instruction(session['username'], entity_id, instruction)
+    if code:
+        return jsonify(result), code
+    if result.get('status') == 'end_turn':
+        return end_turn()
+    return jsonify(result)
+
+
+@battle_bp.route('/instruction/step', methods=['POST'])
+def instruction_step():
+    """Advance the running instruction by one System One decision."""
+    from webapp.blueprints.helpers.instruction_follow import run_instruction_step
+
+    payload = request.json or {}
+    result, code = run_instruction_step(session['username'], payload.get('id'))
+    if code:
+        return jsonify(result), code
+    if result.get('status') == 'end_turn':
+        return end_turn()
+    return jsonify(result)
+
+
+@battle_bp.route('/instruction/stop', methods=['POST'])
+def instruction_stop():
+    """Stop the running instruction and hand control back to the player."""
+    from webapp.blueprints.helpers.instruction_follow import stop_instruction
+
+    payload = request.json or {}
+    result, code = stop_instruction(session['username'], payload.get('id'))
+    if code:
+        return jsonify(result), code
+    return jsonify(result)
+
+
 @battle_bp.route('/pickpocket_items', methods=['GET'])
 def get_pickpocket_items():
     entity_id = request.args.get('id')

@@ -74,6 +74,15 @@
           </td>
         </tr>
         {% endif %}
+        {% if instruction_available and not legendary_phase %}
+        <tr>
+          <td>
+            <button class="action-instruction button text-center" title="Describe an intent; the decision model carries it out step by step">
+              <i class="glyphicon glyphicon-comment"> Instruct</i>
+            </button>
+          </td>
+        </tr>
+        {% endif %}
         {% if entity.current_concentration() %}
           {% set spell = entity.current_concentration().__str__() %}
           <tr>

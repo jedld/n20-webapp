@@ -377,6 +377,65 @@ def register(registry: ToolRegistry) -> None:
         context.emit_refresh()
         return result
 
+    @tool(
+        registry,
+        name='actions.instruction',
+        description='Drive a free-text player instruction executed step by step by '
+                    'the System One decision model. op=start begins a run '
+                    '(requires `instruction`), op=step advances one step, '
+                    'op=stop cancels. Each step result: status=step (action '
+                    'committed, call step again), done (finished), end_turn '
+                    '(turn advanced), or an error message. Requires a live '
+                    'decision (JEV) provider.',
+        input_schema={
+            'type': 'object',
+            'properties': {
+                'op': {'type': 'string', 'enum': ['start', 'step', 'stop']},
+                'entity_uid': {'type': 'string'},
+                'instruction': {'type': 'string'},
+            },
+            'required': ['op', 'entity_uid'],
+        },
+        category='actions',
+    )
+    def instruction(context: MCPContext, op: str = 'step',
+                    entity_uid: Optional[str] = None,
+                    instruction: Optional[str] = None):
+        from webapp.blueprints.helpers.instruction_follow import (
+            run_instruction_step,
+            start_instruction,
+            stop_instruction,
+        )
+
+        if not entity_uid:
+            raise tool_error('entity_uid is required')
+        username = 'dm'
+
+        if op == 'start':
+            if not instruction:
+                raise tool_error('instruction is required for op=start')
+            payload, code = start_instruction(username, entity_uid, instruction)
+        elif op == 'stop':
+            payload, code = stop_instruction(username, entity_uid)
+        else:
+            payload, code = run_instruction_step(username, entity_uid)
+
+        if payload.get('status') == 'end_turn':
+            # Mirror the Flask endpoint: advance the turn like end_turn does.
+            battle = _safe(lambda: context.current_game.get_current_battle())
+            if battle is not None:
+                try:
+                    battle.next_turn()
+                except Exception as exc:
+                    raise tool_error(f'next_turn failed: {exc}')
+            payload['current_uid'] = _safe(
+                lambda: battle.current_turn().entity_uid if battle else None)
+
+        context.emit_refresh()
+        if code:
+            raise tool_error(payload.get('message') or 'instruction failed')
+        return payload
+
 
 def _resolve(context: MCPContext, entity_uid: str):
     ent = context.resolve_entity(entity_uid)

@@ -15,6 +15,7 @@ from natural20.utils.action_bar import (
 from natural20.utils.merchant import is_merchant
 
 from .auth_utils import user_role
+from .instruction_follow import instruction_available
 from .template_globals import entity_owners
 from .runtime_state import get_current_game, get_game_session
 
@@ -56,7 +57,7 @@ def _favorite_items(usable_items, favorites):
     return [item for item in usable_items if str(item.get('name') or '') in fav_set]
 
 
-def _action_template_context(entity, effective_battle, entity_map, is_dm):
+def _action_template_context(entity, effective_battle, entity_map, is_dm, is_actor=True):
     game_session = get_game_session()
     game_config = {}
     try:
@@ -174,13 +175,16 @@ def _action_template_context(entity, effective_battle, entity_map, is_dm):
         'legendary_actions_remaining': (
             entity.total_legendary_actions(effective_battle) if legendary_phase else 0
         ),
+        'instruction_available': bool(
+            is_actor and instruction_available(entity, effective_battle)
+        ),
     }
 
 
-def render_actions_html(entity, *, effective_battle, entity_map, is_dm):
+def render_actions_html(entity, *, effective_battle, entity_map, is_dm, is_actor=True):
     return render_template(
         'actions.html',
-        **_action_template_context(entity, effective_battle, entity_map, is_dm),
+        **_action_template_context(entity, effective_battle, entity_map, is_dm, is_actor),
     )
 
 
@@ -216,6 +220,7 @@ def resolve_actions_for_id(entity_id, current_user):
             effective_battle=battle,
             entity_map=battle_map,
             is_dm=is_dm,
+            is_actor=False,
         )
         return {'id': entity_id, 'html': html, 'status': 200}
 

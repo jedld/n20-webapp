@@ -35,6 +35,14 @@ class TestPickpocketRoute(unittest.TestCase):
         self.battle_map.move_to(self.victim, 1, 0, self.battle)
         self.battle.start()
 
+        # This is a flow-regression test (select_target -> select_pickpocket_item
+        # -> commit), not a dice-probability test. The Sleight of Hand vs passive
+        # Insight roll is otherwise unseeded, so the success path is flaky. Fix
+        # the thief's roll high enough to beat any goblin's passive Insight.
+        self.thief.sleight_of_hand_check = lambda battle=None, description=None: Mock(
+            result=lambda: 30
+        )
+
         self.current_game = Mock()
         self.current_game.get_current_battle.return_value = self.battle
         uid_map = {

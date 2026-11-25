@@ -42,6 +42,26 @@ logger = logging.getLogger(__name__)
 # Helpers
 # --------------------------------------------------------------------------
 
+def _decision_provider_for(llm_handler, entity):
+    """System One decision provider for ``entity`` (or ``None``).
+
+    Generative providers do not qualify; only providers exposing
+    ``decide_action`` (``JevProvider`` and friends) can classify the
+    Ready trigger/action questions.
+    """
+    if llm_handler is None:
+        return None
+    try:
+        from webapp.ai_config import combat_llm_provider_for
+
+        provider = combat_llm_provider_for(llm_handler, entity)
+    except Exception:
+        provider = getattr(llm_handler, 'battle_llm_provider', None)
+    from natural20.utils.instruction_follow import provider_can_follow_instructions
+
+    return provider if provider_can_follow_instructions(provider) else None
+
+
 def _entity_weapons(entity) -> List[str]:
     """Best-effort enumeration of weapon slugs the entity can attack with."""
     weapons: List[str] = []
@@ -371,8 +391,36 @@ def parse_ready_action_request(entity, battle, description: str,
     has_reaction = entity.has_reaction(battle) if battle is not None else True
 
     parsed: Optional[dict] = None
+
+    # Preferred path: the System One (decision) model. Two flat Choice
+    # questions enumerated from the entity's actual sheet: cheaper and
+    # deterministic compared with prose generation, and it cannot invent
+    # weapons or spells the entity does not have.
+    decision_provider = _decision_provider_for(llm_handler, entity)
+    if decision_provider is not None:
+        try:
+            from natural20.utils.instruction_follow import parse_player_instruction
+
+            res = parse_player_instruction(
+                decision_provider, battle, entity, description,
+                weapons=weapons,
+                spells=[s.get('name') for s in spells],
+                items=[{'slug': i.get('slug'), 'label': i.get('slug')} for i in usable_items],
+                enemies=[name for _uid, name in enemies],
+            )
+            if res is not None:
+                parsed = {
+                    'approved': True,
+                    'reason': 'You ready your action.',
+                    'trigger': res['trigger'],
+                    'action_spec': res['action_spec'],
+                }
+        except Exception as exc:
+            logger.debug(f"Ready-action System One parse failed: {exc}")
+            parsed = None
+
     provider = getattr(llm_handler, 'current_provider', None)
-    if provider is not None:
+    if parsed is None and provider is not None:
         try:
             messages = _build_messages(
                 entity.label() if hasattr(entity, 'label') else getattr(entity, 'name', 'PC'),

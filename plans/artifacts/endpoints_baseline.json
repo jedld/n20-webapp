@@ -292,6 +292,18 @@
     "rule": "/reaction"
   },
   {
+    "endpoint": "battle.instruction_start",
+    "rule": "/instruction"
+  },
+  {
+    "endpoint": "battle.instruction_step",
+    "rule": "/instruction/step"
+  },
+  {
+    "endpoint": "battle.instruction_stop",
+    "rule": "/instruction/stop"
+  },
+  {
     "endpoint": "battle.manual_roll",
     "rule": "/manual_roll"
   },

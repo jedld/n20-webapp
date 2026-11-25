@@ -1821,7 +1821,7 @@ function hideEmptyActionBarTabs($tabs) {
   $tabs.find('.action-bar-tab-btn').each(function () {
     const tabId = $(this).data('tab');
     const $panel = $tabs.find(`.action-bar-tab-panel[data-tab="${tabId}"]`);
-    const hasActions = $panel.find('.action-button, .action-end-turn, .talk-action, .merchant-shop-action, .jrpg-dialog-action, .set-pov-action, .delete-entity-btn, .action-bar-spell-card').length > 0;
+    const hasActions = $panel.find('.action-button, .action-end-turn, .talk-action, .action-instruction, .merchant-shop-action, .jrpg-dialog-action, .set-pov-action, .delete-entity-btn, .action-bar-spell-card').length > 0;
     // Always show these tabs; hide "all" when it has no content
     const alwaysShow = tabId === 'common' || tabId === 'utility';
     const visible = alwaysShow || hasActions || tabId === 'all';
@@ -10521,6 +10521,166 @@ $(document).ready(() => {
     );
   }
 
+  // ------------------------------------------------------------------
+  // Player instructions: a free-text intent carried out step by step by
+  // the System One decision model. Availability is decided server-side
+  // (the button only renders when a decision provider is live).
+  // ------------------------------------------------------------------
+  const instructionRun = { active: false, timer: null };
+
+  function stopInstructionRun() {
+    instructionRun.active = false;
+    if (instructionRun.timer) {
+      clearTimeout(instructionRun.timer);
+      instructionRun.timer = null;
+    }
+  }
+
+  function openInstructionModal(entityUid) {
+    stopInstructionRun();
+    $('#instructionModal').remove();
+
+    const modalHtml = `
+      <div id="instructionModal" class="modal fade in" tabindex="-1" role="dialog"
+           style="display:block; background:rgba(0,0,0,0.5); z-index:20000;">
+        <div class="modal-dialog" role="document" style="margin-top:80px;">
+          <div class="modal-content">
+            <div class="modal-header" style="background:#2c2c2c; color:#fff;">
+              <h4 class="modal-title">
+                <i class="glyphicon glyphicon-comment"></i>
+                Instruct &mdash; describe an intent
+              </h4>
+            </div>
+            <div class="modal-body">
+              <p class="text-muted" style="font-size:90%;">
+                Your decision model will carry this out one action at a time
+                and stop when nothing else fits.
+              </p>
+              <textarea id="instructionInput" class="form-control" rows="3"
+                placeholder="e.g. Open the door and walk into the room"></textarea>
+              <div id="instructionRunRow" style="margin-top:8px;">
+                <button type="button" class="btn btn-primary" id="instructionRunBtn">Run</button>
+                <button type="button" class="btn btn-danger" id="instructionStopBtn" style="display:none;">Stop</button>
+              </div>
+              <ul id="instructionLog" class="list-unstyled"
+                  style="margin-top:10px; max-height:220px; overflow-y:auto;"></ul>
+              <div id="instructionStatus" style="margin-top:8px; color:#888; font-size:90%;"></div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-default" id="instructionClose">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    const $modal = $(modalHtml).appendTo('body');
+    const $input = $modal.find('#instructionInput');
+    const $run = $modal.find('#instructionRunBtn');
+    const $stop = $modal.find('#instructionStopBtn');
+    const $log = $modal.find('#instructionLog');
+    const $status = $modal.find('#instructionStatus');
+    setTimeout(() => $input.focus(), 50);
+
+    function addLogLine(text, cls) {
+      const $li = $('<li>').text(text).css({ padding: '2px 0', fontSize: '92%' });
+      if (cls) $li.addClass(cls);
+      $log.append($li);
+      $log.scrollTop($log[0].scrollHeight);
+    }
+
+    function setRunning(running) {
+      $run.prop('disabled', running);
+      $input.prop('disabled', running);
+      $run.toggle(!running);
+      $stop.toggle(running);
+    }
+
+    function finish(reason) {
+      stopInstructionRun();
+      setRunning(false);
+      if (reason) $status.text(reason);
+      try { refreshTurn(); } catch (e) { /* noop */ }
+    }
+
+    function scheduleNext() {
+      if (!instructionRun.active) return;
+      instructionRun.timer = setTimeout(() => {
+        instructionRun.timer = null;
+        ajaxPost('/instruction/step', {}, (data) => handle(data), true);
+      }, 700);
+    }
+
+    function handle(data) {
+      if (!instructionRun.active) return;
+      data = data || {};
+      if (data.status === 'step') {
+        addLogLine('\u2713 ' + ((data.step && data.step.label) || 'action'));
+        $status.text('Deciding next step... (' + data.steps + ')');
+        scheduleNext();
+        return;
+      }
+      if (data.status === 'done') {
+        addLogLine((data.reason || 'Done.'), 'text-muted');
+        finish('Instruction finished.');
+        return;
+      }
+      if (data.status === 'end_turn') {
+        addLogLine('Ending the turn.', 'text-muted');
+        finish('Turn ended.');
+        return;
+      }
+      // error or unknown
+      $status.text(data.message || data.reason || 'The instruction stopped.');
+      finish();
+    }
+
+    function run() {
+      const instruction = String($input.val() || '').trim();
+      if (!instruction) {
+        $status.text('Please describe what the character should do.');
+        return;
+      }
+      $log.empty();
+      $status.text('Starting...');
+      instructionRun.active = true;
+      setRunning(true);
+      addLogLine('Instruction: ' + instruction);
+      ajaxPost('/instruction', { id: entityUid, instruction }, handle, true);
+    }
+
+    $run.on('click', run);
+    $stop.on('click', function () {
+      stopInstructionRun();
+      setRunning(false);
+      $status.text('Stopping...');
+      ajaxPost('/instruction/stop', {}, () => {
+        $status.text('Stopped.');
+        try { refreshTurn(); } catch (e) { /* noop */ }
+      }, true);
+    });
+    $modal.find('#instructionClose').on('click', function () {
+      if (instructionRun.active) {
+        ajaxPost('/instruction/stop', {}, () => {}, true);
+        stopInstructionRun();
+      }
+      $modal.remove();
+      try { refreshTurn(); } catch (e) { /* noop */ }
+    });
+    $input.on('keydown', function (e) {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (!instructionRun.active) run();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        if (instructionRun.active) {
+          ajaxPost('/instruction/stop', {}, () => {}, true);
+          stopInstructionRun();
+        }
+        $modal.remove();
+      }
+    });
+  }
+
   $('#centerActionBarClose').on('click', function () {
     closeCenterActionBar();
   });
@@ -11078,6 +11238,25 @@ $(document).ready(() => {
 
     handleTalk(entityId);
     closeCenterActionBar();
+  });
+
+  $(document).on('click', '.action-instruction', function (event) {
+    event.stopPropagation();
+    event.preventDefault();
+    const $entry = $(this).closest('.center-action-entry');
+    const $tile = $(this).closest('.tile');
+    const entityId = $entry.data('entityUid') || $tile.data('coords-id');
+    if (!entityId) return;
+
+    if ($entry.length) {
+      activateCenterActionEntry($entry);
+      if (actionBarState.bindingMode) {
+        beginHotkeyAssignment($(this));
+        return;
+      }
+    }
+
+    openInstructionModal(entityId);
   });
 
   $(document).on('click', '.jrpg-dialog-action', function (event) {

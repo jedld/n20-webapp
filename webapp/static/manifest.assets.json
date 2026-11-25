@@ -38,7 +38,7 @@
     "edit_mode.min.js": "7bd59c2b7c",
     "edit_properties.min.js": "9567e2667f",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "4721e87dc8",
+    "engine.min.js": "2202966e2b",
     "grapple_links.min.js": "8c0dfdfd0a",
     "inert-polyfill.min.js": "fcce9c44c6",
     "map_annotations_edit.min.js": "a395fef84a",
@@ -61,8 +61,8 @@
     "journal.min.css": "51ba4e37df",
     "notebook.min.css": "e5ebb9b378",
     "sheet.min.css": "e203710971",
-    "styles.min.css": "762d067dba"
+    "styles.min.css": "e542d352ee"
   },
-  "generatedAt": "2026-11-25T05:02:58.285Z",
-  "buildVersion": "d29f101cb01a"
+  "generatedAt": "2026-11-25T15:07:16.578Z",
+  "buildVersion": "0576d34850f9"
 }

@@ -1734,6 +1734,30 @@
     "rule": "/info"
   },
   {
+    "endpoint": "battle.instruction_start",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/instruction"
+  },
+  {
+    "endpoint": "battle.instruction_step",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/instruction/step"
+  },
+  {
+    "endpoint": "battle.instruction_stop",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/instruction/stop"
+  },
+  {
     "endpoint": "character.inventory_container_retrieve",
     "methods": [
       "OPTIONS",
