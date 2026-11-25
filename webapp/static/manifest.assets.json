@@ -38,7 +38,7 @@
     "edit_mode.min.js": "7bd59c2b7c",
     "edit_properties.min.js": "9567e2667f",
     "effects.min.js": "6b152b276a",
-    "engine.min.js": "2202966e2b",
+    "engine.min.js": "923e91cea0",
     "grapple_links.min.js": "8c0dfdfd0a",
     "inert-polyfill.min.js": "fcce9c44c6",
     "map_annotations_edit.min.js": "a395fef84a",
@@ -63,6 +63,6 @@
     "sheet.min.css": "e203710971",
     "styles.min.css": "e542d352ee"
   },
-  "generatedAt": "2026-11-25T15:07:16.578Z",
-  "buildVersion": "0576d34850f9"
+  "generatedAt": "2026-11-25T22:23:21.587Z",
+  "buildVersion": "0fbd5ab437e0"
 }

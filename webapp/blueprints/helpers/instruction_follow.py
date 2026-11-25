@@ -26,6 +26,8 @@ the browser session only keeps a pointer (``session['instruction_entity']``)
 to the entity the current user last started an instruction for.
 """
 
+import logging
+
 from flask import session
 
 from natural20.actions.ready_action import ReadyAction
@@ -45,6 +47,8 @@ from .template_globals import controller_of, entities_controlled_by, entity_owne
 
 ENTITY_POINTER_KEY = 'instruction_entity'
 STATE_MAP_KEY = 'active_instructions'
+
+logger = logging.getLogger(__name__)
 
 
 def instruction_decision_provider(entity):
@@ -86,6 +90,15 @@ def instruction_available(entity, battle):
 
 def start_instruction(username, entity_id, instruction):
     """Validate and begin an instruction run; returns ``(payload, code)``."""
+    try:
+        return _start_instruction(username, entity_id, instruction)
+    except Exception as exc:  # JSON error body, never an HTML 500
+        logger.exception("[instruction] start failed")
+        return {'status': 'error',
+                'message': f'Could not start the instruction: {exc}'}, 500
+
+
+def _start_instruction(username, entity_id, instruction):
     instruction = (instruction or '').strip()
     if not instruction:
         return {'status': 'error', 'message': 'Missing instruction'}, 400
@@ -119,6 +132,15 @@ def start_instruction(username, entity_id, instruction):
 
 def run_instruction_step(username, entity_uid=None):
     """Execute one step of the running instruction; returns ``(payload, code)``."""
+    try:
+        return _run_instruction_step(username, entity_uid)
+    except Exception as exc:  # never hand the browser an HTML 500 to parse
+        logger.exception("[instruction] step failed")
+        return {'status': 'error',
+                'message': f'The instruction step failed: {exc}'}, 500
+
+
+def _run_instruction_step(username, entity_uid=None):
     if not entity_uid:
         entity_uid = session.get(ENTITY_POINTER_KEY)
     state_map = _state_map()

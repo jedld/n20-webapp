@@ -165,3 +165,83 @@ class TestInstructionRoutes:
         response = client.post('/instruction/step', json={})
         assert response.status_code == 200
         assert response.get_json()['status'] == 'done'
+
+
+class TestInstructionGating:
+    """Error payloads must be JSON so the browser modal can surface them.
+
+    Regression for the "click Instruct, everything stalls" bug: the client
+    treats non-2xx as errors, so every refusal needs a JSON body the
+    instruction modal can display instead of freezing at "Starting...".
+    """
+
+    def _helper(self):
+        # Importing webapp.app registers the runtime globals (game_session,
+        # current_game) the instruction helper reads via runtime_state, so
+        # these tests pass regardless of test order.
+        import webapp.app  # noqa: F401
+        from webapp.blueprints.helpers import instruction_follow as helper
+        return helper
+
+    def test_step_off_turn_returns_json_409(self, monkeypatch):
+        helper = self._helper()
+
+        ent = type('Ent', (), {'entity_uid': 'crysania-uid'})()
+        other = type('Other', (), {'entity_uid': 'gabba-uid'})()
+
+        class _Battle:
+            entities = [ent]
+            legendary_phase = None
+
+            def current_turn(self):
+                return other
+
+        class _Game:
+            def get_entity_by_uid(self, uid):
+                return ent
+
+            def canonical_map_entity(self, e):
+                return e
+
+            def get_current_battle(self):
+                return _Battle()
+
+        monkeypatch.setattr(helper, 'get_current_game', lambda: _Game())
+        helper._state_map()['crysania-uid'] = {
+            'instruction': 'Kill the Goblin', 'done': [], 'steps': 0}
+        try:
+            result, code = helper.run_instruction_step('dm', 'crysania-uid')
+        finally:
+            helper._state_map().pop('crysania-uid', None)
+        assert code == 409
+        assert result['status'] == 'error'
+        assert "not this character's turn" in result['message']
+
+    def test_start_returns_json_500_on_unexpected_error(self, monkeypatch):
+        helper = self._helper()
+
+        def _boom():
+            raise RuntimeError('redis of doom')
+
+        monkeypatch.setattr(helper, 'get_current_game', _boom)
+        result, code = helper.start_instruction('dm', 'x', 'Kill the Goblin')
+        assert code == 500
+        assert result['status'] == 'error'
+        assert 'redis of doom' in result['message']
+
+    def test_step_returns_json_500_on_unexpected_error(self, monkeypatch):
+        helper = self._helper()
+        helper._state_map()['ent-1'] = {
+            'instruction': 'go', 'done': [], 'steps': 0}
+
+        def _boom():
+            raise RuntimeError('kaboom')
+
+        monkeypatch.setattr(helper, 'get_current_game', _boom)
+        try:
+            result, code = helper.run_instruction_step('dm', 'ent-1')
+        finally:
+            helper._state_map().pop('ent-1', None)
+        assert code == 500
+        assert result['status'] == 'error'
+        assert 'kaboom' in result['message']

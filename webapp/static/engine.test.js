@@ -170,7 +170,8 @@ const expose = new vm.Script(`({
   updateCoordsBox: (typeof updateCoordsBox !== 'undefined') ? updateCoordsBox : undefined,
   appendTeleporterHoverHint: (typeof appendTeleporterHoverHint !== 'undefined') ? appendTeleporterHoverHint : undefined,
   DmDeleteUndo: (typeof DmDeleteUndo !== 'undefined') ? DmDeleteUndo : undefined,
-  actionBarState: (typeof actionBarState !== 'undefined') ? actionBarState : undefined
+  actionBarState: (typeof actionBarState !== 'undefined') ? actionBarState : undefined,
+  ajaxPost: (typeof ajaxPost !== 'undefined') ? ajaxPost : undefined
 })`);
 const Engine = expose.runInContext(context);
 
@@ -1516,5 +1517,50 @@ describe('DM Delete / Ctrl+Z (DmDeleteUndo)', () => {
     Engine.DmDeleteUndo.pushUndo(null);
     Engine.DmDeleteUndo.pushUndo({});
     expect(Engine.DmDeleteUndo.stack()).toHaveLength(20);
+  });
+});
+
+describe('ajaxPost error propagation', () => {
+  // Regression: the Instruct modal used to freeze at "Starting..." because
+  // non-2xx responses (409 off-turn, 503 no decision model) never reached
+  // the caller's handler. ajaxPost must forward the server's JSON error body
+  // to an optional onError callback.
+  function captureAjax() {
+    let captured = null;
+    global.$.ajax = (opts) => { captured = opts; };
+    return () => captured;
+  }
+
+  test('onError receives the parsed JSON error body on 4xx/5xx', () => {
+    const getOpts = captureAjax();
+    let ok = null, err = null;
+    Engine.ajaxPost('/instruction', { id: 'x', instruction: 'Kill the Goblin' },
+      (d) => { ok = d; }, true, (d) => { err = d; });
+    const opts = getOpts();
+    expect(typeof opts.error).toBe('function');
+    opts.error(
+      { responseJSON: { status: 'error', message: "It is not this character's turn." } },
+      'error', 'Conflict'
+    );
+    expect(ok).toBeNull();
+    expect(err).toEqual({ status: 'error', message: "It is not this character's turn." });
+  });
+
+  test('onError falls back to a synthetic error body for non-JSON responses', () => {
+    const getOpts = captureAjax();
+    let err = null;
+    Engine.ajaxPost('/instruction/step', {}, () => {}, true, (d) => { err = d; });
+    getOpts().error({ responseJSON: undefined }, 'timeout', '');
+    expect(err.status).toBe('error');
+    expect(err.message).toBe('timeout');
+  });
+
+  test('onSuccess still fires on 2xx and onError is not called', () => {
+    const getOpts = captureAjax();
+    let ok = null, err = null;
+    Engine.ajaxPost('/instruction/step', {}, (d) => { ok = d; }, true, (d) => { err = d; });
+    getOpts().success({ status: 'step', steps: 1 });
+    expect(ok).toEqual({ status: 'step', steps: 1 });
+    expect(err).toBeNull();
   });
 });

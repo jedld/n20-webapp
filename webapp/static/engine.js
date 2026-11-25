@@ -4860,7 +4860,7 @@ const switchPOV = (entity_uid, canvas) => {
   });
 };
 
-const ajaxPost = (url, data, onSuccess, isJSON = false) => {
+const ajaxPost = (url, data, onSuccess, isJSON = false, onError = null) => {
   const isMoveActionRequest = (
     url === '/action'
     && data
@@ -4964,6 +4964,19 @@ const ajaxPost = (url, data, onSuccess, isJSON = false) => {
         }
       }
       console.error(`Error with POST ${url}:`, textStatus, errorThrown);
+      // Callers that pass an error handler get the server's JSON error body
+      // (Flask returns {status:'error', message} with 4xx/5xx), so modal
+      // loops never freeze silently on rejections like 409/503.
+      if (typeof onError === 'function') {
+        const body = jqXHR && jqXHR.responseJSON;
+        onError(
+          body && typeof body === 'object'
+            ? body
+            : { status: 'error', message: textStatus || 'Request failed' },
+          textStatus,
+          jqXHR
+        );
+      }
     },
   });
 };
@@ -10606,7 +10619,10 @@ $(document).ready(() => {
       if (!instructionRun.active) return;
       instructionRun.timer = setTimeout(() => {
         instructionRun.timer = null;
-        ajaxPost('/instruction/step', {}, (data) => handle(data), true);
+        // Pass handle as the error callback too: a 409 (off-turn / pending
+        // reaction) or 503 (decision model gone) must surface its message
+        // instead of silently freezing the run at "Deciding next step...".
+        ajaxPost('/instruction/step', {}, (data) => handle(data), true, handle);
       }, 700);
     }
 
@@ -10645,7 +10661,7 @@ $(document).ready(() => {
       instructionRun.active = true;
       setRunning(true);
       addLogLine('Instruction: ' + instruction);
-      ajaxPost('/instruction', { id: entityUid, instruction }, handle, true);
+      ajaxPost('/instruction', { id: entityUid, instruction }, handle, true, handle);
     }
 
     $run.on('click', run);
