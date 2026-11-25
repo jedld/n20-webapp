@@ -753,6 +753,32 @@ export function fogMaskBytes(config, size) {
   return { width, height, data };
 }
 
+/**
+ * Binary per-cell mask upsampled by `samplesPerCell`, for a linearly filtered
+ * DataTexture alphaMap. The upsampled step function means the texture filter
+ * only ramps across ~1/samplePerCell of a cell, so marked regions get soft
+ * feathered borders (pools of shade) instead of sharp square quads, while the
+ * interior of adjacent marked cells stays uniform (no internal seams).
+ * Rows are grid rows: data[y * width + x] covers grid cell (x, y).
+ */
+export function cellMaskBytes(cells, size, samplesPerCell = 4) {
+  const gw = Math.max(1, Number(size?.[0]) || 1);
+  const gh = Math.max(1, Number(size?.[1]) || 1);
+  const s = Math.max(1, Math.round(Number(samplesPerCell) || 1));
+  const marked = new Set((cells || []).map((c) => `${Number(c.x)},${Number(c.y)}`));
+  const width = gw * s;
+  const height = gh * s;
+  const data = new Uint8Array(width * height);
+  for (let sy = 0; sy < height; sy += 1) {
+    const gy = Math.min(gh - 1, Math.floor(sy / s));
+    for (let sx = 0; sx < width; sx += 1) {
+      const gx = Math.min(gw - 1, Math.floor(sx / s));
+      data[sy * width + sx] = marked.has(`${gx},${gy}`) ? 255 : 0;
+    }
+  }
+  return { width, height, data };
+}
+
 /** Cardinal wall next to a walkable cell — same rule as the server torch placer. */
 export function nearestWallEdge(x, y, geometry) {
   const xi = Number(x);

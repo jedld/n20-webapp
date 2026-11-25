@@ -5,6 +5,7 @@ import {
   DOOR_HEIGHT,
   WALL_HEIGHT,
   cellCenter,
+  cellMaskBytes,
   doorAssemblies,
   edgeWallBoxes,
   floorPlane,
@@ -49,6 +50,7 @@ function disposeObject(obj) {
     for (const m of mats) {
       if (!m || m.userData.shared) continue;
       if (m.map) m.map.dispose();
+      if (m.alphaMap) m.alphaMap.dispose();
       if (m.bumpMap && m.bumpMap !== m.map) m.bumpMap.dispose();
       if (m.roughnessMap && m.roughnessMap !== m.map) m.roughnessMap.dispose();
       m.dispose();
@@ -417,31 +419,66 @@ export class MapScene {
 
   _buildFog(state) {
     const water = waterCellSet(state.geometry?.water || []);
-    const fogMat = new THREE.MeshBasicMaterial({
-      color: FOG_COLOR,
-      transparent: true,
-      opacity: 0.72,
-    });
-    const geo = new THREE.PlaneGeometry(this.cellSize * 0.98, this.cellSize * 0.98);
+    const size = state.map?.size || [0, 0];
+    const fogCells = foggedCells(state.tiles || []).filter(
+      (cell) => !water.has(`${cell.x},${cell.y}`)
+    );
+    const lightCells = (state.tiles || [])
+      .filter(
+        (tile) =>
+          tile.line_of_sight !== false &&
+          Number(tile.light) > 0.55 &&
+          !water.has(`${tile.x},${tile.y}`)
+      )
+      .map((tile) => ({ x: tile.x, y: tile.y }));
+    // One floor-wide overlay per layer with an upsampled mask texture: the
+    // linear texture filter feathers the border between shadowed and lit
+    // cells, so dim areas read as soft pools of shade instead of sharp,
+    // tile-aligned squares. Interiors of adjacent shadowed cells stay uniform.
+    this._addSoftCellOverlay(fogCells, size, FOG_COLOR, 0.72, 0.04, 4);
+    this._addSoftCellOverlay(lightCells, size, 0xffe08a, 0.07, 0.03, 4);
+  }
+
+  _addSoftCellOverlay(cells, size, color, opacity, height, samplesPerCell) {
+    const gw = Number(size?.[0]) || 0;
+    const gh = Number(size?.[1]) || 0;
+    if (!cells.length || gw <= 0 || gh <= 0) return;
+    const mask = cellMaskBytes(cells, [gw, gh], samplesPerCell);
+    const rgba = new Uint8Array(mask.width * mask.height * 4);
+    for (let i = 0; i < mask.data.length; i += 1) {
+      const v = mask.data[i];
+      const o = i * 4;
+      rgba[o] = v;
+      rgba[o + 1] = v;
+      rgba[o + 2] = v;
+      rgba[o + 3] = 255;
+    }
+    const tex = new THREE.DataTexture(rgba, mask.width, mask.height, THREE.RGBAFormat);
+    tex.flipY = false;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+    // Floor-sized quad with uv = world (x, z) / map size — same sampling
+    // convention as the volumetric fog mask (texture rows are grid rows).
+    const plane = floorPlane([gw, gh], this.cellSize);
+    const geo = new THREE.PlaneGeometry(plane.width, plane.depth);
     geo.rotateX(-Math.PI / 2);
-    for (const cell of foggedCells(state.tiles || [])) {
-      if (water.has(`${cell.x},${cell.y}`)) continue;
-      const c = cellCenter(cell.x, cell.y, this.cellSize);
-      const mesh = new THREE.Mesh(geo.clone(), fogMat);
-      mesh.position.set(c.x, 0.04, c.z);
-      this.root.add(mesh);
-    }
-    const lightMat = new THREE.MeshBasicMaterial({ color: 0xffe08a, transparent: true, opacity: 0.07 });
-    for (const tile of state.tiles || []) {
-      if (tile.line_of_sight === false) continue;
-      if (water.has(`${tile.x},${tile.y}`)) continue;
-      const light = Number(tile.light);
-      if (!(light > 0.55)) continue;
-      const c = cellCenter(tile.x, tile.y, this.cellSize);
-      const mesh = new THREE.Mesh(geo.clone(), lightMat);
-      mesh.position.set(c.x, 0.03, c.z);
-      this.root.add(mesh);
-    }
+    const uv = geo.attributes.uv;
+    for (let i = 0; i < uv.count; i += 1) uv.setY(i, 1 - uv.getY(i));
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        alphaMap: tex,
+        depthWrite: false,
+      })
+    );
+    mesh.position.set(plane.x, height, plane.z);
+    this.root.add(mesh);
   }
 
   _onDecorLight(light) {

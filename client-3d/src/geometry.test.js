@@ -10,6 +10,7 @@ import {
   foggedCells,
   fogMaskBytes,
   fogMaskCells,
+  cellMaskBytes,
   pointInPolygon,
   groupBoxesBySize,
   classifyStairLayout,
@@ -292,6 +293,31 @@ describe('geometry', () => {
     const bytes = fogMaskBytes({ mask: true, mask_layers: [{ type: 'rectangle', position: [1, 1], size: [1, 1] }] }, [3, 3]);
     expect(bytes.data[1 * 3 + 1]).toBe(255);
     expect(bytes.data[0]).toBe(0);
+  });
+
+  it('builds an upsampled soft-edge cell mask for overlay textures', () => {
+    const mask = cellMaskBytes([{ x: 1, y: 1 }], [3, 2], 4);
+    expect(mask.width).toBe(12);
+    expect(mask.height).toBe(8);
+    // Interior of the marked cell stays uniform...
+    expect(mask.data[5 * 12 + 5]).toBe(255);
+    expect(mask.data[6 * 12 + 6]).toBe(255);
+    // ...and unmarked cells stay fully transparent.
+    expect(mask.data[0]).toBe(0);
+    expect(mask.data[1 * 12 + 0]).toBe(0);
+    // The ramp lives in the one-sample step across the cell border, so the
+    // sample just inside the border is still lit (feather stays narrow).
+    expect(mask.data[4 * 12 + 4]).toBe(255); // just inside (1,1)
+    expect(mask.data[4 * 12 + 3]).toBe(0); // just outside on the x side
+  });
+
+  it('keeps adjacent marked cells seamless in the cell mask', () => {
+    const mask = cellMaskBytes([{ x: 0, y: 0 }, { x: 1, y: 0 }], [2, 1], 4);
+    // Every sample along the shared border column pair is fully marked, so
+    // neighboring shadowed squares merge without a dark seam or bright gap.
+    expect(mask.data[0 * 8 + 3]).toBe(255);
+    expect(mask.data[0 * 8 + 4]).toBe(255);
+    expect(mask.data.every((v) => v === 255)).toBe(true);
   });
 
   it('hangs a torch on the nearest solid wall edge', () => {
