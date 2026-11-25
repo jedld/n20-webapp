@@ -3,16 +3,23 @@
 Flask virtual tabletop that drives the [`natural20`](../natural_20.py) engine.
 
 This repository is **standalone**: it does not vendor the engine or campaign data.
-Install them separately:
 
 ```bash
-# Engine (SRD templates + simulation core)
+# 1. Engine (SRD templates + simulation core) — clone next to this repo and install
+git clone https://github.com/jedld/natural_20.py.git ../natural_20.py
 pip install -e ../natural_20.py
 
-# Webapp
+# 2. Webapp
 pip install -e ".[dev]"
 npm install
+
+# 3. Local config (LLM providers etc.)
+cp webapp/env.example webapp/.env   # then edit provider URLs/models
 ```
+
+`natural20` is **not on PyPI** — the webapp's `natural20>=0.1.0` dependency must
+be satisfied by an engine checkout (`pip install -e ../natural_20.py`) or a git
+URL (`pip install "natural20 @ git+https://github.com/jedld/natural_20.py.git@master"`).
 
 ## Campaign data
 
@@ -35,7 +42,7 @@ Bundled SRD YAML (spells, items, classes) ships with the **engine** package unde
 ./start_web.sh [--edit] [--reset] [campaign_slug_or_path]
 ```
 
-Defaults to `../templates` (engine checkout) when no campaign is passed.
+Defaults to `../natural_20.py/templates` (engine checkout) when no campaign is passed.
 Flags may appear before or after the campaign argument:
 
 - `--edit` — after a DM logs in, that session starts in campaign edit mode.
@@ -54,7 +61,14 @@ N20_USE_GUNICORN=1 ./start_web.sh ../n20-campaigns/wild_sheep_chase
 
 ## Tests
 
+Many webapp tests load campaign data from `user_levels/` (checked out at the
+repo root or a sibling directory — this is what CI does), so the campaigns
+repo is needed for the full suite:
+
 ```bash
+git clone <n20-campaigns-url> user_levels        # inside this repo, or:
+export N20_CAMPAIGNS_DIR=/path/to/n20-campaigns  # ... or point at a checkout
+
 export TEMPLATE_DIR=../natural_20.py/templates
 pytest tests/webapp -q
 npm test
@@ -62,7 +76,11 @@ npm test
 
 ## Docker
 
+The image installs the engine from GitHub at build time; override the source
+with `--build-arg NATURAL20_ENGINE_REF=git+https://.../natural_20.py.git@ref`.
+
 ```bash
+cp webapp/env.example webapp/.env   # edit providers first
 docker build -t n20-webapp .
 docker run --env-file webapp/.env \
   -e TEMPLATE_DIR=/campaigns/wild_sheep_chase \

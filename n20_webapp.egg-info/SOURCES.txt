@@ -1,7 +1,0 @@
-README.md
-pyproject.toml
-n20_webapp.egg-info/PKG-INFO
-n20_webapp.egg-info/SOURCES.txt
-n20_webapp.egg-info/dependency_links.txt
-n20_webapp.egg-info/requires.txt
-n20_webapp.egg-info/top_level.txt

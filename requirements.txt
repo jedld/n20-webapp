@@ -1,5 +1,7 @@
-# Install natural20 from your engine checkout or PyPI before pip install -r requirements.txt
+# natural20 is NOT on PyPI: install it from an engine checkout first
 #   pip install -e ../natural_20.py
+# or from git:  pip install "natural20 @ git+https://github.com/jedld/natural_20.py.git@master"
+# then:  pip install -r requirements.txt
 flask
 flask-session
 flask-socketio

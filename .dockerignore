@@ -1,0 +1,23 @@
+# Keep the Docker build context small; assets come from the node stage.
+node_modules
+coverage
+.git
+.gitignore
+__pycache__
+*.pyc
+.venv
+venv
+n20_webapp.egg-info
+tests
+plans
+docs
+# Runtime state that must never leak into an image
+saves
+flask_session
+llm_logs
+webapp/saves
+webapp/flask_session
+webapp/llm_logs
+webapp/.env
+webapp/npc_memories
+docker-compose*.yml

@@ -24,10 +24,14 @@ RUN apt-get update && \
 RUN useradd -m -r appuser
 WORKDIR /app
 
-# Install engine first (override NATURAL20_ENGINE_REF at build time).
-ARG NATURAL20_ENGINE_REF=../natural_20.py
+# Install engine first (natural20 is not on PyPI; override
+# NATURAL20_ENGINE_REF at build time, e.g.
+#   --build-arg NATURAL20_ENGINE_REF=git+https://github.com/you/natural_20.py.git@branch
+# or pre-install it into the image some other way).
+ARG NATURAL20_ENGINE_REF=git+https://github.com/jedld/natural_20.py.git@master
 COPY requirements.txt pyproject.toml README.md ./
-RUN pip install --no-cache-dir -r requirements.txt gunicorn eventlet
+RUN pip install --no-cache-dir "${NATURAL20_ENGINE_REF}" \
+    && pip install --no-cache-dir -r requirements.txt gunicorn eventlet
 
 COPY . .
 COPY --from=assets /app/webapp/static /app/webapp/static

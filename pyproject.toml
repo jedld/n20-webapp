@@ -35,5 +35,6 @@ dev = [
     "pytest-xdist",
 ]
 
-[tool.setuptools]
-packages = []
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["webapp*"]
