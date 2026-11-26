@@ -33,7 +33,7 @@ from .helpers.character_selection import (
     partition_selectables,
     taken_selectable_uids,
 )
-from .helpers.template_globals import entities_controlled_by
+from .helpers.template_globals import entities_controlled_by, entity_owners
 from .helpers.login_ui import build_login_page_context
 
 auth_bp = Blueprint('auth', __name__)
@@ -178,13 +178,26 @@ def _materialize_login_pick(character_name, username, selected_team, logger):
         return None
 
     try:
-        if ensure_character_entity_loaded(character_name) is None:
+        entity = ensure_character_entity_loaded(character_name)
+        if entity is None:
             _unclaim_controller(character_name, username)
             return 'No spawn slot available for this character'
     except Exception as exc:
         logger.exception(f"Failed to materialize character {character_name}")
         _unclaim_controller(character_name, username)
         return f'Failed to load character: {exc}'
+
+    # The materialized entity may already exist under a different uid (the
+    # sheet stem, e.g. 'high_elf_mage' for the 'crysania' pick). Ownership and
+    # action-bar access are keyed by entity uid, so claim that uid too; if a
+    # different player already controls it, the slot is taken.
+    entity_uid = str(getattr(entity, 'entity_uid', '') or '')
+    if entity_uid and entity_uid != str(character_name):
+        other_owners = [owner for owner in entity_owners(entity) if owner != username]
+        if other_owners:
+            _unclaim_controller(character_name, username)
+            return 'Character is already taken'
+        _claim_controller(entity_uid, username)
     return None
 
 

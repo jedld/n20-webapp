@@ -143,13 +143,30 @@ def ensure_character_entity_loaded(character_name):
     if not sheet:
         return None
 
-    overrides = dict(selectable.get('overrides') or {})
-    overrides.setdefault('entity_uid', character_name)
-
     is_npc_sheet = (
         str(selectable.get('kind') or '').lower() == 'npc'
         or str(sheet).startswith('npcs/')
     )
+
+    # A PC loaded straight from a sheet keeps the sheet stem as its entity_uid
+    # (sheet 'characters/high_elf_mage.yml' -> uid 'high_elf_mage') even though
+    # selectable_characters keys it by display name ('crysania'). Adopt that
+    # already-loaded entity instead of spawning a duplicate token, otherwise a
+    # re-pick (e.g. after a server restart) orphans the token the player has
+    # been using: its uid has no controller entry, so its action bar 403s.
+    if not is_npc_sheet:
+        sheet_stem = os.path.splitext(os.path.basename(str(sheet)))[0]
+        if sheet_stem and sheet_stem != str(character_name):
+            existing = current_game.get_entity_by_uid(sheet_stem)
+            if existing is not None:
+                logger.info(
+                    f"Adopting existing {sheet_stem} entity for selectable "
+                    f"character {character_name} (sheet {sheet})"
+                )
+                return existing
+
+    overrides = dict(selectable.get('overrides') or {})
+    overrides.setdefault('entity_uid', character_name)
 
     # Determine candidate maps in order of preference.
     candidate_map_names = []
