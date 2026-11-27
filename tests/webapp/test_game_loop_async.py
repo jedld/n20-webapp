@@ -52,7 +52,7 @@ def test_stalled_loop_task_is_revived():
     gm = _minimal_game_management()
     gm._game_loop_task_running = True
     gm._game_loop_task_token = 7
-    gm._game_loop_task_started = 0.0  # effectively ancient (monotonic clock)
+    gm._game_loop_task_started = __import__("time").monotonic() - 10_000  # ancient (fresh CI runners have small monotonic clocks)
     gm.get_current_battle = MagicMock(return_value=MagicMock())
 
     assert gm.schedule_game_loop() is True
@@ -71,7 +71,7 @@ def test_stalled_loop_task_is_revived():
 def test_stale_check_respects_legitimate_waiting_states():
     gm = _minimal_game_management()
     gm._game_loop_task_running = True
-    gm._game_loop_task_started = 0.0
+    gm._game_loop_task_started = __import__("time").monotonic() - 10_000
     gm.get_current_battle = MagicMock(return_value=MagicMock())
 
     gm.waiting_for_reaction = [MagicMock(), MagicMock(), None, []]
