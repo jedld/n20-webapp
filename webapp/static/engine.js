@@ -10116,9 +10116,16 @@ $(document).ready(() => {
         }
         const nextOpts = Object.assign({}, opts || {});
         nextOpts[field] = String(itemName).trim();
+        const request = { id: entity_uid, action, opts: nextOpts };
+        // coordsx/coordsy are the square the caster clicked in the previous
+        // select_target step; re-send it so the server does not drop the
+        // target and bounce the caster back into target mode.
+        if (typeof coordsx === 'number' && typeof coordsy === 'number') {
+          request.target = { x: coordsx, y: coordsy };
+        }
         ajaxPost(
           "/action",
-          { id: entity_uid, action, opts: nextOpts },
+          request,
           (response) => {
             handleAction(entity_uid, action, nextOpts, coordsx, coordsy, response);
           },

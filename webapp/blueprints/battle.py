@@ -812,6 +812,12 @@ def get_target():
             target_squares = []
             if build_map['param'][0]['type'] == 'select_choice':
                 build_map = build_map['next'](choice)
+            elif build_map['param'][0]['type'] == 'text_input':
+                # Free-text step (Message, Sending): the hover preview just
+                # carries whatever text is already in opts (or none).
+                _field = build_map['param'][0].get('field', 'message')
+                build_map = build_map['next'](
+                    opts.get(_field) or build_map['param'][0].get('default') or '')
             elif build_map['param'][0]['type'] == 'select_empty_space':
                 build_map = build_map['next'](target)
             elif build_map['param'][0]['type'] == 'select_target':
