@@ -5045,6 +5045,72 @@ function resolveActionStepType(data) {
   return (param0 && param0.type) || data.type || null;
 }
 
+function showMultipleEffectsModal(entity_uid, action, opts, coordsx, coordsy, data) {
+  // Dispel Magic-style effect picker: several persistent spell zones overlap
+  // the clicked square. The caster picks which magical effect to target and
+  // we re-post the same action with opts.effect_id.
+  const effects = Array.isArray(data.effects) ? data.effects : [];
+  const targetPos = Array.isArray(data.target) ? data.target : [coordsx, coordsy];
+  if (!effects.length) {
+    refreshTurn();
+    return;
+  }
+  const $modal = $(
+    '<div class="modal fade" id="select-effect-modal" tabindex="-1" role="dialog" aria-labelledby="select-effect-modal-label" aria-hidden="true">',
+  );
+  $modal.html(`
+    <div class="modal-dialog" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="select-effect-modal-label">Multiple magical effects</h5>
+          <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p>Several magical effects overlap this square. Which one do you target?</p>
+          <ul class="list-group">
+            ${effects
+              .map(
+                (fx) =>
+                  `<li class="list-group-item choice-item" data-effect-id="${fx.id}">${fx.label}${fx.level ? ` (spell level ${fx.level})` : ""}</li>`,
+              )
+              .join("")}
+          </ul>
+        </div>
+      </div>
+    </div>
+  `);
+  $("body").append($modal);
+  $modal.modal("show");
+  $modal.on("hidden.bs.modal", () => $modal.remove());
+  $modal.on("click", ".choice-item", function () {
+    const effectId = $(this).data("effect-id");
+    $modal.modal("hide");
+    const mergedOpts = { ...(opts || {}), effect_id: effectId };
+    ajaxPost(
+      "/action",
+      {
+        id: entity_uid,
+        action,
+        opts: mergedOpts,
+        target: { x: targetPos[0], y: targetPos[1] },
+      },
+      (resp) => {
+        continueActionFromResponse(
+          entity_uid,
+          action,
+          mergedOpts,
+          targetPos[0],
+          targetPos[1],
+          resp,
+        );
+      },
+      true,
+    );
+  });
+}
+
 function continueActionFromResponse(entity_uid, action, opts, coordsx, coordsy, data) {
   if (data && data.status === 'ok') {
     if (data.pickpocket_attempt && data.pickpocket_attempt.success === false) {
@@ -5096,6 +5162,10 @@ function continueActionFromResponse(entity_uid, action, opts, coordsx, coordsy, 
       { x: coordsx, y: coordsy },
       { id: entity_uid, action, opts: opts || {} },
     );
+    return;
+  }
+  if (data && data.status === 'multiple_effects') {
+    showMultipleEffectsModal(entity_uid, action, opts, coordsx, coordsy, data);
     return;
   }
   refreshTurn();

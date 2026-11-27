@@ -1595,11 +1595,50 @@ def action():
                             # something like ``target.has_effect(...)`` is
                             # called. Reject those up front with a clear
                             # error so the UI can prompt the user again.
-                            if not isinstance(target, Entity) and not (
+                            # ``allow_effects`` spells (e.g. Dispel Magic) may
+                            # instead aim at a persistent spell zone covering
+                            # the square; overlapping zones raise an effect
+                            # picker the caster answers with ``opts.effect_id``.
+                            is_entity_target = isinstance(target, Entity) or (
                                 isinstance(target, list)
                                 and target
                                 and all(isinstance(t, Entity) for t in target)
-                            ):
+                            )
+                            if not is_entity_target and param_details.get('allow_effects'):
+                                from natural20.utils.dispel import (
+                                    zone_label,
+                                    zone_spell_level,
+                                    zones_at,
+                                )
+                                target_pos = [int(target[0]), int(target[1])]
+                                covering = zones_at(battle, battle_map, target_pos)
+                                picked = opts.get('effect_id')
+                                if picked and any(
+                                    str(getattr(z, 'id', None)) == str(picked)
+                                    for z in covering
+                                ):
+                                    action = action['next'](target_pos)
+                                    continue
+                                if len(covering) > 1:
+                                    return jsonify(
+                                        status='multiple_effects',
+                                        target=target_pos,
+                                        effects=[
+                                            {
+                                                'id': z.id,
+                                                'label': zone_label(z),
+                                                'level': zone_spell_level(
+                                                    z, get_game_session()),
+                                            }
+                                            for z in covering
+                                        ],
+                                    )
+                                if len(covering) == 1:
+                                    opts = dict(opts)
+                                    opts['effect_id'] = covering[0].id
+                                    action = action['next'](target_pos)
+                                    continue
+                            if not is_entity_target:
                                 return jsonify(
                                     status='error',
                                     error='No valid target at the selected square. Click on a creature.',
@@ -1754,6 +1793,12 @@ def action():
                         raise ValueError(f"Unknown action type {action_type} {param_details['type']}")
                 else:
                     raise ValueError(f"Invalid action map {action}")
+
+            # Dispel Magic-style magical-effect picks (multiple_effects
+            # picker): carry the chosen zone id onto the built action so the
+            # spell can resolve it through natural20.utils.dispel.
+            if isinstance(action, SpellAction) and opts.get('effect_id'):
+                action.effect_id = opts['effect_id']
 
             _t_validate = time.perf_counter()
             action.validate(battle_map, target=target)
