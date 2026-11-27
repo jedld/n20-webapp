@@ -344,6 +344,60 @@ function addBriar(group) {
   }
 }
 
+// Spike Growth thorns: low bramble cover plus scattered hard spikes per cell.
+// Geometry and materials are shared; placement is seeded from the cell so the
+// patch is deterministic across refreshes and varied between neighbours.
+const THORN_CONE_GEO = new THREE.ConeGeometry(0.035, 0.2, 5);
+const THORN_COVER_GEO = new THREE.CircleGeometry(0.46, 20);
+let thornMats = null;
+
+function thornMaterials() {
+  if (!thornMats) {
+    thornMats = {
+      spike: new THREE.MeshStandardMaterial({ color: 0x5c6b34, roughness: 0.8 }),
+      cover: new THREE.MeshStandardMaterial({
+        color: 0x3c5122,
+        roughness: 1,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+      }),
+    };
+  }
+  return thornMats;
+}
+
+function seededRandom(seed) {
+  let s = (Number(seed) >>> 0) || 0x9e3779b9;
+  return () => {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >>> 17;
+    s ^= s << 5; s >>>= 0;
+    return s / 0xffffffff;
+  };
+}
+
+export function addThorns(group, obj = {}) {
+  const mats = thornMaterials();
+  const cover = new THREE.Mesh(THORN_COVER_GEO, mats.cover);
+  cover.rotation.x = -Math.PI / 2;
+  cover.position.y = 0.015;
+  group.add(cover);
+  const rand = seededRandom((Number(obj.x) || 0) * 73856093 ^ ((Number(obj.y) || 0) * 19349663));
+  for (let i = 0; i < 11; i += 1) {
+    const angle = rand() * Math.PI * 2;
+    const dist = 0.07 + rand() * 0.33;
+    const height = 0.13 + rand() * 0.15;
+    const spike = new THREE.Mesh(THORN_CONE_GEO, mats.spike);
+    spike.scale.y = height / 0.2;
+    spike.position.set(Math.cos(angle) * dist, height / 2, Math.sin(angle) * dist);
+    const tilt = (rand() - 0.5) * 0.9;
+    spike.rotation.z = Math.cos(angle) * tilt;
+    spike.rotation.x = Math.sin(angle) * tilt;
+    group.add(spike);
+  }
+}
+
 function addTeleporter(group, obj) {
   const color = parseHexColor(obj.teleporter_marker_color, 0x3d8bfd);
   const glow = new THREE.MeshBasicMaterial({
@@ -565,6 +619,8 @@ export function addFixture(root, obj, mats, cellSize, opts = {}) {
     addTree(group);
   } else if (kind === 'briar') {
     addBriar(group);
+  } else if (kind === 'thorns') {
+    addThorns(group, obj);
   } else if (kind === 'cover') {
     const tall = obj.cover === 'three_quarter' || obj.cover === 'total';
     addCrate(group, mats, { height: tall ? 0.7 : 0.34, width: tall ? 0.42 : 0.48 });

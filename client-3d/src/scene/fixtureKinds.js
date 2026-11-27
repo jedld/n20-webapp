@@ -53,6 +53,7 @@ export function fixtureKind(obj = {}) {
   if (BARREL_TYPES.has(typeName) || name.includes('barrel')) return 'barrel';
   if (typeName === 'tree') return 'tree';
   if (typeName === 'briar') return 'briar';
+  if (typeName === 'spike_growth_tile' || typeName === 'thorns') return 'thorns';
   if (COVER_LEVELS.has(obj.cover)) return 'cover';
   if (
     hasLight

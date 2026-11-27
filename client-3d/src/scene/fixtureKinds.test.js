@@ -20,6 +20,11 @@ describe('fixtureKind lights', () => {
     expect(fixtureKind({ type: 'candle', light: { bright: 5, dim: 5 } })).toBe('lamp');
   });
 
+  it('classifies spike growth zone squares as thorns terrain', () => {
+    expect(fixtureKind({ type: 'spike_growth_tile', name: 'Spike Growth' })).toBe('thorns');
+    expect(fixtureKind({ kind: 'thorns' })).toBe('thorns');
+  });
+
   it('classifies floor hatches even when the 2D client marks them as doors', () => {
     expect(fixtureKind({ type: 'trap_door', door_highlight: true })).toBe('trap_door');
     expect(fixtureKind({ type: 'church_trapdoor' })).toBe('trap_door');
