@@ -164,6 +164,10 @@
     "rule": "/assets/<path:asset_name>"
   },
   {
+    "endpoint": "assets.map_settings",
+    "rule": "/map_settings"
+  },
+  {
     "endpoint": "assets.serve_editor_image",
     "rule": "/assets/editor/<filename>"
   },

@@ -2128,6 +2128,7 @@ def index():
                            pov_entity=current_pov_entity,
                            background_path=f"assets/{background}",
                            background_width=tiles_dimension_width,
+                           background_stretch=battle_map.background_stretch(),
                            messages=messages,
                            current_map=battle_map.name,
                            current_map_name=battle_map.name,

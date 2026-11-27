@@ -759,7 +759,7 @@ describe('engine.js basic behavior', () => {
 
     expect(calls.tilesDataSet).toEqual({ width: 640, height: 480 });
     expect(calls.imageAttr).toBe('http://example/map.png');
-    expect(calls.imageCss).toEqual({ width: '640px', objectFit: 'cover', objectPosition: 'top' });
+    expect(calls.imageCss).toEqual({ width: '640px', objectFit: 'cover', objectPosition: 'top', height: '' });
     // Matches Utils.updateMapDisplay: image_offset_px is applied to the tiles
     // area only; the image container stays at (tile_size, tile_size).
     expect(calls.imageContainerCss).toEqual({ height: '480px', top: tilesContainerData.tileSize, left: tilesContainerData.tileSize });

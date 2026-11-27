@@ -16,9 +16,15 @@ from .helpers.runtime_state import (
     get_level,
     get_othermaps,
     get_logger,
+    get_socketio,
 )
 from .helpers.asset_utils import resolve_asset_category_file, webapp_static_root
 from .helpers.auth_utils import user_role
+from .helpers.map_settings import (
+    apply_map_settings,
+    broadcast_map_settings,
+    current_map_settings,
+)
 from natural20.map_set import is_valid_map_set_id, slug_map_set_id
 
 assets_bp = Blueprint('assets', __name__)
@@ -305,6 +311,53 @@ def create_map():
         return jsonify(status='ok', name=map_id)
     except Exception as e:
         logger.exception('Failed to create map')
+        return jsonify(error=str(e)), 500
+
+
+@assets_bp.route('/map_settings', methods=['GET', 'POST'], endpoint='map_settings')
+def map_settings():
+    """Get/set per-map display settings (DM only).
+
+    POST JSON: {"map": <name>, "settings": {"<key>": <value>, ...}}
+    Only whitelisted keys (``MAP_SETTINGS_FIELDS``) are accepted; each is
+    stored in the map YAML and applied to the live Map object. Changes are
+    broadcast to all clients as a ``map_settings`` socket message.
+    GET: /map_settings?map=<name> -> {"status": "ok", "settings": {...}}
+    """
+    logger = get_logger()
+    game_session = get_game_session()
+    if 'dm' not in user_role():
+        return jsonify(error='Forbidden'), 403
+
+    try:
+        if request.method == 'GET':
+            map_name = (request.args.get('map') or '').strip()
+            map_obj = game_session.maps.get(map_name)
+            if map_obj is None:
+                return jsonify(error='Unknown map'), 404
+            return jsonify(status='ok', map=map_name, settings=current_map_settings(map_obj))
+
+        payload = request.get_json(silent=True) or {}
+        map_name = (payload.get('map') or request.form.get('map') or '').strip()
+        incoming = payload.get('settings') or {}
+        try:
+            settings = apply_map_settings(game_session, map_name, incoming)
+        except KeyError as exc:
+            message = exc.args[0] if exc.args else 'Unknown map'
+            if 'Unknown map settings' in str(message):
+                return jsonify(error=message), 400
+            return jsonify(error='Unknown map'), 404
+        except ValueError:
+            return jsonify(error='Invalid setting value'), 400
+
+        try:
+            broadcast_map_settings(get_socketio(), map_name, settings)
+        except Exception:
+            logger.exception('Failed to broadcast map_settings')
+
+        return jsonify(status='ok', map=map_name, settings=settings)
+    except Exception as e:
+        logger.exception('Failed to update map settings')
         return jsonify(error=str(e)), 500
 
 

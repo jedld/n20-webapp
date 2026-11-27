@@ -3517,6 +3517,10 @@ class EventQueue {
             resolve();
           });
           break;
+        case "map_settings":
+          this.applyMapSettingsBroadcast(data.message || {});
+          resolve();
+          break;
         case "command_response":
           $("#command-output").append(data.message + "\n");
           resolve();
@@ -3654,15 +3658,42 @@ class EventQueue {
     });
   }
 
+  applyMapSettingsBroadcast(payload) {
+    // Live-apply per-map display settings (DM edited the Map Settings panel).
+    // Only affects the currently displayed map.
+    if (!payload || !payload.settings) return;
+    const currentMap = $('body').attr('data-current-map');
+    if (payload.map && currentMap && payload.map !== currentMap) return;
+    const settings = payload.settings;
+    if (Object.prototype.hasOwnProperty.call(settings, 'background_stretch')) {
+      const stretch = !!settings.background_stretch;
+      const $container = $("#main-map-area .image-container");
+      const $tiles = $("#main-map-area .tiles-container");
+      const width = Number($tiles.data('width')) || 0;
+      const height = Number($tiles.data('height')) || 0;
+      const css = { objectFit: stretch ? 'fill' : 'cover', objectPosition: 'top' };
+      if (width) css.width = `${width}px`;
+      const $bg = $container.find('img.background-image, img, video').first();
+      if ($bg.length) {
+        if (stretch && height) css.height = `${height}px`;
+        else css.height = '';
+        $bg.css(css);
+      }
+    }
+  }
+
   processMapEvent(data, resolve) {
     const { message: map_url, width, height } = data;
     const image_offset_px = data.image_offset_px || [0, 0];
     const offsetX = Number(image_offset_px[0]) || 0;
     const offsetY = Number(image_offset_px[1]) || 0;
+    const stretch = !!data.stretch;
     $(".tiles-container").data({ width, height });
+    const bgCss = { width: `${width}px`, objectFit: stretch ? 'fill' : 'cover', objectPosition: 'top' };
+    bgCss.height = stretch ? `${height}px` : '';
     $(".image-container img")
       .attr("src", map_url)
-      .css({ width: `${width}px`, objectFit: 'cover', objectPosition: 'top' });
+      .css(bgCss);
     const tile_size = parseInt($(".tiles-container").data("tile-size"), 10) || 0;
     // Match index.html / Utils.updateMapDisplay: offset on tiles only, not the image container.
     $(".image-container").css({
@@ -7280,6 +7311,59 @@ $(document).ready(() => {
     resetViewport();
     Utils.switchMap(mapName, globalCanvas, () => {
       createGlobalCanvas();
+    });
+  });
+
+  // --- Map Settings panel (DM, inside the map selector modal) -------------
+  // Generic: each control has id `map-setting-<key>`; values round-trip
+  // through GET/POST /map_settings. Add new controls in index.html and the
+  // server's MAP_SETTINGS_FIELDS to extend it.
+  let mapSettingsReqToken = 0;
+
+  function renderMapSettings(settings) {
+    Object.entries(settings || {}).forEach(([key, value]) => {
+      const $el = $(`#map-setting-${key}`);
+      if (!$el.length) return;
+      if ($el.attr('type') === 'checkbox') $el.prop('checked', !!value);
+      else $el.val(value);
+    });
+  }
+
+  function loadMapSettings(mapName) {
+    if (!mapName) return;
+    const token = ++mapSettingsReqToken;
+    $.getJSON('/map_settings', { map: mapName })
+      .done((data) => {
+        if (token !== mapSettingsReqToken) return;
+        if (data && data.settings) renderMapSettings(data.settings);
+      })
+      .fail(() => { /* panel just stays at defaults */ });
+  }
+
+  $('#map-settings-target').on('change', function () {
+    loadMapSettings($(this).val());
+  });
+
+  $('#mapModal').on('show.bs.modal', function () {
+    loadMapSettings($('#map-settings-target').val() || $('body').attr('data-current-map'));
+  });
+
+  $('#mapModal .map-settings-section input[type="checkbox"]').on('change', function () {
+    const mapName = $('#map-settings-target').val();
+    const key = $(this).attr('id').replace(/^map-setting-/, '');
+    if (!mapName || !key) return;
+    const settings = {};
+    settings[key] = $(this).is(':checked');
+    $.ajax({
+      url: '/map_settings',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({ map: mapName, settings }),
+      success: (data) => {
+        if (data && data.settings) renderMapSettings(data.settings);
+        if (data && data.error) console.warn('map_settings failed:', data.error);
+      },
+      error: (xhr) => console.warn('map_settings request failed', xhr && xhr.responseText),
     });
   });
 

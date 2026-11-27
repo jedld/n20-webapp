@@ -1539,6 +1539,7 @@ class GameManagement:
                                   'width': tiles_dimension_width,
                                   'height': tiles_dimension_height,
                                   'image_offset_px': self.battle_map.image_offset_px,
+                                  'stretch': self.battle_map.background_stretch(),
                                   'message': map_image_url})
         self.socketio.emit('message', {'type': 'initiative', 'message': {}})
         self.socketio.emit('message', {'type': 'turn', 'message': {}})

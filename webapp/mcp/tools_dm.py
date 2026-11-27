@@ -2276,6 +2276,63 @@ def register(registry: ToolRegistry) -> None:
 
     @tool(
         registry,
+        name='dm.map_settings',
+        description='Get or set per-map display settings (stored in the map YAML, '
+                    'broadcast to all VTT clients). op: get | set. '
+                    'Settings: background_stretch (bool, stretch the map background '
+                    'image/video to exactly fit the battlefield grid). '
+                    'Optional map_name (current map when omitted).',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {'type': 'string', 'enum': ['get', 'set']},
+                'map_name': {'type': 'string'},
+                'background_stretch': {'type': 'boolean'},
+            },
+        },
+        category='dm',
+    )
+    def map_settings(context: MCPContext, op: str, map_name: Optional[str] = None,
+                     background_stretch: Optional[bool] = None):
+        from webapp.blueprints.helpers.map_settings import (
+            MAP_SETTINGS_FIELDS,
+            apply_map_settings,
+            broadcast_map_settings,
+            current_map_settings,
+        )
+
+        op = (op or '').strip().lower()
+        battle_map = context.resolve_map(map_name)
+        if battle_map is None:
+            raise tool_error('No map resolved for map_settings')
+        name = battle_map.name
+        if op == 'get':
+            return {'map': name, 'settings': current_map_settings(battle_map)}
+        if op == 'set':
+            incoming = {
+                key: value
+                for key, value in (('background_stretch', background_stretch),)
+                if value is not None and key in MAP_SETTINGS_FIELDS
+            }
+            if not incoming:
+                raise tool_error('set requires at least one setting (e.g. background_stretch)')
+            try:
+                settings = apply_map_settings(context.game_session, name, incoming)
+            except (KeyError, ValueError) as exc:
+                raise tool_error(str(exc.args[0] if exc.args else str(exc))) from exc
+            socketio = context.socketio
+            if socketio is not None:
+                try:
+                    broadcast_map_settings(socketio, name, settings)
+                except Exception as exc:
+                    raise tool_error(f'emit failed: {exc}') from exc
+            context.log_dm(f"DM map_settings set map={name} {incoming}")
+            return {'map': name, 'settings': settings}
+        raise tool_error('op must be one of: get, set')
+
+    @tool(
+        registry,
         name='dm.sidekick',
         description='Manage party sidekick NPCs. '
                     'op: list | join | leave | assign_owner | auto_follow. '

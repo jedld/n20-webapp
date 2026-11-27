@@ -1145,6 +1145,26 @@
                 <div class="modal-body">
                     <p class="text-muted" style="margin-top:-6px; margin-bottom:8px;">View a map (camera only), activate a map set to move the party POV, or place party tokens on a map.</p>
                     {% include 'partials/map_tiles.html' %}
+                    <div id="map-settings-section" class="map-settings-section" style="margin-top:14px; border-top:1px solid #444; padding-top:10px;">
+                        <h5 style="margin-top:0;">Map Settings</h5>
+                        <div class="form-group" style="margin-bottom:8px;">
+                            <label for="map-settings-target">Map</label>
+                            <select id="map-settings-target" class="form-control input-sm">
+                                {% for map_name in available_maps %}
+                                <option value="{{ map_name }}" {% if map_name == current_map %}selected{% endif %}>{{ map_name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="checkbox" style="margin:6px 0;">
+                            <label>
+                                <input type="checkbox" id="map-setting-background_stretch">
+                                Stretch background to fit battlefield
+                            </label>
+                        </div>
+                        <p class="text-muted" style="font-size:12px; margin:4px 0 0;">
+                            Settings save automatically and apply to all players.
+                        </p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1444,11 +1464,11 @@
     <div id="main-map-area" style="background-color: {{ background_color }}; position: relative; width: 100%; height: 100vh; display: flex; justify-content: center; align-items: center; overflow: hidden;">
         <div class="image-container" style="position: relative; height: {{ background_height }}px;">
             {% if background_path.endswith('.mp4') %}
-                <video autoplay loop muted playsinline style="width: {{ background_width }}px; height: inherit; object-fit: cover; object-position: top;">
+                <video autoplay loop muted playsinline style="width: {{ background_width }}px; height: {{ background_height }}px; object-fit: {% if background_stretch %}fill{% else %}cover{% endif %}; object-position: top;">
                     <source src="{{ background_path }}" type="video/mp4">
                 </video>
             {% else %}
-                <img src="{{ background_path }}" class="background-image" style="width: {{ background_width }}px; object-fit: cover; object-position: top;">
+                <img src="{{ background_path }}" class="background-image" style="width: {{ background_width }}px; {% if background_stretch %}height: {{ background_height }}px; object-fit: fill;{% else %}object-fit: cover;{% endif %} object-position: top;">
             {% endif %}
             <div id="tiles-area" class="tiles-container actions-container" data-width="{{ background_width }}" data-height="{{ background_height }}" data-tile-size="{{tile_size_px}}" style="position: absolute; top: -{{tile_size_px + top_offset_px}}px; left: -{{tile_size_px + left_offset_px}}px;">{% include 'map.html' %}</div>
         </div>

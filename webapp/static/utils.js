@@ -1397,6 +1397,8 @@ const Utils = {
     // Update background - handle both img and video elements
     const bgSrc = data.background;
     const isVideo = bgSrc && (bgSrc.endsWith('.mp4') || bgSrc.endsWith('.webm'));
+    const stretch = !!data.stretch;
+    const objectFit = stretch ? 'fill' : 'cover';
     const $existingImg = $imageContainer.find('img.background-image, img').first();
     const $existingVideo = $imageContainer.find('video').first();
 
@@ -1413,7 +1415,7 @@ const Utils = {
       } else {
         // Create new video element (insert before tiles-container)
         const $video = $('<video autoplay loop muted playsinline></video>')
-          .css({ width: data.width + 'px', height: 'inherit', objectFit: 'cover', objectPosition: 'top' })
+          .css({ width: data.width + 'px', height: stretch ? data.height + 'px' : 'inherit', objectFit: objectFit, objectPosition: 'top' })
           .append($('<source>').attr('src', bgSrc).attr('type', 'video/mp4'));
         $imageContainer.find('.tiles-container').before($video);
         $video[0].play().catch(() => {});
@@ -1423,18 +1425,20 @@ const Utils = {
       if ($existingVideo.length) {
         $existingVideo.remove();
       }
+      const imgCss = {
+        width: data.width + 'px',
+        objectFit: objectFit,
+        objectPosition: 'top',
+        height: stretch ? data.height + 'px' : '',
+      };
       if ($existingImg.length) {
         // Update existing image
-        $existingImg.attr('src', bgSrc).css({
-          width: data.width + 'px',
-          objectFit: 'cover',
-          objectPosition: 'top',
-        });
+        $existingImg.attr('src', bgSrc).css(imgCss);
       } else {
         // Create new img element (insert before tiles-container)
         const $img = $('<img class="background-image">')
           .attr('src', bgSrc)
-          .css({ width: data.width + 'px', objectFit: 'cover', objectPosition: 'top' });
+          .css(imgCss);
         $imageContainer.find('.tiles-container').before($img);
       }
     }

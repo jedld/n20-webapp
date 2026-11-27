@@ -1942,6 +1942,16 @@
     "rule": "/manual_roll"
   },
   {
+    "endpoint": "assets.map_settings",
+    "methods": [
+      "GET",
+      "HEAD",
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/map_settings"
+  },
+  {
     "endpoint": "navigation.map_state",
     "methods": [
       "GET",
