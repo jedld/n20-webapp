@@ -27,13 +27,26 @@ import {
   distanceFogRange,
 } from '../geometry.js';
 import { tokenAssetUrl, isFlyingPose, isPronePose, tokenBaseY, FLY_BOB } from './tokens.js';
-import { AOE_COLOR, PATH_COLOR, SELECT_COLOR } from './overlays.js';
+import { AOE_COLOR, SELECT_COLOR } from './overlays.js';
+import { buildAttackArrow, buildFlowArrow, flatRingGeometry } from './flowArrow.js';
 import { FxRuntime } from '../fx/FxRuntime.js';
 import { aurasForEffects } from '../fx/statusAuras.js';
 import { doorPanelMaterials, disposeVttMaterials, loadVttMaterials, texturedBoxGeometry, wallSpecFromState } from './materials.js';
 import { addCaveWalls } from './caveWalls.js';
 import { addFixture, addTokenLight } from './fixtures.js';
 import { addCampaignModel, addPortcullis, addSecretDoor, addWindow } from './barriers.js';
+import { buildFigure } from './tokenModels.js';
+import {
+  TOPPLE_MAX_SECONDS,
+  applyTopplePose,
+  createToppler,
+  fallbackTopplePose,
+  gatherHullPoints,
+  isAtRest,
+  runTopple,
+  shortestAngle,
+  yawToDirection,
+} from './topple.js';
 import { addWaterTerrain } from './water.js';
 import { MAX_DECOR_LIGHTS } from './fixtureKinds.js';
 
@@ -43,7 +56,9 @@ const GRID_COLOR = 0x1c2230;
 
 function disposeObject(obj) {
   obj.traverse((child) => {
-    if (child.geometry) child.geometry.dispose();
+    if (child.geometry && !(child.geometry.userData && child.geometry.userData.shared)) {
+      child.geometry.dispose();
+    }
     const mat = child.material;
     if (!mat) return;
     const mats = Array.isArray(mat) ? mat : [mat];
@@ -73,6 +88,16 @@ export class MapScene {
     this.clock = new THREE.Clock();
     this.tweens = [];
     this.fxTtl = [];
+    // 3D figure pose state, persisted across full scene rebuilds (every
+    // /map_state refresh recreates the token groups):
+    this.tokenYaw = new Map();       // uid -> facing yaw (radians)
+    this._proneState = new Map();    // uid -> last prone flag (transition detect)
+    this._topplePoses = new Map();   // uid -> settled physics pose {quaternion, position}
+    this._selectedUid = null;        // token with the green base ring + rotate knob
+    this._selectionGroup = null;
+    this._rotationGhost = null;      // drag-time "facing" line
+    this._dragRotationUid = null;
+    this._toppling = [];             // live physics fall animations
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -189,6 +214,13 @@ export class MapScene {
 
   async applyState(state) {
     this.state = state;
+    // cosmetic facing persisted by the server (entities[].rotation, degrees)
+    for (const e of state.entities || []) {
+      if (Number.isFinite(e.rotation) && this._dragRotationUid !== e.uid) {
+        const yaw = THREE.MathUtils.degToRad(e.rotation);
+        if (this.tokenYaw.get(e.uid) !== yaw) this.tokenYaw.set(e.uid, yaw);
+      }
+    }
     this._clearRoot();
     await this._buildFloor(state);
     await this._buildWater(state);
@@ -199,6 +231,12 @@ export class MapScene {
     this._syncHpChips();
     this.fx.onMapReady();
     this.fx.applyMapStateEffects(state.effects || []);
+    // keep the selection ring + rotate knob glued to the (rebuilt) token
+    if (this._selectedUid) {
+      const keep = this._selectedUid;
+      this.clearSelection();
+      if ((state.entities || []).some((e) => e.uid === keep)) this.setSelected(keep);
+    }
     if (!this._didInitCamera) {
       this.resetCamera();
       this._didInitCamera = true;
@@ -223,6 +261,7 @@ export class MapScene {
     this.overlayRoot = new THREE.Group();
     this.scene.add(this.overlayRoot);
     this._rangeLabel = null;
+    this._pathFlow = null;
   }
 
   async _buildFloor(state) {
@@ -489,8 +528,13 @@ export class MapScene {
 
   async _buildTokens(state) {
     const mats = await this._wallMaterials(state);
+    const seen = new Set();
     for (const entity of state.entities || []) {
+      seen.add(entity.uid);
       this._addToken(entity, mats);
+    }
+    for (const uid of this._proneState.keys()) {
+      if (!seen.has(uid)) this._proneState.delete(uid);
     }
   }
 
@@ -509,6 +553,7 @@ export class MapScene {
       }),
     );
     base.position.y = 0.04;
+    base.userData.tokenBase = true;
     if (flying) {
       const shadow = new THREE.Mesh(
         new THREE.CircleGeometry(radius * 0.85, 20),
@@ -529,6 +574,8 @@ export class MapScene {
 
     const portrait = this._makeTokenPortrait(entity, size, prone);
     group.add(portrait);
+    const wasProne = this._proneState.get(entity.uid);
+    this._proneState.set(entity.uid, prone);
     this._attachStatusAuras(group, portrait, entity, size);
     addTokenLight(group, entity, mats, this.cellSize, {
       feetPerGrid: this.state?.map?.feet_per_grid,
@@ -556,6 +603,80 @@ export class MapScene {
           mat.needsUpdate = true;
         }
       });
+    }
+
+    if (entity.model && entity.model.src) {
+      this._attachTokenModel(group, entity, portrait, wasProne);
+    }
+  }
+
+  /**
+   * Replace the billboard portrait with the campaign 3D figure when the DM
+   * mapped this entity to a model (``entity.model`` from /map_state). On any
+   * load failure the 2D token stays.
+   */
+  _attachTokenModel(group, entity, portrait, wasProne) {
+    const uid = entity.uid;
+    buildFigure(entity.model, {
+      feetPerGrid: this.state?.map?.feet_per_grid,
+      size: Math.max(1, Number(entity.size) || 1),
+    }).then((figure) => {
+      if (!figure) return;
+      if (this.tokenMeshes.get(uid) !== group) return; // token rebuilt meanwhile
+      group.add(figure);
+      group.userData.figure = figure;
+      // facing: rotate_y from the spec is the figure's "yaw 0" pose; the
+      // token's current facing (kept across refreshes) adds to it
+      figure.userData.specYaw = figure.rotation.y;
+      const faceYaw = this.tokenYaw.get(uid);
+      if (Number.isFinite(faceYaw)) figure.rotation.y += faceYaw;
+      if (portrait) portrait.visible = false;
+      group.traverse((node) => {
+        if (node.userData?.tokenBase) node.visible = false;
+      });
+      if (isPronePose(entity)) this._toppleFigure(uid, group, figure, wasProne);
+    });
+  }
+
+  /**
+   * Lay a 3D figure prone: a rigid-body fall over its own convex hull, so
+   * the resting pose follows the miniature's geometry. If the token was
+   * standing earlier in this session, the fall is animated live; otherwise
+   * (page load of an already-prone entity) it is simulated to rest and the
+   * settled pose is applied instantly. Settled poses are cached per uid so
+   * map refreshes keep the figure at rest.
+   */
+  _toppleFigure(uid, group, figure, wasProne) {
+    if (figure.userData.toppled) return;
+    for (const tp of this._toppling) {
+      if (tp.uid !== uid) continue;
+      tp.figure = figure; // token rebuilt mid-fall: keep animating on the new copy
+      applyTopplePose(figure, tp.sim.pose());
+      figure.userData.toppled = false; // still falling
+      return;
+    }
+    const cached = this._topplePoses.get(uid);
+    if (cached) {
+      applyTopplePose(figure, cached);
+      return;
+    }
+    const fallYaw = this.tokenYaw.get(uid) || 0;
+    const points = gatherHullPoints(group, figure);
+    const sim = createToppler(points, { fallYaw, baseYaw: figure.rotation.y });
+    if (!sim) {
+      const pose = fallbackTopplePose(fallYaw);
+      this._topplePoses.set(uid, pose);
+      applyTopplePose(figure, pose);
+      return;
+    }
+    if (wasProne === false) {
+      this._toppling.push({
+        uid, figure, sim, t: 0, calm: 0, maxT: TOPPLE_MAX_SECONDS,
+      });
+    } else {
+      const pose = runTopple(sim);
+      this._topplePoses.set(uid, pose);
+      applyTopplePose(figure, pose);
     }
   }
 
@@ -638,16 +759,37 @@ export class MapScene {
     ));
   }
 
-  setPath(path) {
+  setPath(path, terrainInfo = null) {
     this._clearOverlays();
     if (!path || path.length < 2) return;
-    const points = path.map(([x, y]) => {
-      const c = cellCenter(x, y, this.cellSize);
-      return new THREE.Vector3(c.x, 0.12, c.z);
+    const pathY = 0.06;
+    const points = path.map(([gx, gy]) => {
+      const c = cellCenter(gx, gy, this.cellSize);
+      return new THREE.Vector3(c.x, pathY, c.z);
     });
-    const geom = new THREE.BufferGeometry().setFromPoints(points);
-    const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: PATH_COLOR }));
-    this.overlayRoot.add(line);
+    // Flat 2D-style green arrow (see flowArrow.js): flowing dash on normal
+    // steps, fine dots when the segment ENTERS difficult terrain — same
+    // convention as the 2D VTT's solid-vs-dashed path preview. ``terrainInfo``
+    // comes straight from /path ([{x, y, difficult}]).
+    let styles = null;
+    if (Array.isArray(terrainInfo) && terrainInfo.length) {
+      const lookup = new Map();
+      for (const t of terrainInfo) {
+        if (t && t.difficult) lookup.set(`${t.x},${t.y}`, true);
+      }
+      styles = [];
+      for (let i = 0; i + 1 < path.length; i += 1) {
+        styles.push(lookup.has(`${path[i + 1][0]},${path[i + 1][1]}`));
+      }
+    }
+    const arrow = buildFlowArrow(points, {
+      width: this.cellSize * 0.16,
+      dashPeriod: this.cellSize * 0.6,
+      styles,
+    });
+    this.overlayRoot.add(arrow.group);
+    this._pathFlow = arrow.flowMaterial;
+    this._pathFlowPeriod = arrow.dashPeriod;
     const last = path[path.length - 1];
     this._addCellHighlight(last[0], last[1], SELECT_COLOR, 0.35);
   }
@@ -662,7 +804,7 @@ export class MapScene {
     }
   }
 
-  setTargetLine(from, to, { valid = true, rangeLabel = null } = {}) {
+  setTargetLine(from, to, { valid = true, rangeLabel = null, melee = false } = {}) {
     this._clearOverlays();
     if (!from || !to) {
       this._rangeLabel = null;
@@ -670,35 +812,175 @@ export class MapScene {
     }
     const a = cellCenter(from.x, from.y, this.cellSize);
     const b = cellCenter(to.x, to.y, this.cellSize);
-    const y = 0.62;
+    const y = 0.07;
     const start = new THREE.Vector3(a.x, y, a.z);
     const end = new THREE.Vector3(b.x, y, b.z);
-    const color = valid ? 0xe63946 : 0x8a8a8a;
-    const geom = new THREE.BufferGeometry().setFromPoints([start, end]);
-    this.overlayRoot.add(new THREE.Line(geom, new THREE.LineBasicMaterial({ color })));
-    const dir = end.clone().sub(start);
-    const len = dir.length() || 1;
-    dir.multiplyScalar(1 / len);
-    if (valid) {
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(0.07, 0.2, 8),
-        new THREE.MeshBasicMaterial({ color }),
-      );
-      cone.position.copy(end);
-      cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      this.overlayRoot.add(cone);
-    } else {
-      const xMat = new THREE.LineBasicMaterial({ color });
-      const dx = 0.16;
-      const p1 = new THREE.Vector3(end.x - dx, y, end.z - dx);
-      const p2 = new THREE.Vector3(end.x + dx, y, end.z + dx);
-      const p3 = new THREE.Vector3(end.x + dx, y, end.z - dx);
-      const p4 = new THREE.Vector3(end.x - dx, y, end.z + dx);
-      this.overlayRoot.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([p1, p2]), xMat));
-      this.overlayRoot.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([p3, p4]), xMat));
-    }
+    // Flat thick attack arrow (see flowArrow.js): a ranged attack is a
+    // flowing red ribbon with an arrow head on the target cell; a melee
+    // attack is a dotted red line with an impact ring around the target.
+    const arrow = buildAttackArrow([start, end], {
+      width: this.cellSize * 0.22,
+      dashPeriod: this.cellSize * 0.55,
+      melee,
+      valid,
+    });
+    this.overlayRoot.add(arrow.group);
+    this._pathFlow = arrow.flowMaterial;
+    this._pathFlowPeriod = arrow.dashPeriod;
     this._addCellHighlight(to.x, to.y, valid ? SELECT_COLOR : 0x888888, 0.32);
     this._rangeLabel = rangeLabel ? { text: rangeLabel, pos: end.clone() } : null;
+  }
+
+  /**
+   * Selection indicator: a flat green ring hugging the floor around the
+   * token's base, plus a grab knob on the ring used to rotate the figure
+   * with the mouse (cosmetic facing only, synced to other players).
+   */
+  setSelected(uid) {
+    if (this._selectedUid === uid && this._selectionGroup?.parent) {
+      this._repositionSelection();
+      return;
+    }
+    this.clearSelection();
+    if (!uid) return;
+    const group = this.tokenMeshes.get(uid);
+    if (!group) return;
+    const ring = new THREE.Mesh(
+      flatRingGeometry(this.cellSize * 0.5, this.cellSize * 0.62, 48),
+      new THREE.MeshBasicMaterial({
+        color: 0x3ddc84, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide,
+      }),
+    );
+    ring.position.set(group.position.x, 0.05, group.position.z);
+    ring.userData.selectionRing = uid;
+    const knob = new THREE.Mesh(
+      flatRingGeometry(this.cellSize * 0.001, this.cellSize * 0.2, 20),
+      new THREE.MeshBasicMaterial({
+        color: 0x3ddc84, transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide,
+      }),
+    );
+    const yaw = this.tokenYaw?.get(uid) || 0;
+    knob.position.set(
+      ring.position.x + Math.sin(yaw) * this.cellSize * 0.56,
+      0.07,
+      ring.position.z + Math.cos(yaw) * this.cellSize * 0.56,
+    );
+    knob.userData.rotateHandle = uid;
+    this._selectionGroup = new THREE.Group();
+    this._selectionGroup.add(ring, knob);
+    this.scene.add(this._selectionGroup);
+    this._selectedUid = uid;
+    this._updateRotationGhost();
+  }
+
+  clearSelection() {
+    if (this._selectionGroup) {
+      disposeObject(this._selectionGroup);
+      this.scene.remove(this._selectionGroup);
+      this._selectionGroup = null;
+    }
+    if (this._rotationGhost) {
+      disposeObject(this._rotationGhost);
+      this.scene.remove(this._rotationGhost);
+      this._rotationGhost = null;
+    }
+    this._selectedUid = null;
+  }
+
+  /** Follow a token that moved or turned while selected. */
+  _repositionSelection() {
+    const group = this.tokenMeshes.get(this._selectedUid);
+    if (!group || !this._selectionGroup) return;
+    const [ring, knob] = this._selectionGroup.children;
+    ring.position.set(group.position.x, 0.05, group.position.z);
+    const yaw = this.tokenYaw.get(this._selectedUid) || 0;
+    knob.position.set(
+      group.position.x + Math.sin(yaw) * this.cellSize * 0.56,
+      0.07,
+      group.position.z + Math.cos(yaw) * this.cellSize * 0.56,
+    );
+    this._updateRotationGhost();
+  }
+
+  _rotationSpecYaw(uid) {
+    const figure = this.tokenMeshes.get(uid)?.userData.figure;
+    const spec = figure?.userData?.specYaw;
+    return typeof spec === 'number' ? spec : 0;
+  }
+
+  /** Live cosmetic rotation: re-faces the figure and moves the knob. */
+  setTokenYaw(uid, yaw) {
+    if (!this.tokenYaw) this.tokenYaw = new Map();
+    this.tokenYaw.set(uid, yaw);
+    const group = this.tokenMeshes.get(uid);
+    if (group && group.userData.figure && !this._topplePoses?.has?.(uid)) {
+      group.userData.figure.rotation.y = this._rotationSpecYaw(uid) + yaw;
+    }
+    if (this._selectedUid === uid) this.setSelected(uid);
+    this._updateRotationGhost();
+  }
+
+  /** Floor-plane event -> {x, z} world point (null off the map floor). */
+  floorPointFromEvent(event) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    if (!this.floorMesh) return null;
+    const hits = this.raycaster.intersectObject(this.floorMesh, false);
+    if (!hits.length) return null;
+    return hits[0].point;
+  }
+
+  /**
+   * Floor-plane event -> yaw (radians) about the selected token, or null
+   * when the ray misses the floor. Feeds the rotate-drag gesture.
+   */
+  rotationFromEvent(event) {
+    if (!this._selectedUid) return null;
+    const group = this.tokenMeshes.get(this._selectedUid);
+    if (!group) return null;
+    const p = this.floorPointFromEvent(event);
+    if (!p) return null;
+    const dx = p.x - group.position.x;
+    const dz = p.z - group.position.z;
+    if (Math.hypot(dx, dz) < 1e-4) return null;
+    return Math.atan2(dx, dz);
+  }
+
+  /** True when the event ray hits the selected token's rotation knob. */
+  rotateHandleHit(event) {
+    if (!this._selectedUid) return false;
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hits = this.raycaster.intersectObject(this._selectionGroup, true);
+    return hits.some((h) => h.object.userData.rotateHandle === this._selectedUid);
+  }
+
+  /** While dragging, a thin red line shows where the base is pointing. */
+  _updateRotationGhost() {
+    if (this._rotationGhost) {
+      disposeObject(this._rotationGhost);
+      this.scene.remove(this._rotationGhost);
+      this._rotationGhost = null;
+    }
+    if (!this._dragRotationUid) return;
+    const group = this.tokenMeshes.get(this._dragRotationUid);
+    if (!group) return;
+    const yaw = this.tokenYaw?.get(this._dragRotationUid) || 0;
+    const y = 0.08;
+    const reach = this.cellSize * 0.9;
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(group.position.x, y, group.position.z),
+      new THREE.Vector3(group.position.x + Math.sin(yaw) * reach, y, group.position.z + Math.cos(yaw) * reach),
+    ]);
+    this._rotationGhost = new THREE.Line(
+      geo,
+      new THREE.LineBasicMaterial({ color: 0xff6b6b }),
+    );
+    this.scene.add(this._rotationGhost);
   }
 
   _addCellHighlight(x, y, color, opacity) {
@@ -740,12 +1022,21 @@ export class MapScene {
         mesh.userData.baseY = baseY;
         const from = mesh.position.clone();
         const to = new THREE.Vector3(c.x, baseY, c.z);
+        // face the direction of travel (figures only; billboards face the camera)
+        const faceYaw = yawToDirection(to.x - from.x, to.z - from.z);
+        let yaw = null;
+        if (faceYaw != null && mesh.userData.figure && !mesh.userData.figure.userData.toppled) {
+          yaw = { from: mesh.userData.faceYaw || 0, to: faceYaw };
+          mesh.userData.faceYaw = faceYaw;
+          this.tokenYaw.set(uid, faceYaw);
+        }
         this.tweens.push({
           mesh,
           from,
           to,
           t: 0,
           dur: durationPerStep,
+          yaw,
           done: () => run(index + 1),
         });
       };
@@ -853,6 +1144,13 @@ export class MapScene {
       tw.t += dt;
       const k = Math.min(1, tw.t / tw.dur);
       tw.mesh.position.lerpVectors(tw.from, tw.to, k);
+      if (tw.yaw) {
+        const figure = tw.mesh.userData.figure;
+        if (figure && !figure.userData.toppled) {
+          const turn = shortestAngle(tw.yaw.from, tw.yaw.to);
+          figure.rotation.y = (figure.userData.specYaw || 0) + tw.yaw.from + turn * k;
+        }
+      }
       if (k >= 1) {
         tw.done?.();
       } else {
@@ -860,6 +1158,27 @@ export class MapScene {
       }
     }
     this.tweens = remaining;
+    // movement path arrow: slide the dashes toward the destination
+    if (this._pathFlow?.map) {
+      const repeatsPerSec = (1.4 * this.cellSize) / (this._pathFlowPeriod || this.cellSize);
+      this._pathFlow.map.offset.x -= repeatsPerSec * dt;
+    }
+    // live physics topples (a figure that just went prone)
+    const keepTopple = [];
+    for (const tp of this._toppling) {
+      tp.sim.step(dt);
+      tp.t += dt;
+      tp.sim.applyTo(tp.figure);
+      tp.calm = isAtRest(tp.sim.body) ? tp.calm + dt : 0;
+      if (tp.calm >= 0.5 || tp.t >= tp.maxT) {
+        tp.sim.body.sleep();
+        this._topplePoses.set(tp.uid, tp.sim.pose());
+        tp.figure.userData.toppled = true;
+      } else {
+        keepTopple.push(tp);
+      }
+    }
+    this._toppling = keepTopple;
     const fxKeep = [];
     for (const fx of this.fxTtl) {
       fx.t -= dt;

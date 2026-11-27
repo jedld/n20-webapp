@@ -20,6 +20,16 @@ export function isAttackTargeting(stepType) {
   return stepType === 'select_target';
 }
 
+/**
+ * Melee vs ranged for the attack arrow style. Attack actions carry their
+ * reach in feet (melee = 5, none = melee by convention).
+ */
+export function isMeleeRange(range) {
+  const feet = Number(range);
+  if (!Number.isFinite(feet)) return true;
+  return feet <= 5;
+}
+
 export function rangeFeet(from, to, feetPerGrid = 5) {
   const dx = Number(to?.x) - Number(from?.x);
   const dy = Number(to?.y) - Number(from?.y);

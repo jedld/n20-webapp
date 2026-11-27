@@ -482,6 +482,12 @@ class GameControllerRegistry:
             controller = HybridStrategistController(
                 self.manager.game_session, llm_provider=provider,
                 strategist_provider=strategist)
+            try:
+                # ``combat.strategist``: auto (follows INT) | always | off
+                from webapp.ai_config import stamp_strategist_mode
+                stamp_strategist_mode(controller, entity)
+            except Exception:
+                pass
             self._stamp_configured_agent(controller, entity)
             return controller
         if kind == 'llm':

@@ -18,3 +18,7 @@ llm_logs/
 
 # AI settings may contain API keys (DM Console > AI Settings)
 .ai.yaml
+
+# HeroForge demo model samples are possibly copyrighted; not published.
+# tests/webapp/test_model_convert.py skips when these fixtures are absent.
+tests/fixtures/*.zip

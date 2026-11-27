@@ -86,9 +86,13 @@ def register(registry: ToolRegistry) -> None:
             raise tool_error(f'Failed to list actions: {exc}')
         rows: List[Dict[str, Any]] = []
         for act in actions:
+            name = getattr(act, 'name', None)
+            if callable(name):
+                # some actions expose name as a method (e.g. SpellAction)
+                name = _safe(name)
             rows.append({
                 'action_type': act.__class__.__name__,
-                'name': getattr(act, 'name', None),
+                'name': name,
                 'label': _safe(lambda a=act: a.label()),
                 'as_action': _safe(lambda a=act: a.as_action),
                 'as_bonus_action': _safe(lambda a=act: a.as_bonus_action),
@@ -215,6 +219,17 @@ def register(registry: ToolRegistry) -> None:
             verb = opts.get('object_action') or opts.get('action')
             if isinstance(verb, str) and verb.strip():
                 match.append(verb.strip())
+
+        if klass.__name__ == 'SpellAction':
+            # autobuild's select_spell / select_choice filters by the same
+            # match list as targets: include the spell slug and any menu
+            # choice (e.g. Enlarge/Reduce's "enlarge") so the build succeeds.
+            spell = opts.get('spell')
+            if isinstance(spell, str) and spell.strip():
+                match.append(spell.strip())
+            spell_choice = opts.get('choice')
+            if isinstance(spell_choice, str) and spell_choice.strip():
+                match.append(spell_choice.strip())
 
         from natural20.utils.action_builder import autobuild
 

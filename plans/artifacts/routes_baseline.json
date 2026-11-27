@@ -1358,6 +1358,47 @@
     "rule": "/dm/notes/move"
   },
   {
+    "endpoint": "dm.dm_token_models_list",
+    "methods": [
+      "GET",
+      "HEAD",
+      "OPTIONS"
+    ],
+    "rule": "/dm/token_models"
+  },
+  {
+    "endpoint": "dm.dm_token_models_assign",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/dm/token_models/assign"
+  },
+  {
+    "endpoint": "dm.dm_token_models_delete",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/dm/token_models/delete"
+  },
+  {
+    "endpoint": "dm.dm_token_models_unassign",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/dm/token_models/unassign"
+  },
+  {
+    "endpoint": "dm.dm_token_models_upload",
+    "methods": [
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/dm/token_models/upload"
+  },
+  {
     "endpoint": "dm.dm_move_entity",
     "methods": [
       "OPTIONS",

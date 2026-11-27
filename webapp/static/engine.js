@@ -1260,7 +1260,7 @@ function postObjectInteract(povUid, objectUid, objectAction, tileX, tileY, done)
         }
         return;
       }
-      handleAction(povUid, 'InteractAction', opts, tileX, tileY, data);
+      handleActionFallback(povUid, 'InteractAction', opts, tileX, tileY, data);
       if (typeof done === 'function') {
         done();
       }
@@ -1274,6 +1274,24 @@ function postObjectInteract(povUid, objectUid, objectAction, tileX, tileY, done)
       }
     },
   });
+}
+
+/**
+ * Hover quick-interact chips live outside the action-bar closure, so the
+ * local handleAction there is not in scope (calling it directly used to
+ * throw ReferenceError and silently swallow follow-up steps such as the
+ * loot select_items panel). Route through the exported handler instead.
+ */
+function handleActionFallback(entity_uid, action, opts, coordsx, coordsy, data) {
+  if (typeof window.__n20_handleAction === 'function') {
+    window.__n20_handleAction(entity_uid, action, opts, coordsx, coordsy, data);
+    return;
+  }
+  if (typeof continueActionFromResponse === 'function') {
+    continueActionFromResponse(entity_uid, action, opts, coordsx, coordsy, data);
+    return;
+  }
+  console.warn('postObjectInteract: no action handler available', data);
 }
 
 function activateObjectQuickAction(btn) {
@@ -3452,6 +3470,13 @@ class EventQueue {
         }
         case "reaction":
           Utils.ajaxGet("/reaction", {}, (dataHtml) => {
+            // An empty body means the reaction was already resolved or is
+            // stale (server guard): make sure no empty modal lingers instead
+            // of leaving combat looking frozen with an unusable overlay.
+            if (!dataHtml || !String(dataHtml).trim()) {
+              $("#reaction-modal").modal("hide");
+              return;
+            }
             $("#reaction-modal .reaction-content").html(dataHtml);
             $("#reaction-modal").modal("show");
             resolve();
@@ -8738,6 +8763,14 @@ $(document).ready(() => {
     ajaxPost("/battle_pacing", { dm_ends_ai_turns: enabled }, () => refreshTurnOrder(), true);
   });
 
+  $("#turn-order").on("change", ".dm-pacing-delay", function () {
+    let delay = parseFloat($(this).val());
+    if (isNaN(delay) || delay < 0) delay = 0;
+    if (delay > 10) delay = 10;
+    $(this).val(delay);
+    ajaxPost("/battle_pacing", { ai_turn_delay: delay }, () => refreshTurnOrder(), true);
+  });
+
   $("#turn-order").on("click", ".turn-order-item", function () {
     centerOnEntityId($(this).data("id"));
   });
@@ -10970,7 +11003,7 @@ $(document).ready(() => {
   $(".game-turn-container").on("click", "#player-end-turn", function () {
     ajaxPost("/end_turn", {}, (data) => {
       // Optionally hide game turn container
-    });
+    }, false, (jqXHR) => reportEndTurnBlocked(jqXHR));
   });
 
   $(".game-turn-container").on("click", "#resource-pools-toggle", function () {
@@ -10997,8 +11030,34 @@ $(document).ready(() => {
       //hide actions
       $(".popover-menu").hide();
       closeCenterActionBar();
-    });
+    }, false, (jqXHR) => reportEndTurnBlocked(jqXHR));
   });
+
+  /**
+   * /end_turn answered 409 (pending reaction window / legendary phase /
+   * DM-held turn). Surface why, and try to render the pending reaction UI in
+   * case this client missed the socket 'reaction' event — without it nobody
+   * can answer and combat waits forever.
+   */
+  function reportEndTurnBlocked(jqXHR) {
+    let message = null;
+    try {
+      const payload = jqXHR && (jqXHR.responseJSON
+        || (jqXHR.responseText ? JSON.parse(jqXHR.responseText) : null));
+      message = (payload && (payload.message || payload.error)) || null;
+    } catch (e) { /* noop */ }
+    if (typeof Utils !== "undefined" && Utils.showToast && message) {
+      Utils.showToast(message);
+    }
+    if (jqXHR && jqXHR.status === 409) {
+      Utils.ajaxGet("/reaction", {}, (dataHtml) => {
+        if (dataHtml && String(dataHtml).trim()) {
+          $("#reaction-modal .reaction-content").html(dataHtml);
+          $("#reaction-modal").modal("show");
+        }
+      });
+    }
+  }
 
   $(".floating-window").on("click", function () {
     let maxZIndex = 0;

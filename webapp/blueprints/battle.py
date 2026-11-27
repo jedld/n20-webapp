@@ -271,6 +271,12 @@ def end_turn():
     if held is not None:
         return held
 
+    if get_current_game().waiting_for_reaction:
+        # A reaction window (opportunity attack, Shield, ...) is open. Ending
+        # the turn from another tab/DM would advance combat under the pending
+        # generator and orphan it, so the loop never resumes.
+        return jsonify(status='error', message='Waiting for a reaction.'), 409
+
     end_turn_state = True
     try:
         battle.end_turn()
@@ -307,15 +313,22 @@ def _end_held_turn():
 
 @battle_bp.route('/battle_pacing', methods=['GET', 'POST'])
 def battle_pacing():
-    """DM toggle: AI combatants wait for the DM to end their turn."""
+    """DM controls: AI turns wait for the DM to end, and the pause between
+    consecutive AI turns that lets browsers play each turn's animations."""
     if 'dm' not in user_role():
         return jsonify(error='Only DMs can change battle pacing'), 403
     game = get_current_game()
     if request.method == 'POST':
         payload = request.get_json(silent=True) or {}
-        if 'dm_ends_ai_turns' not in payload:
-            return jsonify(error='dm_ends_ai_turns is required'), 400
-        game.set_dm_ends_ai_turns(bool(payload['dm_ends_ai_turns']))
+        if 'dm_ends_ai_turns' in payload:
+            game.set_dm_ends_ai_turns(bool(payload['dm_ends_ai_turns']))
+        if 'ai_turn_delay' in payload:
+            try:
+                game.set_ai_turn_delay(payload['ai_turn_delay'])
+            except (TypeError, ValueError):
+                return jsonify(error='ai_turn_delay must be a number of seconds'), 400
+        if 'dm_ends_ai_turns' not in payload and 'ai_turn_delay' not in payload:
+            return jsonify(error='dm_ends_ai_turns or ai_turn_delay is required'), 400
     return jsonify(status='ok', **game.battle_pacing_state())
 
 
@@ -334,6 +347,7 @@ def get_turn_order():
         battle_round=battle_round,
         dm_ends_ai_turns=game.dm_ends_ai_turns(),
         dm_turn_hold=game.dm_turn_hold,
+        ai_turn_delay=game.ai_turn_delay(),
     )
 
 @battle_bp.route('/next_turn', methods=['POST'])
@@ -912,8 +926,15 @@ def get_spell():
 @battle_bp.route('/reaction', methods=['GET'])
 def get_reaction():
     battle = get_current_game().get_current_battle()
-    reaction_type = get_current_game().waiting_for_reaction_input()[1].reaction_type
-    return render_template(reaction_template_for(reaction_type),
+    pending = get_current_game().waiting_for_reaction_input()
+    if not pending or not isinstance(pending, (list, tuple)) or len(pending) < 2:
+        # Nothing pending: the POST that resolved it raced this GET, the
+        # socket event was a duplicate, or the page loaded after resolution.
+        # Return an empty fragment so the client hides the modal instead of
+        # answering with a 500 (which left the reaction UI unrendered and
+        # combat waiting for an input nobody was ever shown).
+        return ''
+    return render_template(reaction_template_for(pending[1].reaction_type),
                            username=session['username'],
                            waiting_for_reaction=get_current_game().waiting_for_reaction,
                            battle=battle)

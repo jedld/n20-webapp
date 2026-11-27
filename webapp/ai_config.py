@@ -39,14 +39,15 @@ _PROFILE_STR_KEYS = ('provider', 'base_url', 'model', 'api_key', 'api_key_env', 
 _PROFILE_INT_KEYS = ('context_window', 'timeout', 'max_tokens')
 _ENTITY_SECTIONS = {
     'combat': {'controller': 'controller', 'provider': 'profile',
-               'strategist_provider': 'profile', 'agent': 'profile'},
+               'strategist_provider': 'profile', 'strategist': 'strategist_mode',
+               'agent': 'profile'},
     'conversation': {'provider': 'profile'},
     'tasks': {'enabled': 'bool', 'provider': 'profile'},
 }
 _GLOBAL_SECTIONS = {
     'combat': {'npc_controller': 'controller', 'llm_provider': 'profile',
-               'strategist_provider': 'profile', 'npc_agent': 'profile',
-               'force_llm': 'bool'},
+               'strategist_provider': 'profile', 'strategist': 'strategist_mode',
+               'npc_agent': 'profile', 'force_llm': 'bool'},
     'conversation': {'enabled': 'bool', 'provider': 'profile'},
     'tasks': {
         'provider': 'profile',
@@ -61,6 +62,7 @@ _ENTITY_FALLBACK = {
     ('combat', 'controller'): ('combat', 'npc_controller'),
     ('combat', 'provider'): ('combat', 'llm_provider'),
     ('combat', 'agent'): ('combat', 'npc_agent'),
+    ('combat', 'strategist'): ('combat', 'strategist'),
     ('conversation', 'provider'): ('conversation', 'provider'),
     ('tasks', 'provider'): ('tasks', 'provider'),
 }
@@ -68,7 +70,14 @@ _ENTITY_FALLBACK = {
 # controller kind + provider profiles + standing directives are packaged and
 # then referenced by name from npcs/sidekicks/the battle UI (like opencode /
 # openclaw agent configs).
-_AGENT_STR_KEYS = ('label', 'provider', 'strategist_provider', 'directives')
+_AGENT_STR_KEYS = ('label', 'provider', 'strategist_provider', 'strategist', 'directives')
+
+# ``combat.strategist``: how much planning the hybrid strategist does.
+# ``auto`` (default) follows each creature's intelligence score
+# (natural20.utils.combat_intelligence tiers: a wolf gets no plan at all).
+_STRATEGIST_ALWAYS = ('always', 'on', 'yes', 'force', 'forced')
+_STRATEGIST_OFF = ('off', 'never', 'no', 'disable', 'disabled')
+STRATEGIST_MODES = ('auto', 'always', 'off')
 
 _ENV_PROVIDER_VARS = {
     'llama_cpp': ('LLAMA_CPP_BASE_URL', 'LLAMA_CPP_MODEL', 'LLAMA_CPP_API_KEY'),
@@ -151,6 +160,15 @@ def _coerce(kind: str, value: Any) -> Any:
         if value.startswith('agent:'):
             return value if value[len('agent:'):].strip() else None
         return value if value in CONTROLLER_KINDS else None
+    if kind == 'strategist_mode':
+        value = str(value).strip().lower()
+        if value in _STRATEGIST_ALWAYS:
+            return 'always'
+        if value in _STRATEGIST_OFF:
+            return 'off'
+        if value in ('auto', 'default', 'intelligence', ''):
+            return 'auto'
+        return None
     if kind == 'profile':
         value = str(value).strip()
         return value or None
@@ -700,6 +718,39 @@ def _resolve_restored_strategist_provider(entity):
     return strategist_llm_provider_for(handler, entity)
 
 
+def strategist_mode_for(entity=None) -> str:
+    """Hybrid planner mode: ``auto`` (follows the creature's INT tier),
+    ``always`` (plan for every creature) or ``off`` (JEV executes with its own
+    heuristics). Per-NPC ``combat.strategist`` -> agent bundle ``strategist``
+    -> ``combat.strategist`` -> ``auto``."""
+    config = get_ai_config()
+    if config is None:
+        return 'auto'
+    mode = None
+    if entity is not None:
+        value, source = config.entity_setting(entity, 'combat', 'strategist')
+        if source not in ('default', 'unset'):
+            mode = value
+        if not mode:
+            _name, definition, _s = config.agent_for_entity(entity)
+            mode = (definition or {}).get('strategist')
+    mode = mode or config.get('combat.strategist')
+    coerced = _coerce('strategist_mode', mode)
+    return coerced if coerced in STRATEGIST_MODES else 'auto'
+
+
+def stamp_strategist_mode(controller, entity=None) -> None:
+    """Apply the configured ``combat.strategist`` mode to a hybrid controller.
+
+    The entity's own YAML ``strategist:`` key still wins over the campaign
+    ``auto`` default (engine-side precedence)."""
+    if controller is None or not hasattr(controller, 'strategist_mode'):
+        return
+    mode = strategist_mode_for(entity)
+    if mode in STRATEGIST_MODES:
+        controller.strategist_mode = mode
+
+
 def build_llm_combat_controller(game_session, handler, entity=None, kind='llm'):
     """Build an ``llm`` or ``hybrid`` combat controller with the right providers.
 
@@ -726,6 +777,7 @@ def build_llm_combat_controller(game_session, handler, entity=None, kind='llm'):
             controller_class = getattr(utils_module, 'LlmMcpController', controller_class)
         controller = controller_class(game_session, llm_provider=provider)
     stamp_agent_identity_for_entity(controller, entity)
+    stamp_strategist_mode(controller, entity)
     return controller
 
 
@@ -820,6 +872,9 @@ def build_combat_controller_from_agent(game_session, handler, entity, agent_name
                 controller_class = getattr(utils_module, 'LlmMcpController', controller_class)
             controller = controller_class(game_session, llm_provider=provider)
     stamp_agent_identity(controller, agent_name, definition)
+    bundle_mode = _coerce('strategist_mode', definition.get('strategist'))
+    if hasattr(controller, 'strategist_mode'):
+        controller.strategist_mode = bundle_mode or strategist_mode_for(entity)
     return controller
 
 

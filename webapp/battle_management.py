@@ -176,11 +176,14 @@ def battle_admin(
     initiative: Optional[int] = None,
     controller: Optional[str] = None,
     enabled: Optional[bool] = None,
+    ai_turn_delay: Optional[float] = None,
 ) -> Dict[str, Any]:
     op = (op or '').lower()
     if op == 'pacing':
         if enabled is not None:
             game.set_dm_ends_ai_turns(bool(enabled))
+        if ai_turn_delay is not None:
+            game.set_ai_turn_delay(ai_turn_delay)
         return {'op': op, **game.battle_pacing_state()}
 
     battle = game.get_current_battle()

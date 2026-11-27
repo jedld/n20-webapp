@@ -808,10 +808,18 @@ def compute_path():
             return jsonify(stack_plan)
 
     # Step 7: A* pathfinding (first attempt)
+    # With waypoints (accumulatedPath), pathfind from the last accumulated
+    # square so the response is the new segment starting at the pivot —
+    # matching the client-side PathCompute used by the 2D movement preview.
+    # The accumulated route still counts against the movement budget.
     _t_path1 = time.perf_counter()
+    path_start_x, path_start_y = entity_x, entity_y
+    if accumulated_path:
+        path_start_x, path_start_y = (
+            int(accumulated_path[-1][0]), int(accumulated_path[-1][1]))
     path = path_compute.compute_path(
-        entity_x,
-        entity_y,
+        path_start_x,
+        path_start_y,
         dest[0], dest[1],
         accumulated_path=accumulated_path,
         available_movement_cost=available_movement,
@@ -836,8 +844,8 @@ def compute_path():
         else:
             _t_path2 = time.perf_counter()
             path = path_compute.compute_path(
-                entity_x,
-                entity_y,
+                path_start_x,
+                path_start_y,
                 dest[0], dest[1],
                 accumulated_path=accumulated_path,
                 available_movement_cost=available_movement,
@@ -1143,6 +1151,16 @@ def switch_pov():
         entity_id = (request.get_json(silent=True) or {}).get('entity_uid')
     else:
         entity_id = request.form.get('entity_uid')
+
+    # DM-only "show everything" reset (VTT 3D ctrl+click on an empty square).
+    # Clearing the POV entity makes render_pov_entities() return None, which
+    # renders the map unmasked for the DM again.
+    if entity_id is None or str(entity_id).strip().lower() in ('', 'all', 'none', 'clear'):
+        if 'dm' not in user_role():
+            return jsonify(error='Forbidden'), 403
+        current_game.set_pov_entity_for_user(session['username'], None)
+        return jsonify(status='ok', pov=None)
+
     entity = current_game.get_entity_by_uid(entity_id)
     if entity is None:
         return jsonify(error='Entity not found'), 404
@@ -1495,6 +1513,18 @@ def map_state():
         background=background,
         display_name=getattr(battle_map, 'name', None),
     )
+    # hover-move quick action mirrors the 2D gating: initiative-based movement
+    # during battle disables the hover "Move here" chip
+    payload['battle_in_progress'] = bool(battle)
+    # cosmetic 3D token facing (degrees) set via socket `token:rotate`
+    rotations = (getattr(battle_map, 'session', None)
+                 and getattr(battle_map.session, 'session_state', {})
+                 or {}).get('token_rotations') or {}
+    if rotations:
+        for ent in payload.get('entities', []):
+            rot = rotations.get(str(ent.get('uid')))
+            if rot is not None:
+                ent['rotation'] = rot
     return jsonify(payload)
 
 

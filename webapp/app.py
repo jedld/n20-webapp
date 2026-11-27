@@ -3326,6 +3326,7 @@ def action_type_to_class(action_type):
     elif action_type == 'EscapeGrappleAction':
         return EscapeGrappleAction
     elif action_type == 'UseItemAction':
+        from natural20.actions.use_item_action import UseItemAction
         return UseItemAction
     elif action_type == 'InteractAction':
         return InteractAction

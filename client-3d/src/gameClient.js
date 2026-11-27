@@ -52,12 +52,15 @@ export function createGameClient({ username } = {}) {
       return res.json();
     },
 
-    async getPath(from, to) {
+    async getPath(from, to, { accumulatedPath } = {}) {
       const params = new URLSearchParams();
       params.set('from[x]', String(from.x));
       params.set('from[y]', String(from.y));
       params.set('to[x]', String(to.x));
       params.set('to[y]', String(to.y));
+      if (accumulatedPath && accumulatedPath.length) {
+        params.set('accumulatedPath', JSON.stringify(accumulatedPath));
+      }
       const res = await fetch(`/path?${params}`, { credentials: 'include' });
       return res.json();
     },
@@ -111,6 +114,27 @@ export function createGameClient({ username } = {}) {
     onMessage(handler) {
       socket.on('message', handler);
       return () => socket.off('message', handler);
+    },
+
+    /** Cosmetic 3D token facing (degrees): server validates + relays. */
+    rotateToken(uid, yawDeg) {
+      socket.emit('token:rotate', { uid, yaw: yawDeg });
+    },
+
+    /** DM camera POV: focus one entity; null/"all" resets to see everything. */
+    async switchPov(entityUid) {
+      const res = await fetch('/switch_pov', {
+        method: 'POST',
+        credentials: 'include',
+        headers: jsonHeaders,
+        body: JSON.stringify({ entity_uid: entityUid ?? null }),
+      });
+      return parseBody(res);
+    },
+
+    onTokenRotation(handler) {
+      socket.on('token:rotation', handler);
+      return () => socket.off('token:rotation', handler);
     },
 
     onEffectSet(handler) {

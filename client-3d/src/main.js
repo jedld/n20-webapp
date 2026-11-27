@@ -2,10 +2,11 @@ import './style.css';
 import { createGameClient } from './gameClient.js';
 import { MapScene } from './scene/MapScene.js';
 import { isClickNotDrag } from './input/pointer.js';
-import { isAttackTargeting, isTargetingStep, rangeFeet, targetingModeForStep } from './input/targeting.js';
+import { isAttackTargeting, isMeleeRange, isTargetingStep, rangeFeet, targetingModeForStep } from './input/targeting.js';
 import { pathReaches } from './input/movement.js';
 import { playAttackEffect, playSpellEffect } from './fx/SpellEffects.js';
 import { createObjectHud } from './scene/objectHud.js';
+import { initTokenModelPanel } from './ui/tokenModelPanel.js';
 
 const cfg = window.N20_3D || {};
 const statusEl = document.getElementById('vtt3d-status');
@@ -149,6 +150,8 @@ async function main() {
   if (!canvas) return;
   const client = createGameClient({ username: cfg.username });
   const scene = new MapScene(canvas);
+  // dev/debug handle (console + automated tests): drive the scene directly
+  window.n20vtt3d = { scene, client, get state() { return state; } };
   const noteModal = document.getElementById('noteModal');
   const noteModalTitle = document.getElementById('noteModalTitle');
   const noteModalContent = document.getElementById('noteModalContent');
@@ -182,6 +185,44 @@ async function main() {
           object_action: qa.action,
         },
       );
+    },
+    // 2D-style hover-move: clicking the chip walks the POV entity straight to
+    // the hovered square (no move-mode round trip through the action bar).
+    onMove: async ({ x, y }) => {
+      const actor = hoverMoveActor();
+      if (!actor) return;
+      if (hoverMoveInFlight) return;
+      hoverMoveInFlight = true;
+      try {
+        const data = await client.getPath({ x: actor.x, y: actor.y }, { x, y });
+        if (!data || !data.path || data.placeable === false || data.path.length <= 1) {
+          setStatus('Cannot move to that tile from here');
+          return;
+        }
+        objectHud.setMoveTarget(null);
+        scene.setPath(null);
+        const res = await client.postAction({
+          id: actor.uid,
+          action: 'MoveAction',
+          opts: { action_type: 'move', source: actor.uid },
+          path: data.path,
+        });
+        if (!res || res.status !== 'ok') {
+          setStatus('Could not move to that tile.');
+        }
+        scheduleRefresh(80);
+      } catch (err) {
+        console.warn(err);
+      } finally {
+        hoverMoveInFlight = false;
+      }
+    },
+    onMoveEnter: () => {
+      // preview the route while the cursor rests on the chip (2D parity)
+      if (hoverMovePath) scene.setPath(hoverMovePath, hoverMoveTerrain);
+    },
+    onMoveLeave: () => {
+      if (mode.kind === 'idle') scene.setPath(null);
     },
   });
   scene.hudHooks.push(() => objectHud.project());
@@ -257,11 +298,13 @@ async function main() {
   noteModal?.addEventListener('click', (ev) => {
     if (ev.target === noteModal) noteModal.hidden = true;
   });
+  initTokenModelPanel({ isDm });
   let state = null;
   let refreshTimer = null;
   let hoverTimer = null;
   let lastMapName = null;
   let pointerDown = null;
+  let rotateDrag = null;   // dragging a token's rotation knob (cosmetic)
 
   const mode = {
     kind: 'idle',
@@ -271,6 +314,8 @@ async function main() {
     source: null,
     path: null,
     targetSquares: null,
+    waypoints: [],   // accumulated path walked through Q-pivots (like the 2D view)
+    hover: null,     // last hovered square with a valid path
   };
 
   function resetMode() {
@@ -281,9 +326,121 @@ async function main() {
     mode.source = null;
     mode.path = null;
     mode.targetSquares = null;
+    mode.waypoints = [];
+    mode.hover = null;
     setMoveHint(false);
     if (targetHint) targetHint.textContent = '';
     scene.setPath(null);
+  }
+
+  // Join the accumulated waypoint path with the latest path segment exactly
+  // like the 2D view does: drop the accumulated tail square (the pivot) since
+  // the new segment starts from it.
+  function fullMovePath(segment) {
+    if (!Array.isArray(segment) || !segment.length) return null;
+    const tail = segment.map(([x, y]) => [Number(x), Number(y)]);
+    if (!mode.waypoints.length) return tail;
+    return mode.waypoints.slice(0, -1).concat(tail);
+  }
+
+  // Q key: fix the current hover square as a waypoint and path from there,
+  // mirroring the 2D movement mode's pivot-point behaviour.
+  function commitWaypoint() {
+    if (mode.kind !== 'move' || !mode.source || !mode.path || !mode.hover) return;
+    if (mode.hover.x === mode.source.x && mode.hover.y === mode.source.y) return;
+    // Same convention as the 2D accumulatedPath: raw concat (the shared
+    // pivot square is de-duplicated server-side).
+    mode.waypoints = mode.waypoints.concat(
+      mode.path.map(([x, y]) => [Number(x), Number(y)]),
+    );
+    mode.source = { x: mode.hover.x, y: mode.hover.y, entityUid: mode.source.entityUid };
+    mode.path = null;
+    mode.hover = null;
+    scene.setPath(null);
+    setStatus('Waypoint added · hover a destination to continue');
+  }
+
+  // Hover-move quick action (2D parity): hovering a reachable empty square
+  // shows a "Move here" chip; hovering the chip previews the path arrow.
+  // Disabled during battle, matching 2D's initiative-based movement gating.
+  let hoverMoveTimer = null;
+  let hoverMoveToken = 0;
+  let hoverMoveInFlight = false;
+  let hoverMovePath = null;
+  let hoverMoveTerrain = null;
+
+  // Hover chips come from tile fixtures (chests, doors) and from creatures
+  // carrying quick-interact metadata (loot/carry on corpses, give on NPCs).
+  function hoverInteractables() {
+    const objs = state?.objects || [];
+    const ents = (state?.entities || [])
+      .filter((e) => Array.isArray(e.quick_interact) && e.quick_interact.length)
+      .map((e) => ({
+        id: e.uid,
+        x: e.x,
+        y: e.y,
+        name: e.name,
+        quick_interact: e.quick_interact,
+      }));
+    return objs.concat(ents);
+  }
+
+  function hoverMoveActor() {
+    if (state?.battle_in_progress) return null;
+    const pov = cfg.povEntity;
+    if (!pov) return null;
+    const ent = (state?.entities || []).find((e) => String(e.uid) === String(pov));
+    if (!ent || ent.dead || ent.unconscious) return null;
+    return ent;
+  }
+
+  function clearHoverMoveChip() {
+    clearTimeout(hoverMoveTimer);
+    hoverMoveToken += 1;
+    hoverMovePath = null;
+    hoverMoveTerrain = null;
+    objectHud.setMoveTarget(null);
+  }
+
+  function queueHoverMoveChip(grid) {
+    const actor = hoverMoveActor();
+    if (
+      !grid
+      || !actor
+      || (grid.x === actor.x && grid.y === actor.y)
+      || occupantsAt(state, grid.x, grid.y).length
+    ) {
+      clearHoverMoveChip();
+      return;
+    }
+    clearTimeout(hoverMoveTimer);
+    hoverMoveTimer = setTimeout(async () => {
+      const token = ++hoverMoveToken;
+      try {
+        const data = await client.getPath({ x: actor.x, y: actor.y }, grid);
+        if (token !== hoverMoveToken) return;
+        if (
+          data
+          && Array.isArray(data.path)
+          && data.path.length > 1
+          && data.placeable !== false
+          && pathReaches(data.path, grid.x, grid.y)
+        ) {
+          hoverMovePath = data.path.map(([px, py]) => [Number(px), Number(py)]);
+          hoverMoveTerrain = data.terrain_info;
+          objectHud.setMoveTarget(grid);
+        } else {
+          hoverMovePath = null;
+          hoverMoveTerrain = null;
+          objectHud.setMoveTarget(null);
+        }
+      } catch (err) {
+        if (token === hoverMoveToken) {
+          hoverMovePath = null;
+          objectHud.setMoveTarget(null);
+        }
+      }
+    }, 120);
   }
 
   async function refreshMap() {
@@ -297,10 +454,12 @@ async function main() {
       await scene.applyState(state);
       objectHud.rebuild(state.objects || []);
       objectHud.setHover(null);
+      clearHoverMoveChip();
       if (mapNameEl && state.map?.name) mapNameEl.textContent = state.map.name;
       const mapId = `${state.map?.background || ''}|${(state.map?.size || []).join('x')}`;
       if (mapId !== lastMapName) {
         lastMapName = mapId;
+        closeLootPanel();
         client.requestEffects();
       }
       syncIlluminationUi(state);
@@ -357,6 +516,15 @@ async function main() {
       }
       hideActionBar();
       resetMode();
+    }
+    // Q: add a movement waypoint at the hovered square (like the 2D view).
+    if ((e.key === 'q' || e.key === 'Q') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const el = e.target;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (mode.kind === 'move') {
+        e.preventDefault();
+        commitWaypoint();
+      }
     }
   });
 
@@ -460,29 +628,160 @@ async function main() {
       if (match) {
         await submitAction(entity, action, opts, { choice: match[1] });
       }
+      return;
+    }
+    if (type === 'select_items') {
+      // loot / item-transfer panel (corpses, chests): same /action opts.items
+      // contract as the 2D transfer modal
+      hideActionBar();
+      openLootPanel(uid, action, opts || {}, data);
+    }
+  }
+
+  // --- loot / take-items panel (2D modal-1 equivalent for the 3D VTT) ---
+  let lootPanelEl = null;
+
+  function closeLootPanel() {
+    if (lootPanelEl) {
+      lootPanelEl.remove();
+      lootPanelEl = null;
+    }
+  }
+
+  function lootItemsOf(stepData) {
+    const p0 = (Array.isArray(stepData.param) && stepData.param[0]) || {};
+    return p0.items || stepData.valid_items || {};
+  }
+
+  function escapeHtml3d(text) {
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function openLootPanel(entityUid, action, opts, stepData) {
+    closeLootPanel();
+    const items = lootItemsOf(stepData);
+    const names = Object.keys(items);
+    const targetUid = String(opts?.target || '');
+    const found = (state?.entities || []).find((e) => String(e.uid) === targetUid)
+      || (state?.objects || []).find((o) => String(o.id) === targetUid);
+    const target = found?.name || found?.label || '';
+    const wrap = document.createElement('div');
+    wrap.className = 'vtt-3d-note-modal vtt-3d-loot-modal';
+    const head = names.length
+      ? `<h3>Loot ${escapeHtml3d(target)}</h3>`
+      : '<h3>Loot</h3>';
+    const rows = names.map((name) => {
+      const it = items[name] || {};
+      const qty = Math.max(1, Number(it.qty) || 1);
+      const label = (it.name || name).replace(/_/g, ' ');
+      return `<div class="vtt-3d-loot-row" data-item="${escapeHtml3d(name)}">`
+        + `<span class="vtt-3d-loot-name">${escapeHtml3d(label)}</span>`
+        + `<span class="vtt-3d-loot-qty">x${qty}</span>`
+        + `<input class="vtt-3d-loot-count" type="number" min="1" max="${qty}" value="${qty}">`
+        + `<button type="button" class="btn btn-xs btn-default vtt-3d-loot-take">Take</button>`
+        + '</div>';
+    }).join('');
+    wrap.innerHTML = `<div class="vtt-3d-note-modal-panel">`
+      + `${head}`
+      + (names.length
+        ? `${rows}<div class="vtt-3d-loot-actions">`
+          + '<button type="button" class="btn btn-sm btn-primary vtt-3d-loot-all">Take All</button>'
+          + '</div>'
+        : '<p>Nothing left to take.</p>')
+      + '<button type="button" class="btn btn-xs vtt-3d-loot-close" title="Close">✕</button>'
+      + '</div>';
+    document.body.appendChild(wrap);
+    lootPanelEl = wrap;
+
+    wrap.querySelector('.vtt-3d-loot-close')?.addEventListener('click', () => {
+      closeLootPanel();
+      scheduleRefresh(80);
+    });
+    const take = (list) => postLootTransfer(entityUid, action, opts, list);
+    wrap.querySelectorAll('.vtt-3d-loot-take').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const row = btn.closest('.vtt-3d-loot-row');
+        const qty = Number(row.querySelector('.vtt-3d-loot-count')?.value) || 1;
+        take([{ name: row.dataset.item, qty }]);
+      });
+    });
+    wrap.querySelector('.vtt-3d-loot-all')?.addEventListener('click', () => {
+      take(names.map((name) => ({ name, qty: Number(items[name]?.qty) || 1 })));
+    });
+  }
+
+  async function postLootTransfer(entityUid, action, opts, list) {
+    const nextOpts = {
+      ...opts,
+      items: {
+        from: {
+          items: list.map((l) => l.name),
+          qty: list.map((l) => l.qty),
+        },
+        to: { items: [], qty: [] },
+      },
+    };
+    const resp = await client.postAction({ id: entityUid, action, opts: nextOpts });
+    if (!resp) return;
+    if (resp.status === 'ok' || resp.error || resp.status === 'error') {
+      closeLootPanel();
+      if (resp.error || resp.status === 'error') {
+        setStatus(resp.primary_error || resp.error || 'Could not take those items');
+      }
+      scheduleRefresh(80);
+      return;
+    }
+    if (stepType(resp) === 'select_items') {
+      // keep the panel open with the updated contents (2D parity)
+      openLootPanel(entityUid, action, { ...opts }, resp);
+      scheduleRefresh(200);
     }
   }
 
   canvas.addEventListener('pointermove', (event) => {
+    if (rotateDrag) {
+      const yaw = scene.rotationFromEvent(event);
+      if (yaw != null) scene.setTokenYaw(rotateDrag.uid, yaw);
+      return;
+    }
     const grid = scene.gridFromEvent(event);
     if (mode.kind === 'idle') {
-      if (grid) objectHud.setHover(grid, state?.objects || []);
+      if (grid) objectHud.setHover(grid, hoverInteractables());
       else objectHud.setHover(null);
+      queueHoverMoveChip(grid);
       return;
     }
     objectHud.setHover(null);
+    clearHoverMoveChip();
     if (!grid) return;
+    if (mode.kind && mode.kind.startsWith('select_')) {
+      // instant feedback while the debounced /target round-trip is in flight
+      if (isAttackTargeting(mode.kind) && mode.source) {
+        scene.setTargetLine(mode.source, grid, {
+          valid: true,
+          melee: isMeleeRange(mode.range),
+        });
+      }
+    }
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(async () => {
       if (mode.kind === 'move' && mode.source) {
         try {
-          const data = await client.getPath(mode.source, grid);
+          const data = await client.getPath(mode.source, grid, {
+            accumulatedPath: mode.waypoints.length ? mode.waypoints : undefined,
+          });
           if (data?.path && data.placeable !== false && pathReaches(data.path, grid.x, grid.y)) {
             mode.path = data.path;
-            scene.setPath(data.path);
+            mode.hover = { x: grid.x, y: grid.y };
+            scene.setPath(fullMovePath(data.path), data.terrain_info);
           } else {
             mode.path = null;
-            scene.setPath(null);
+            mode.hover = null;
+            scene.setPath(mode.waypoints.length > 1 ? mode.waypoints : null);
           }
         } catch (err) {
           console.warn(err);
@@ -507,6 +806,7 @@ async function main() {
             scene.setTargetLine(mode.source, grid, {
               valid,
               rangeLabel: `${feet}ft`,
+              melee: isMeleeRange(mode.range),
             });
           } else {
             scene.setHighlights([[grid.x, grid.y]], valid ? 0xf4d35e : 0x888888);
@@ -524,14 +824,44 @@ async function main() {
   canvas.addEventListener('pointerleave', (event) => {
     const hud = document.getElementById('token-hud-layer');
     if (event.relatedTarget && hud?.contains(event.relatedTarget)) return;
-    if (mode.kind === 'idle') objectHud.setHover(null);
+    if (mode.kind === 'idle') {
+      objectHud.setHover(null);
+      clearHoverMoveChip();
+    }
   });
   canvas.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
+    // rotation gesture: grabbing the knob on a selected token's base ring
+    if (mode.kind === 'idle' && scene.rotateHandleHit(event)) {
+      const uid = scene._selectedUid;
+      if (uid) {
+        rotateDrag = { uid, start: scene.tokenYaw.get(uid) || 0 };
+        scene._dragRotationUid = uid;
+        scene._updateRotationGhost();
+        scene.controls.enabled = false;
+        canvas.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+      }
+      return;
+    }
     pointerDown = { x: event.clientX, y: event.clientY };
   });
   canvas.addEventListener('pointerup', async (event) => {
     if (event.button !== 0) return;
+    if (rotateDrag) {
+      const { uid, start } = rotateDrag;
+      rotateDrag = null;
+      scene._dragRotationUid = null;
+      scene._updateRotationGhost();
+      scene.controls.enabled = true;
+      canvas.releasePointerCapture?.(event.pointerId);
+      if (scene._selectedUid === uid) scene._repositionSelection();
+      const yaw = scene.tokenYaw.get(uid) || 0;
+      if (Math.abs(yaw - start) >= 0.01) {
+        client.rotateToken(uid, (yaw * 180) / Math.PI);
+      }
+      return;
+    }
     const start = pointerDown;
     pointerDown = null;
     if (!isClickNotDrag(start, { x: event.clientX, y: event.clientY })) return;
@@ -545,7 +875,7 @@ async function main() {
         id: mode.entityUid,
         action: mode.action,
         opts: mode.opts,
-        path,
+        path: fullMovePath(path),
       });
       resetMode();
       if (data && data.status !== 'ok' && data.error) {
@@ -592,10 +922,29 @@ async function main() {
       return;
     }
     const hits = occupantsAt(state, grid.x, grid.y);
+    if (event.ctrlKey || event.metaKey) {
+      // DM POV switch (same convention as the 2D map): Ctrl+click a token to
+      // view from that entity, Ctrl+click an empty square to see everything.
+      if (!isDm()) return;
+      const target = hits.length ? hits[0].uid : null;
+      const data = await client.switchPov(target);
+      if (data && data.error) {
+        setStatus(data.error);
+      } else {
+        hideActionBar();
+        scene.clearSelection();
+        resetMode();
+        setStatus(target ? `POV: ${hits[0].name || hits[0].uid}` : 'POV: all');
+        scheduleRefresh(80);
+      }
+      return;
+    }
     if (hits.length) {
       openActions(hits[0]);
+      scene.setSelected(hits[0].uid);
     } else {
       hideActionBar();
+      scene.clearSelection();
     }
   });
 
@@ -633,6 +982,14 @@ async function main() {
   });
   client.socket.on('connect', () => {
     client.requestEffects();
+  });
+
+  // cosmetic token rotation from other players/DM (degrees -> radians)
+  client.onTokenRotation((data) => {
+    if (!data?.uid) return;
+    if (rotateDrag?.uid === data.uid) return; // our own drag echo
+    const yaw = (Number(data.yaw) || 0) * Math.PI / 180;
+    scene.setTokenYaw(data.uid, yaw);
   });
 
   client.onMessage(async (data) => {

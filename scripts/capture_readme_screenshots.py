@@ -12,6 +12,9 @@ writing optimized PNGs into ``docs/screenshots/``.
 Optional overrides:
     N20_SHOTS_BASE_URL   default http://127.0.0.1:5001
     N20_SHOTS_USER / N20_SHOTS_PASSWORD   default dm / admin
+    N20_SHOTS_PLAYER / N20_SHOTS_PLAYER_PASSWORD / N20_SHOTS_PLAYER_CHAR
+                         player-side login + character (default gomerin / gomerin / Gomerin)
+    N20_SHOTS_NPC        NPC uid to talk to for the dialog shot (default: gabba if present)
     N20_SHOTS_OUT        output directory (default docs/screenshots)
     N20_SHOTS_MAX_WIDTH  downscale width (default 1280)
     N20_SHOTS_CHROME     chromium executable (default: Playwright's own)
@@ -325,7 +328,130 @@ def main() -> int:
             [seeded.get("folder"), seeded.get("notes") or []],
         )
 
-        # 7. Character builder (opened by the PC tray's "+ New").
+        # 7. Player-side views: the action bar over their own token, a JRPG
+        #    dialog with a dialog-enabled NPC, and the in-game character sheet.
+        #    Separate context => separate session cookie from the DM login.
+        player_user = os.getenv("N20_SHOTS_PLAYER", "gomerin")
+        player_pass = os.getenv("N20_SHOTS_PLAYER_PASSWORD", player_user)
+        player_char = os.getenv("N20_SHOTS_PLAYER_CHAR", "Gomerin")
+        npc_preference = os.getenv("N20_SHOTS_NPC", "gabba")
+        pctx = browser.new_context(viewport={"width": 1600, "height": 900})
+        ppage = pctx.new_page()
+        ppage.set_default_timeout(20000)
+        player_ok = False
+        try:
+            ppage.goto(f"{BASE_URL}/login", wait_until="domcontentloaded")
+            ppage.wait_for_selector("#username")
+            ppage.fill("#username", player_user)
+            ppage.fill("#password", player_pass)
+            ppage.click("button.btn-login")
+            try:
+                ppage.wait_for_url(lambda url: "/login" not in url, timeout=10000)
+            except Exception:
+                pass
+            ppage.wait_for_load_state("domcontentloaded")
+            if "character_selection" in ppage.url:
+                sel = ppage.evaluate(
+                    """async (name) => {
+                        const r = await fetch('/select_character', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                            body: 'character=' + encodeURIComponent(name),
+                        });
+                        return await r.text();
+                    }""",
+                    player_char,
+                )
+                if "ok" not in sel:
+                    print(f"  skip   player shots (could not select {player_char}: {sel[:80]})")
+                else:
+                    player_ok = True
+            elif "/login" not in ppage.url:
+                player_ok = True  # user already has an assigned character: straight to the table
+            else:
+                print("  skip   player shots (login failed)")
+            if player_ok:
+                ppage.goto(f"{BASE_URL}/", wait_until="domcontentloaded")
+                ppage.wait_for_selector("#tiles-area .entity", timeout=15000)
+        except Exception as exc:
+            print(f"  skip   player shots ({type(exc).__name__}: {exc})")
+            player_ok = False
+
+        if player_ok:
+            wait_settled(ppage, 1500)
+            pov = ppage.evaluate("() => document.body.getAttribute('data-pov-entity')")
+            if pov:
+                ppage.evaluate(
+                    "(uid) => window.centerOnEntityId && centerOnEntityId(uid)", pov
+                )
+                wait_settled(ppage, 800)
+
+                # 7a. The action bar: click your own token -> spells/attacks/inventory.
+                own = ppage.query_selector(f'#tiles-area .entity[data-id="{pov}"]')
+                if own:
+                    own.click()
+                    try:
+                        ppage.wait_for_selector("#centerActionBar:visible", timeout=8000)
+                        wait_settled(ppage, 1200)
+                        ppage.mouse.move(1500, 880)  # park cursor, hide hover tooltips
+                        save(ppage, "action-bar")
+                    except Exception:
+                        print("  skip   action-bar (bar did not open on token click)")
+
+                # 7b. JRPG dialog with a dialog-enabled NPC. Send one line and
+                #     wait for the NPC's (LLM) reply so the transcript is alive.
+                npc = ppage.evaluate(
+                    """([pov, prefer]) => {
+                        const ids = [...document.querySelectorAll('#tiles-area .entity')]
+                            .map((e) => e.dataset.id).filter((id) => id && id !== pov);
+                        return ids.includes(prefer) ? prefer : (ids[0] || null);
+                    }""",
+                    [pov, npc_preference],
+                )
+                if npc:
+                    try:
+                        ppage.evaluate(
+                            """([pov, npc]) =>
+                                runTalkWithApproach(pov, npc, npc, { forced: true })""",
+                            [pov, npc],
+                        )
+                        ppage.wait_for_selector("#jrpgDialogPanel:visible", timeout=8000)
+                        wait_settled(ppage, 1500)
+                        ppage.fill("#dialogChatInput", "Well met, little one. What are you guarding down here?")
+                        ppage.click("#dialogSendMessage")
+                        try:
+                            ppage.wait_for_function(
+                                """() => {
+                                    const box = document.querySelector('#dialogChatMessages');
+                                    if (!box) return false;
+                                    // player line + the NPC's own (non-"waiting") reply
+                                    return box.querySelectorAll(
+                                        '.dialog-chat-message:not(.waiting)').length >= 2;
+                                }""",
+                                timeout=45000,
+                            )
+                        except Exception:
+                            pass  # shot works even without an LLM reply
+                        wait_settled(ppage, 800)
+                        save(ppage, "talk-npc")
+                        ppage.goto(f"{BASE_URL}/", wait_until="domcontentloaded")
+                        ppage.wait_for_selector("#tiles-area .entity", timeout=15000)
+                    except Exception as exc:
+                        print(f"  skip   talk-npc ({type(exc).__name__}: {exc})")
+
+                # 7c. The in-game character sheet (the portrait tray's sheet shortcut).
+                try:
+                    sheet = pctx.new_page()
+                    sheet.set_default_timeout(15000)
+                    sheet.goto(f"{BASE_URL}/info?id={pov}", wait_until="domcontentloaded")
+                    sheet.wait_for_timeout(2000)
+                    save(sheet, "character-sheet")
+                    sheet.close()
+                except Exception as exc:
+                    print(f"  skip   character-sheet ({type(exc).__name__}: {exc})")
+            pctx.close()
+
+        # 8. Character builder (opened by the PC tray's "+ New").
         builder = context.new_page()
         builder.set_default_timeout(20000)
         builder.goto(f"{BASE_URL}/character_builder", wait_until="domcontentloaded")
@@ -333,7 +459,7 @@ def main() -> int:
         save(builder, "character-builder")
         builder.close()
 
-        # 8. Three.js sibling client (skips itself when WebGL is unavailable).
+        # 9. Three.js sibling client (skips itself when WebGL is unavailable).
         if "vtt-3d" not in SKIP:
             client3d = context.new_page()
             client3d.set_default_timeout(20000)

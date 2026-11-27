@@ -16,6 +16,10 @@
     "namespace": "/"
   },
   {
+    "event": "token:rotate",
+    "namespace": "/"
+  },
+  {
     "event": "disconnect",
     "namespace": "/"
   }

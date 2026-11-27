@@ -343,6 +343,7 @@ def test_build_combat_controller_from_agent(layers):
 
     # unknown / manual bundles defer to the caller's manual handling
     assert ai_config.build_combat_controller_from_agent(None, handler, None, 'nope') is None
+
     assert ai_config.build_combat_controller_from_agent(None, handler, None, 'handler') is None
 
     # unified spec dispatcher
@@ -351,6 +352,48 @@ def test_build_combat_controller_from_agent(layers):
     assert ai_config.build_combat_controller_for_spec(None, handler, None, 'manual') is None
     llm = ai_config.build_combat_controller_for_spec(None, handler, None, 'llm')
     assert isinstance(llm, LlmMcpController) and llm.agent_name is None
+
+
+# ---------------------------------------------------------------------- #
+# ``combat.strategist``: hybrid planner mode (follows INT by default)     #
+# ---------------------------------------------------------------------- #
+
+def test_strategist_mode_precedence(layers):
+    layers({'combat': {'strategist': 'always'},
+            'npcs': {'goblin': {'combat': {'strategist': 'off'}}}})
+    grunt = _Npc(entity_uid='g_2', npc_type='goblin')
+    other = _Npc(entity_uid='v_1', npc_type='treeraptor')
+    assert ai_config.strategist_mode_for() == 'always'
+    assert ai_config.strategist_mode_for(grunt) == 'off'
+    assert ai_config.strategist_mode_for(other) == 'always'
+
+
+def test_strategist_mode_defaults_to_auto(layers):
+    layers({'combat': {'strategist': 'daydream'}})   # unknown value is dropped
+    assert ai_config.strategist_mode_for() == 'auto'
+    assert ai_config.strategist_mode_for(_Npc(entity_uid='x', npc_type='goblin')) == 'auto'
+
+
+def test_agent_bundle_can_set_the_strategist_mode(layers):
+    layers({**AGENT_YAML,
+            'agents': {**AGENT_YAML['agents'],
+                       'planner': {'controller': 'hybrid', 'strategist': 'always'}}})
+    handler = _handler()
+    controller = ai_config.build_combat_controller_from_agent(None, handler, None, 'planner')
+    assert controller.strategist_mode == 'always'
+
+
+def test_hybrid_controller_gets_the_configured_mode(layers):
+    layers({'combat': {'strategist': 'off'},
+            'npcs': {'goblin': {'combat': {'strategist': 'always'}}}})
+    handler = _handler()
+    grunt = _Npc(entity_uid='g_2', npc_type='goblin')
+    with patch('natural20.sidekick.is_in_party_sidekick', return_value=False):
+        hybrid = ai_config.build_llm_combat_controller(None, handler, grunt, kind='hybrid')
+    assert hybrid.strategist_mode == 'always'
+    # plain llm controllers have no planner to configure
+    plain = ai_config.build_llm_combat_controller(None, handler, None, kind='llm')
+    assert not hasattr(plain, 'strategist_mode')
 
 
 def test_registry_builds_agent_spec(layers):

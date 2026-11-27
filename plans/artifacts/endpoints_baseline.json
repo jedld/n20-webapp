@@ -692,6 +692,26 @@
     "rule": "/dm/notes"
   },
   {
+    "endpoint": "dm.dm_token_models_assign",
+    "rule": "/dm/token_models/assign"
+  },
+  {
+    "endpoint": "dm.dm_token_models_delete",
+    "rule": "/dm/token_models/delete"
+  },
+  {
+    "endpoint": "dm.dm_token_models_list",
+    "rule": "/dm/token_models"
+  },
+  {
+    "endpoint": "dm.dm_token_models_unassign",
+    "rule": "/dm/token_models/unassign"
+  },
+  {
+    "endpoint": "dm.dm_token_models_upload",
+    "rule": "/dm/token_models/upload"
+  },
+  {
     "endpoint": "dm.equip",
     "rule": "/equip"
   },

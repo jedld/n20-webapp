@@ -3521,3 +3521,138 @@ def dm_notes_delete(note_id):
     delete_note(current_game.game_session, note_id, existing.get('map'))
     _emit_dm_notes_changed(existing.get('map'))
     return jsonify(success=True, map=existing.get('map'), id=note_id)
+
+
+# ---------------------------------------------------------------------------
+# 3D VTT token models (HeroForge-style figures) — see docs/VTT_3D.md
+# ---------------------------------------------------------------------------
+
+def _emit_vtt3d_tokens_changed():
+    try:
+        get_socketio().emit('message', {'type': 'refresh_map'})
+    except Exception:
+        pass
+
+
+def _token_model_entities_for_suggestions():
+    """Entity identities the DM can bind a token model to."""
+    seen = {}
+    current_game = get_current_game()
+    for battle_map in (getattr(current_game, 'maps', {}) or {}).values():
+        for entity in list(getattr(battle_map, 'entities', []) or []):
+            uid = str(getattr(entity, 'entity_uid', '') or '')
+            if not uid or uid in seen:
+                continue
+            npc_type = getattr(entity, 'npc_type', None)
+            if not npc_type:
+                props = getattr(entity, 'properties', None) or {}
+                npc_type = props.get('id') if isinstance(props, dict) else None
+            seen[uid] = {
+                'uid': uid,
+                'name': getattr(entity, 'name', None) or uid,
+                'type': npc_type,
+            }
+    return sorted(seen.values(), key=lambda e: str(e['name']).lower())
+
+
+@dm_bp.route('/dm/token_models', methods=['GET'])
+def dm_token_models_list():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers import token_models
+
+    game_session = get_game_session()
+    return jsonify(
+        success=True,
+        library=token_models.list_library(game_session),
+        assignments=token_models.get_assignments(game_session),
+        entities=_token_model_entities_for_suggestions(),
+    )
+
+
+@dm_bp.route('/dm/token_models/upload', methods=['POST'])
+def dm_token_models_upload():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers import token_models
+
+    file = request.files.get('model') or request.files.get('file')
+    if file is None:
+        return jsonify(success=False, error='No file uploaded'), 400
+    result = token_models.save_upload(
+        get_game_session(), file, color=request.form.get('color'))
+    if result.get('error'):
+        return jsonify(success=False, **result), 400
+
+    game_session = get_game_session()
+    key = (request.form.get('key') or '').strip()
+    if key and result.get('models'):
+        token_models.set_assignment(game_session, key, {'src': result['models'][0]})
+        _emit_vtt3d_tokens_changed()
+    return jsonify(success=True, assignments=token_models.get_assignments(game_session), **result)
+
+
+@dm_bp.route('/dm/token_models/assign', methods=['POST'])
+def dm_token_models_assign():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers import token_models
+
+    payload = request.get_json(silent=True) or {}
+    key = str(payload.get('key') or '').strip()
+    if not key:
+        return jsonify(success=False, error='Missing entity key'), 400
+    spec = {
+        field: payload.get(field)
+        for field in ('src', 'scale', 'y', 'height', 'rotate_y', 'color', 'label')
+        if payload.get(field) is not None
+    }
+    src = str(spec.get('src') or '').strip()
+    if src and not src.startswith(('http://', 'https://')):
+        from natural20.web.vtt3d_catalog import resolve_token_src
+
+        resolved = resolve_token_src(
+            getattr(get_game_session(), 'root_path', None), src)
+        if resolved:
+            spec['src'] = resolved
+    saved = token_models.set_assignment(get_game_session(), key, spec)
+    if saved is None:
+        return jsonify(success=False, error='Missing or invalid model src'), 400
+    _emit_vtt3d_tokens_changed()
+    return jsonify(success=True, key=key, spec=saved,
+                   assignments=token_models.get_assignments(get_game_session()))
+
+
+@dm_bp.route('/dm/token_models/unassign', methods=['POST'])
+def dm_token_models_unassign():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers import token_models
+
+    payload = request.get_json(silent=True) or {}
+    key = str(payload.get('key') or '').strip()
+    if not token_models.remove_assignment(get_game_session(), key):
+        return jsonify(success=False, error='No assignment for that key'), 404
+    _emit_vtt3d_tokens_changed()
+    return jsonify(success=True, key=key,
+                   assignments=token_models.get_assignments(get_game_session()))
+
+
+@dm_bp.route('/dm/token_models/delete', methods=['POST'])
+def dm_token_models_delete():
+    denied = _require_dm()
+    if denied:
+        return denied
+    from .helpers import token_models
+
+    payload = request.get_json(silent=True) or {}
+    result = token_models.delete_model(get_game_session(), payload.get('src'))
+    if result.get('error'):
+        return jsonify(success=False, **result), 404
+    _emit_vtt3d_tokens_changed()
+    return jsonify(success=True, **result,
+                   assignments=token_models.get_assignments(get_game_session()))

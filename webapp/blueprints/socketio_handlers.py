@@ -7,7 +7,7 @@ from flask import request
 from flask_socketio import emit
 
 from .helpers.effects import emit_active_effects_for_client
-from .helpers.runtime_state import get_current_game, get_logger
+from .helpers.runtime_state import get_current_game, get_game_session, get_logger
 
 
 def register_socketio_handlers(socketio):
@@ -65,6 +65,50 @@ def register_socketio_handlers(socketio):
                 })
         else:
             emit('error', {'type': 'error', 'message': 'Unknown command!'})
+
+    @socketio.on('token:rotate')
+    def handle_token_rotate(data):
+        """Cosmetic 3D token facing: validate sender, store, relay to everyone.
+
+        Purely visual (VTT figure yaw) — it never touches game state. Stored
+        in ``session_state['token_rotations']`` so late joiners and map
+        refreshes keep the facing (see navigation./map_state injection).
+        """
+        data = data or {}
+        uid = data.get('uid')
+        yaw = data.get('yaw')
+        if not uid or not isinstance(yaw, (int, float)):
+            return
+        ws = request.sid
+        current_game = get_current_game()
+        username = None
+        for name, sids in (current_game.username_to_sid or {}).items():
+            if ws in sids:
+                username = name
+                break
+        if not username:
+            return
+
+        def _allowed():
+            from .helpers.auth_utils import roles_for_username
+
+            if 'dm' in (roles_for_username(username) or []):
+                return True
+            try:
+                entity = get_game_session().entity_by_uid(uid) if uid else None
+                owners = current_game.entity_owners(entity) if entity is not None else []
+            except Exception:
+                owners = []
+            return any(str(o).lower() == str(username).lower() for o in owners if o)
+
+        if not _allowed():
+            return
+
+        normalized = float(yaw) % 360.0
+        rotations = get_game_session().session_state.setdefault('token_rotations', {})
+        rotations[str(uid)] = normalized
+        emit('token:rotation', {'type': 'token:rotation', 'uid': str(uid), 'yaw': normalized},
+             broadcast=True)
 
     @socketio.on('disconnect')
     def handle_disconnect(reason=None):

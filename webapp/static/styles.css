@@ -1396,6 +1396,17 @@ button.vtt-menu-item:focus {
   cursor: pointer;
 }
 
+#battle-turn-order .dm-pacing-delay-label {
+  margin-left: 12px;
+}
+
+#battle-turn-order .dm-pacing-delay {
+  width: 52px;
+  margin: 0 2px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
 #battle-turn-order .dm-turn-hold-banner {
   display: flex;
   align-items: center;
@@ -4334,14 +4345,14 @@ body[data-edit-mode="true"] .show-note-btn.edit-note-indicator-dragging {
   justify-content: center;
   cursor: pointer;
   color: #ffffff;
-  background-color: rgba(15, 44, 70, 0.82);
+  background-color: rgba(15, 44, 70, 0.45);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
   transition: transform 0.12s ease, background-color 0.12s ease;
 }
 
 .move-quick-action:hover:not(:disabled) {
   transform: scale(1.08);
-  background-color: rgba(22, 74, 120, 0.92);
+  background-color: rgba(22, 74, 120, 0.6);
 }
 
 .move-quick-action:disabled {

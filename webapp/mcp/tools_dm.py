@@ -1026,8 +1026,10 @@ def register(registry: ToolRegistry) -> None:
                     '- set_initiative: requires `initiative` int; resorts turn order.\n'
                     '- next_turn: advances initiative (ends a held AI turn when one is waiting); '
                     'no entity_uid needed.\n'
-                    '- pacing: read or set (`enabled`) "DM ends AI turns" — AI combatants wait for a '
-                    'DM to end their turn (even if no DM is logged in yet). Works without an active battle.',
+                    '- pacing: read or set "DM ends AI turns" (`enabled`) — AI combatants wait for a '
+                    'DM to end their turn (even if no DM is logged in yet) — and the pause between '
+                    'consecutive AI turns in seconds (`ai_turn_delay`, lets browsers finish each '
+                    "turn's animations; 0 disables it). Works without an active battle.",
         input_schema={
             'type': 'object',
             'required': ['op'],
@@ -1037,6 +1039,10 @@ def register(registry: ToolRegistry) -> None:
                                  'set_group', 'set_initiative', 'next_turn', 'pacing']},
                 'enabled': {'type': 'boolean',
                             'description': 'pacing: turn "DM ends AI turns" on/off (omit to read).'},
+                'ai_turn_delay': {'type': 'number', 'minimum': 0,
+                                  'description': 'pacing: seconds to pause after each AI turn so '
+                                                 'clients can play its animations (0 disables; '
+                                                 'omit to read the current value).'},
                 'entity_uid': {'type': 'string'},
                 'group': {'type': 'string'},
                 'order': {'type': 'array', 'items': {'type': 'string'}},
@@ -1058,7 +1064,8 @@ def register(registry: ToolRegistry) -> None:
                      order: Optional[List[str]] = None,
                      initiative: Optional[int] = None,
                      controller: Optional[str] = None,
-                     enabled: Optional[bool] = None):
+                     enabled: Optional[bool] = None,
+                     ai_turn_delay: Optional[float] = None):
         from webapp.battle_management import battle_admin as _battle_admin
 
         try:
@@ -1072,6 +1079,7 @@ def register(registry: ToolRegistry) -> None:
                 initiative=initiative,
                 controller=controller,
                 enabled=enabled,
+                ai_turn_delay=ai_turn_delay,
             )
         except ValueError as exc:
             raise tool_error(str(exc))
@@ -1848,6 +1856,100 @@ def register(registry: ToolRegistry) -> None:
             return {'op': op, 'map': existing.get('map'), 'note_id': existing['id'], 'deleted': True}
 
         raise tool_error('op must be one of: list, upsert, delete, move')
+
+    @tool(
+        registry,
+        name='dm.token_model',
+        description='3D VTT token models (HeroForge-style figures rendered on the /3d map '
+                    'instead of the default token). Bind entity uid / NPC type / name to an '
+                    'uploaded model file, or manage the model library. '
+                    'op: list | assign | unassign | delete. Uploads go through '
+                    'POST /dm/token_models/upload (auto-converts STL/Unity bundles to GLB).',
+        input_schema={
+            'type': 'object',
+            'required': ['op'],
+            'properties': {
+                'op': {'type': 'string', 'enum': ['list', 'assign', 'unassign', 'delete']},
+                'key': {'type': 'string',
+                        'description': 'Entity uid, NPC type, or exact entity name to bind'},
+                'src': {'type': 'string',
+                        'description': 'Model path under <campaign>/assets '
+                                       '(e.g. models/tokens/paladin.glb); extension may be '
+                                       'omitted on assign and is resolved from the library'},
+                'height': {'type': 'number', 'description': 'Figure height in feet'},
+                'scale': {'type': 'number'},
+                'y': {'type': 'number', 'description': 'Vertical offset in feet'},
+                'rotate_y': {'type': 'number', 'description': 'Yaw in degrees'},
+                'color': {'type': 'string', 'description': 'Tint for untextured figures, e.g. #8899ff'},
+                'label': {'type': 'string'},
+            },
+        },
+        category='dm',
+    )
+    def token_model(
+        context: MCPContext,
+        op: str,
+        key: Optional[str] = None,
+        src: Optional[str] = None,
+        height: Optional[float] = None,
+        scale: Optional[float] = None,
+        y: Optional[float] = None,
+        rotate_y: Optional[float] = None,
+        color: Optional[str] = None,
+        label: Optional[str] = None,
+    ):
+        from webapp.blueprints.helpers import token_models
+
+        op = (op or '').strip().lower()
+        session = context.game_session
+
+        if op == 'list':
+            return {
+                'op': op,
+                'library': token_models.list_library(session),
+                'assignments': token_models.get_assignments(session),
+            }
+
+        if op == 'assign':
+            if not (key or '').strip():
+                raise tool_error('key is required (entity uid, NPC type, or name)')
+            resolved = src
+            if resolved and not str(resolved).startswith(('http://', 'https://')):
+                from natural20.web.vtt3d_catalog import resolve_token_src
+
+                resolved = resolve_token_src(
+                    getattr(session, 'root_path', None), str(resolved)) or resolved
+            spec = {
+                name: value
+                for name, value in (
+                    ('src', resolved), ('height', height), ('scale', scale),
+                    ('y', y), ('rotate_y', rotate_y), ('color', color), ('label', label),
+                )
+                if value is not None
+            }
+            saved = token_models.set_assignment(session, key, spec)
+            if saved is None:
+                raise tool_error('src is required and must resolve to a library file')
+            context.log_dm(f"DM bound token model {saved.get('src')} to {key}")
+            context.emit_refresh()
+            return {'op': op, 'key': key.strip(), 'spec': saved}
+
+        if op == 'unassign':
+            if not token_models.remove_assignment(session, (key or '').strip()):
+                raise tool_error('No token-model assignment for that key')
+            context.log_dm(f"DM unbound token model from {key}")
+            context.emit_refresh()
+            return {'op': op, 'key': key.strip(), 'unassigned': True}
+
+        if op == 'delete':
+            result = token_models.delete_model(session, src)
+            if result.get('error'):
+                raise tool_error(result['error'])
+            context.log_dm(f"DM deleted token model {result.get('deleted')}")
+            context.emit_refresh()
+            return {'op': op, **result}
+
+        raise tool_error('op must be one of: list, assign, unassign, delete')
 
     @tool(
         registry,

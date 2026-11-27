@@ -552,12 +552,20 @@ class SocketIOOutputLogger:
 # Defines a class for high level game management
 class GameManagement:
     dm_turn_hold = None
+    #: A loop task that has not advanced combat for this long and holds no
+    #: legitimate waiting state is considered stalled (see
+    #: _game_loop_task_appears_stale). Single LLM decisions cap at 180s.
+    GAME_LOOP_STALE_SECONDS = 300.0
+    #: Pause between consecutive AI turns so browsers can play each turn's
+    #: animation batch before the next one lands (see ai_turn_delay).
+    DEFAULT_AI_TURN_DELAY_SECONDS = 0.6
 
     def __init__(self, game_session: Session, map_location, other_maps, socketio, output_logger, tile_px, controllers,
                  npc_controller = None,
                  force_llm_npc_combat = False,
                  autosave = False,
                  auto_battle=True,
+                 ai_turn_delay=None,
                  system_logger=None,  soundtrack=None,
                  defer_player_spawn=False,
                  reset_saves=False):
@@ -589,6 +597,10 @@ class GameManagement:
         self.npc_controller = npc_controller
         self.force_llm_npc_combat = force_llm_npc_combat
         self.auto_battle = auto_battle
+        # Constructor override for the between-AI-turn pause (seconds); the
+        # runtime toggle and game.yml take precedence over this (see
+        # ai_turn_delay).
+        self.ai_turn_delay_override = ai_turn_delay
         self.auto_battle_distance_ft = int(os.environ.get('N20_AUTO_BATTLE_DISTANCE_FT', '30'))
         # When False (default, non-PvP maps), auto-start combat only on an
         # actually aggressive action (attack/spell/shove/grapple targeting an
@@ -620,6 +632,8 @@ class GameManagement:
         self.game_state_lock = threading.Lock()
         self._game_loop_task_guard = threading.Lock()
         self._game_loop_task_running = False
+        self._game_loop_task_token = 0
+        self._game_loop_task_started = 0.0
         # Monotonic marker for map-render-affecting state changes.
         # /update responses can be safely reused while this epoch is unchanged.
         self._render_epoch = 0
@@ -1252,7 +1266,69 @@ class GameManagement:
             'dm_ends_ai_turns': self.dm_ends_ai_turns(),
             'dm_connected': self.dm_connected(),
             'held_uid': self.dm_turn_hold,
+            # combat-advancement diagnostics: when a turn appears frozen,
+            # `game_loop_running` without `waiting_for_reaction`/`held_uid`
+            # means the background loop task is wedged (it self-revives after
+            # GAME_LOOP_STALE_SECONDS).
+            'game_loop_running': self.game_loop_task_running(),
+            'waiting_for_reaction': bool(self.waiting_for_reaction),
+            'ai_turn_delay': self.ai_turn_delay(),
         }
+
+    # -- Battle pacing: delay between AI turns ------------------------------ #
+
+    def ai_turn_delay(self) -> float:
+        """Seconds to pause after each AI turn before the next one starts.
+
+        AI turns chain quickly (deterministic AI acts in well under a second),
+        so consecutive ``move``/``turn`` socket bursts outrun the browser's
+        animation queue. The runtime toggle
+        ``session_state['battle_pacing']['ai_turn_delay']`` (saved with the
+        game) overrides the campaign default ``game.yml`` →
+        ``battle_pacing.ai_turn_delay``, then the constructor override, then
+        DEFAULT_AI_TURN_DELAY_SECONDS. A value of 0 disables the pause.
+        """
+        session = getattr(self, 'game_session', None)
+        state = (getattr(session, 'session_state', None) or {}).get('battle_pacing') or {}
+        raw = state.get('ai_turn_delay')
+        if raw is None:
+            raw = ((getattr(session, 'game_properties', None) or {})
+                   .get('battle_pacing') or {}).get('ai_turn_delay')
+        if raw is None:
+            raw = getattr(self, 'ai_turn_delay_override', None)
+        if raw is None:
+            return self.DEFAULT_AI_TURN_DELAY_SECONDS
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return self.DEFAULT_AI_TURN_DELAY_SECONDS
+
+    def set_ai_turn_delay(self, seconds) -> float:
+        """Set the runtime AI-turn delay (clamped to >= 0); returns it."""
+        delay = max(0.0, float(seconds))
+        session = self.game_session
+        state = getattr(session, 'session_state', None)
+        if state is None:
+            state = {}
+            session.session_state = state
+        state.setdefault('battle_pacing', {})['ai_turn_delay'] = delay
+        return delay
+
+    def _has_connected_clients(self) -> bool:
+        """True when at least one browser is connected to receive updates."""
+        sids = getattr(self, 'username_to_sid', None) or {}
+        return any(sids.get(name) for name in sids)
+
+    def _pause_after_ai_turn(self, battle) -> None:
+        """Give client browsers time to play this AI turn's animations before
+        the next turn's events land. Skipped when disabled, when the battle
+        already ended (the client's end-of-combat handling follows instead),
+        or when no browser is connected — headless runs, tests and server-only
+        automation never wait."""
+        delay = self.ai_turn_delay()
+        if delay <= 0 or battle.battle_ends() or not self._has_connected_clients():
+            return
+        self.socketio.sleep(delay)
 
     def dm_connected(self) -> bool:
         sids = self.username_to_sid or {}
@@ -1290,8 +1366,10 @@ class GameManagement:
 
     def _after_dm_hold_background(self) -> None:
         # The loop task that paused for the hold may still be emitting updates.
+        token = None
         for _ in range(200):
-            if self._try_begin_game_loop_task():
+            token = self._begin_game_loop_task()
+            if token is not None:
                 break
             self.socketio.sleep(0.05)
         else:
@@ -1312,18 +1390,49 @@ class GameManagement:
         except Exception:
             self.logger.exception("game loop after DM-ended turn failed")
         finally:
-            self._end_game_loop_task()
+            self._end_game_loop_task(token)
 
-    def _try_begin_game_loop_task(self) -> bool:
+    def _begin_game_loop_task(self) -> int | None:
+        """Claim the single game-loop task slot; returns its token or None."""
         with self._game_loop_task_guard:
             if self._game_loop_task_running:
-                return False
+                return None
             self._game_loop_task_running = True
-            return True
+            self._game_loop_task_token += 1
+            self._game_loop_task_started = time.monotonic()
+            return self._game_loop_task_token
 
-    def _end_game_loop_task(self) -> None:
+    def _try_begin_game_loop_task(self) -> bool:
+        return self._begin_game_loop_task() is not None
+
+    def _end_game_loop_task(self, token: int | None = None) -> None:
         with self._game_loop_task_guard:
+            if token is not None and token != self._game_loop_task_token:
+                # This task was superseded by a revived loop; the newer task
+                # owns the flag now — do not clear it here.
+                return
             self._game_loop_task_running = False
+
+    def _revive_stalled_game_loop_task(self) -> int:
+        """Steal the task slot from a loop task detected as stalled."""
+        with self._game_loop_task_guard:
+            self._game_loop_task_token += 1
+            self._game_loop_task_running = True
+            self._game_loop_task_started = time.monotonic()
+            return self._game_loop_task_token
+
+    def _game_loop_task_appears_stale(self) -> bool:
+        """True when the running loop task has neither progressed for longer
+        than any single turn can take (LLM decisions cap at ~180s) nor left a
+        legitimate waiting state (pending reaction / DM-held turn). A task
+        wedged on a deadlocked lock or dropped greenlet otherwise freezes
+        combat silently, because every later schedule is skipped.
+        """
+        if time.monotonic() - self._game_loop_task_started < self.GAME_LOOP_STALE_SECONDS:
+            return False
+        if self.dm_turn_hold or self.waiting_for_reaction:
+            return False
+        return self.get_current_battle() is not None
 
     def game_loop_task_running(self) -> bool:
         with self._game_loop_task_guard:
@@ -1360,20 +1469,31 @@ class GameManagement:
             self.game_loop()
         self.emit_post_game_loop_updates(battle_start=battle_start)
 
-    def _game_loop_background(self, *, battle_start: bool = False) -> None:
+    def _game_loop_background(self, *, battle_start: bool = False, token: int | None = None) -> None:
         try:
             self._run_game_loop_once(battle_start=battle_start)
         except Exception:
             self.logger.exception("background game loop failed")
         finally:
-            self._end_game_loop_task()
+            self._end_game_loop_task(token)
 
     def schedule_game_loop(self, *, battle_start: bool = False) -> bool:
         """Run ``game_loop`` off the HTTP greenlet; returns False if one is already running."""
-        if not self._try_begin_game_loop_task():
-            self.logger.debug("skipped scheduling game loop: task already running")
-            return False
-        self.socketio.start_background_task(self._game_loop_background, battle_start=battle_start)
+        token = self._begin_game_loop_task()
+        if token is None:
+            if self._game_loop_task_appears_stale():
+                self.logger.error(
+                    "game loop task has not advanced combat for %ss with no pending "
+                    "reaction or DM-held turn; assuming it stalled and reviving it",
+                    int(self.GAME_LOOP_STALE_SECONDS),
+                )
+                token = self._revive_stalled_game_loop_task()
+            else:
+                self.logger.warning("skipped scheduling game loop: task already running")
+                return False
+        self.socketio.start_background_task(
+            self._game_loop_background, battle_start=battle_start, token=token,
+        )
         return True
 
     def execute_game_loop(self, *, blocking: bool = False) -> bool:
@@ -1392,13 +1512,14 @@ class GameManagement:
 
     def schedule_after_reaction(self) -> bool:
         """Continue AI turns after a reaction resolves (runs ai_loop then game_loop)."""
-        if not self._try_begin_game_loop_task():
-            self.logger.debug("skipped scheduling post-reaction loop: task already running")
+        token = self._begin_game_loop_task()
+        if token is None:
+            self.logger.warning("skipped scheduling post-reaction loop: task already running")
             return False
-        self.socketio.start_background_task(self._after_reaction_background)
+        self.socketio.start_background_task(self._after_reaction_background, token=token)
         return True
 
-    def _after_reaction_background(self) -> None:
+    def _after_reaction_background(self, token: int | None = None) -> None:
         try:
             with self.game_state_lock:
                 self.resume_after_reaction()
@@ -1406,7 +1527,7 @@ class GameManagement:
         except Exception:
             self.logger.exception("post-reaction game loop failed")
         finally:
-            self._end_game_loop_task()
+            self._end_game_loop_task(token)
 
     def refresh_client_map(self):
         width, height = self.battle_map.size
@@ -1769,6 +1890,9 @@ class GameManagement:
             if battle.battle_ends():
                 break
 
+            was_ai = (not current_turn.dead()
+                      and not isinstance(battle.controller_for(current_turn), WebController))
+
             # Incapacitated creatures (banished, stunned, paralyzed, petrified,
             # ...) use up their turn slot but take no actions and no movement:
             # skip reset_turn (which would restore action/movement resources and
@@ -1784,6 +1908,7 @@ class GameManagement:
                 })
                 if self._finish_turn(battle):
                     return
+                self._pause_after_ai_turn(battle)
                 continue
 
             # Unconscious creatures only roll their death save (start_turn).
@@ -1798,6 +1923,8 @@ class GameManagement:
 
             if self._finish_turn(battle):
                 return
+            if was_ai:
+                self._pause_after_ai_turn(battle)
         self.end_current_battle()
 
     def _finish_turn(self, battle) -> bool:

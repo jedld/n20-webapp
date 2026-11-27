@@ -172,6 +172,18 @@
       return `inherit (${describeInherited(inheritedValue(this.state, this.scope, path))})`;
     },
 
+    strategistModeOptions(current, inheritText = 'inherit') {
+      const value = current || '';
+      const options = [
+        ['', inheritText],
+        ['auto', 'auto (follows the creature\'s Intelligence)'],
+        ['always', 'always plan (even beasts)'],
+        ['off', 'never plan (JEV heuristics only)'],
+      ];
+      return options.map(([v, label]) =>
+        `<option value="${v}" ${value === v ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('');
+    },
+
     render() {
       const s = this.state;
       const paths = s.paths || {};
@@ -331,6 +343,10 @@
                 <select class="form-control input-sm" data-path="${base}.strategist_provider">${this.profileOptions(agent.strategist_provider, true, 'default (combat → dm)')}</select>
               </div>
               <div class="col-sm-4 form-group ai-config-field">
+                <label>Planner scope (hybrid)</label>
+                <select class="form-control input-sm" data-path="${base}.strategist">${this.strategistModeOptions(agent.strategist, 'default (combat → auto)')}</select>
+              </div>
+              <div class="col-sm-4 form-group ai-config-field">
                 <label>Display label</label>
                 <input class="form-control input-sm" type="text" data-path="${base}.label" data-kind="text"
                   value="${escapeHtml(agent.label ?? '')}" placeholder="${escapeHtml(name)}" autocomplete="off">
@@ -372,6 +388,9 @@
           <div class="col-sm-6">${this.selectField('combat.strategist_provider', 'Hybrid strategist profile',
             this.profileOptions(getPath(this.draft, 'combat.strategist_provider'), true, 'inherit (dm)'),
             'For Hybrid controllers: the generative model that writes step-by-step turn plans for the JEV executor (plans shown DM-only).')}</div>
+          <div class="col-sm-6">${this.selectField('combat.strategist', 'Hybrid planner scope',
+            this.strategistModeOptions(getPath(this.draft, 'combat.strategist'), this.inheritLabel('combat.strategist')),
+            'By default each creature is planned only as far as its own Intelligence allows (a wolf gets no plan, a mage gets a full one). Force it on or off here, or per creature with the YAML key strategist: auto|always|off.')}</div>
           <div class="col-sm-6">${this.selectField('combat.npc_agent', 'Default NPC agent',
             this.agentOptions(getPath(this.draft, 'combat.npc_agent'), true, this.inheritLabel('combat.npc_agent')),
             'Named agent bundle used for every NPC without its own controller or agent (see the Agents tab).')}</div>
@@ -386,6 +405,8 @@
             this.profileOptions(getPath(this.draft, 'sidekicks.combat.provider'), true, 'inherit'))}</div>
           <div class="col-sm-6">${this.selectField('sidekicks.combat.strategist_provider', 'Sidekick hybrid strategist profile',
             this.profileOptions(getPath(this.draft, 'sidekicks.combat.strategist_provider'), true, 'inherit (combat → dm)'))}</div>
+          <div class="col-sm-6">${this.selectField('sidekicks.combat.strategist', 'Sidekick planner scope',
+            this.strategistModeOptions(getPath(this.draft, 'sidekicks.combat.strategist'), 'inherit (combat)'))}</div>
           <div class="col-sm-6">${this.selectField('sidekicks.combat.agent', 'Sidekick agent',
             this.agentOptions(getPath(this.draft, 'sidekicks.combat.agent'), true, 'inherit'))}</div>
         </div>`;
@@ -446,6 +467,7 @@
           <td>${sel('combat.agent', this.agentOptions(getPath(this.draft, `${base}.combat.agent`)))}</td>
           <td>${sel('combat.provider', this.profileOptions(getPath(this.draft, `${base}.combat.provider`)))}</td>
           <td>${sel('combat.strategist_provider', this.profileOptions(getPath(this.draft, `${base}.combat.strategist_provider`)))}</td>
+          <td>${sel('combat.strategist', this.strategistModeOptions(getPath(this.draft, `${base}.combat.strategist`), 'inherit (combat)'))}</td>
           <td>${sel('conversation.provider', this.profileOptions(getPath(this.draft, `${base}.conversation.provider`)))}</td>
           <td>
             <select class="form-control input-sm" data-path="${base}.tasks.enabled" data-kind="tri">
@@ -481,7 +503,7 @@
         <p class="help-block">Blank = inherit (individual → type → sidekick defaults → general defaults). "→" shows what is in effect now.</p>
         <div class="ai-config-npc-table-wrap">
           <table class="table table-condensed ai-config-npc-table">
-            <thead><tr><th>NPC</th><th>Combat</th><th>Agent</th><th>Combat profile</th><th>Strategist profile</th><th>Conversation</th><th>Tasks</th><th>Task profile</th></tr></thead>
+            <thead><tr><th>NPC</th><th>Combat</th><th>Agent</th><th>Combat profile</th><th>Strategist profile</th><th>Planner scope</th><th>Conversation</th><th>Tasks</th><th>Task profile</th></tr></thead>
             <tbody>${rows.join('') || '<tr><td colspan="8" class="text-muted">No NPCs on loaded maps.</td></tr>'}</tbody>
           </table>
         </div>`;

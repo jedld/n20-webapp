@@ -5,6 +5,11 @@
       <input type="checkbox" class="dm-pacing-toggle" {% if dm_ends_ai_turns|default(false) %}checked{% endif %}>
       DM ends AI turns
     </label>
+    <label class="dm-pacing-label dm-pacing-delay-label" title="Pause after each AI turn so browsers can finish its animations before the next turn starts (0 disables)">
+      AI turn delay
+      <input type="number" class="dm-pacing-delay" min="0" max="10" step="0.1"
+             value="{{ ai_turn_delay|default(0.6) }}">s
+    </label>
     {% if held_uid %}
       {% set held_entity = battle.current_turn() %}
       <div class="dm-turn-hold-banner">

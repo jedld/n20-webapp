@@ -44,6 +44,9 @@ def _game(battle, *, pacing=None, game_properties=None, dm_online=True):
     gm.game_state_lock = threading.RLock()
     gm._game_loop_task_guard = threading.Lock()
     gm._game_loop_task_running = False
+    gm._game_loop_task_token = 0
+    gm._game_loop_task_started = 0.0
+    gm.waiting_for_reaction = False
     state = {}
     if pacing is not None:
         state['battle_pacing'] = {'dm_ends_ai_turns': pacing}
@@ -175,3 +178,98 @@ def test_battle_admin_pacing_and_next_turn_release():
     assert result['released_held_turn'] is True
     gm.release_dm_turn_hold.assert_called_once()
     battle.next_turn.assert_not_called()
+
+
+def _ends_after(n):
+    """battle_ends() stub that stays False for the first n polls."""
+    state = {'n': 0}
+
+    def ends():
+        state['n'] += 1
+        return state['n'] > n
+
+    return ends
+
+
+# -- AI-turn delay ---------------------------------------------------------- #
+
+def test_ai_turn_delay_precedence():
+    battle = _battle(_combatant())
+    gm = _game(battle)
+    assert gm.ai_turn_delay() == GameManagement.DEFAULT_AI_TURN_DELAY_SECONDS
+
+    gm.game_session.game_properties = {'battle_pacing': {'ai_turn_delay': 1.5}}
+    assert gm.ai_turn_delay() == 1.5
+
+    gm.game_session.session_state['battle_pacing'] = {'ai_turn_delay': 0}
+    assert gm.ai_turn_delay() == 0
+
+    gm.game_session.session_state['battle_pacing'] = {'ai_turn_delay': 'bad'}
+    assert gm.ai_turn_delay() == GameManagement.DEFAULT_AI_TURN_DELAY_SECONDS
+
+
+def test_set_ai_turn_delay_persists_to_session_state():
+    gm = _game(_battle(_combatant()))
+    assert gm.set_ai_turn_delay(1.25) == 1.25
+    assert gm.ai_turn_delay() == 1.25
+    assert gm.game_session.session_state['battle_pacing']['ai_turn_delay'] == 1.25
+    assert gm.set_ai_turn_delay(-1) == 0.0
+
+
+def test_game_loop_pauses_after_ai_turn_for_connected_clients():
+    current = _combatant()
+    battle = _battle(current)
+    # battle_ends() is polled 6x per AI iteration (loop top, after
+    # start_turn, after ai_loop, in _hold_for_dm, in
+    # _advance_after_end_of_turn and inside _pause_after_ai_turn): let one
+    # full AI turn run, then end the battle.
+    battle.battle_ends.side_effect = _ends_after(6)
+    gm = _game(battle, pacing=False)
+    gm.ai_loop = MagicMock()
+
+    gm.game_loop()
+
+    gm.socketio.sleep.assert_called_once_with(GameManagement.DEFAULT_AI_TURN_DELAY_SECONDS)
+
+
+def test_pause_skipped_without_clients_or_when_disabled():
+    battle = _battle(_combatant())
+    gm = _game(battle, dm_online=False)
+
+    battle.battle_ends.return_value = False
+    gm._pause_after_ai_turn(battle)  # no connected clients
+    gm.socketio.sleep.assert_not_called()
+
+    gm.username_to_sid = {'dm': ['sid-1']}
+    gm.set_ai_turn_delay(0)
+    gm._pause_after_ai_turn(battle)  # disabled
+    gm.socketio.sleep.assert_not_called()
+
+    gm.set_ai_turn_delay(0.4)
+    battle.battle_ends.return_value = True
+    gm._pause_after_ai_turn(battle)  # battle already over
+    gm.socketio.sleep.assert_not_called()
+
+    battle.battle_ends.return_value = False
+    gm._pause_after_ai_turn(battle)
+    gm.socketio.sleep.assert_called_once_with(0.4)
+
+
+def test_manual_turns_never_pause_the_loop():
+    current = _combatant('pc-1')
+    battle = _battle(current, controller=MagicMock(spec=WebController))
+    battle.battle_ends.side_effect = _ends_after(5)
+    gm = _game(battle, pacing=False)
+    gm.ai_loop = MagicMock()
+
+    gm.game_loop()
+
+    gm.socketio.sleep.assert_not_called()
+
+
+def test_battle_admin_pacing_ai_turn_delay():
+    gm = _game(_battle(_combatant()))
+    result = battle_admin(gm, gm.game_session, 'pacing', ai_turn_delay=2.0)
+    assert result['ai_turn_delay'] == 2.0
+    result = battle_admin(gm, gm.game_session, 'pacing')
+    assert result['ai_turn_delay'] == 2.0

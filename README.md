@@ -25,6 +25,17 @@ URL (`pip install "natural20 @ git+https://github.com/jedld/natural_20.py.git@ma
 
 Shown against the bundled template campaign (SRD-only content).
 
+**The player's side** — logging in picks a character; the map shows their POV with
+fog of war, portraits, and the action bar under their own token:
+
+| Action bar on your own token: attacks (Kill/Knock), spells, items, hotkey bindings | Talking to a campaign NPC: JRPG dialog with portrait, memory, and skill-check hooks |
+|---|---|
+| ![Action bar](docs/screenshots/action-bar.png) | ![NPC conversation](docs/screenshots/talk-npc.png) |
+
+| Character sheet (stats, spells, equipment, journal) | Character builder (also opened from the PC tray's **+ New**) |
+|---|---|
+| ![Character sheet](docs/screenshots/character-sheet.png) | ![Character builder](docs/screenshots/character-builder.png) |
+
 **The DM table** — server-rendered map with fog of war, token portraits, the
 on-map NPC tray, and local (in-world) chat:
 
@@ -42,9 +53,9 @@ on-map NPC tray, and local (in-world) chat:
 |---|---|
 | ![Notebook](docs/screenshots/notebook.png) | ![AI assistant](docs/screenshots/ai-assistant.png) |
 
-| Character builder (opened by the PC tray's **+ New**) | Three.js tabletop client (`/3d`) |
+| Three.js tabletop client (`/3d`) | |
 |---|---|
-| ![Character builder](docs/screenshots/character-builder.png) | ![3D client](docs/screenshots/vtt-3d.png) |
+| ![3D client](docs/screenshots/vtt-3d.png) | |
 
 Regenerate them against a running server:
 
@@ -53,6 +64,9 @@ Regenerate them against a running server:
 pip install playwright && playwright install chromium
 python scripts/capture_readme_screenshots.py      # -> docs/screenshots/*.png
 ```
+
+The player-side shots log in as `gomerin` / talks to `gabba` (template campaign);
+override with `N20_SHOTS_PLAYER`, `N20_SHOTS_PLAYER_CHAR` and `N20_SHOTS_NPC`.
 
 ## Campaign data
 
