@@ -1339,6 +1339,51 @@ def attunement():
                    pending=status['pending'], limit=status['limit'], count=status['count'])
 
 
+@dm_bp.route('/dm/teleport_destinations', methods=['GET', 'POST'])
+def teleport_destinations():
+    """DM panel + MCP for per-entity Teleport destination databases.
+
+    GET  ?entity_uid=  → caster options, maps, anchors and that entity's list
+    POST (JSON)        → op=list|add|update|delete|set_familiarity plus the
+                         destination fields (see helpers/teleport_destinations.py).
+    """
+    from .helpers.teleport_destinations import (
+        anchor_options, apply_op, caster_options, destination_view, map_options,
+    )
+    if not session.get('username'):
+        return jsonify(error='Unauthorized'), 401
+    if 'dm' not in user_role():
+        return jsonify(error='Forbidden'), 403
+    game_session = get_game_session()
+    entity_uid = (request.args.get('entity_uid') or '').strip()
+    if request.method == 'GET':
+        entity = game_session.entity_by_uid(entity_uid) if entity_uid else None
+        return jsonify(
+            casters=caster_options(game_session),
+            maps=map_options(game_session),
+            anchors=(anchor_options(game_session) if entity is None else
+                     anchor_options(game_session, exclude_uid=entity.entity_uid)),
+            destinations=(destination_view(entity) if entity is not None else []),
+            familiarity_options=[
+                {'value': value, 'label': label}
+                for value, label in [
+                    ('permanent_circle', 'Permanent circle'),
+                    ('linked_object', 'Linked object'),
+                    ('very_familiar', 'Very familiar'),
+                    ('seen_casually', 'Seen casually'),
+                    ('viewed_once', 'Viewed once or described'),
+                    ('false', 'False destination'),
+                ]
+            ],
+        )
+    data = request.get_json(silent=True) or request.form.to_dict()
+    try:
+        result = apply_op(game_session, data)
+    except ValueError as exc:
+        return jsonify(status='error', error=str(exc)), 400
+    return jsonify(result)
+
+
 @dm_bp.route('/dm/items_catalog', methods=['GET'])
 def dm_items_catalog():
     """Return the full catalog of items (weapons + equipment + objects) for DM autocomplete."""

@@ -26,6 +26,17 @@ describe('fixtureKind lights', () => {
     expect(fixtureKind({ kind: 'thorns' })).toBe('thorns');
   });
 
+  it('classifies Create Bonfire zone squares as lit campfires', () => {
+    expect(fixtureKind({ type: 'bonfire_tile', name: 'Bonfire' })).toBe('campfire');
+    expect(shouldEmitLight({ type: 'bonfire_tile', name: 'Bonfire' })).toBe(true);
+  });
+
+  it('classifies plant growth and healing spirit zone squares', () => {
+    expect(fixtureKind({ type: 'overgrowth_tile', name: 'Overgrowth' })).toBe('briar');
+    expect(fixtureKind({ type: 'healing_spirit_tile', name: 'Healing Spirit' })).toBe('lamp');
+    expect(shouldEmitLight({ type: 'healing_spirit_tile', name: 'Healing Spirit' })).toBe(true);
+  });
+
   it('classifies floor hatches even when the 2D client marks them as doors', () => {
     expect(fixtureKind({ type: 'trap_door', door_highlight: true })).toBe('trap_door');
     expect(fixtureKind({ type: 'church_trapdoor' })).toBe('trap_door');

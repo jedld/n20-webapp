@@ -41,6 +41,7 @@ export function fixtureKind(obj = {}) {
   }
   if (obj.teleporter_marker || typeName === 'teleporter') return 'teleporter';
   if (typeName === 'campfire' || name === 'fire' || name === 'campfire') return 'campfire';
+  if (typeName === 'bonfire' || typeName === 'bonfire_tile') return 'campfire';
   if (typeName === 'brazier' || name.includes('brazier')) return 'brazier';
   if (typeName === 'fireplace' || name.includes('fireplace')) return 'fireplace';
   if (['torch', 'torch_mount', 'sconce', 'wall_torch'].includes(typeName) || name.includes('torch')) {
@@ -53,8 +54,11 @@ export function fixtureKind(obj = {}) {
   if (BARREL_TYPES.has(typeName) || name.includes('barrel')) return 'barrel';
   if (typeName === 'tree') return 'tree';
   if (typeName === 'briar') return 'briar';
+  if (typeName === 'lava' || name.includes('lava')) return 'lava';
   if (typeName === 'spike_growth_tile' || typeName === 'thorns') return 'thorns';
   if (typeName === 'wall_of_thorns_tile') return 'thorns';
+  if (typeName === 'overgrowth_tile' || typeName === 'overgrowth') return 'briar';
+  if (typeName === 'healing_spirit_tile') return 'lamp';
   if (COVER_LEVELS.has(obj.cover)) return 'cover';
   if (
     hasLight

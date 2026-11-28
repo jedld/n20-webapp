@@ -792,6 +792,10 @@
     "rule": "/rest"
   },
   {
+    "endpoint": "dm.teleport_destinations",
+    "rule": "/dm/teleport_destinations"
+  },
+  {
     "endpoint": "dm.undo_delete_entity",
     "rule": "/undo_delete_entity"
   },

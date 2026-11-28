@@ -27,6 +27,7 @@ import {
   distanceFogRange,
 } from '../geometry.js';
 import { tokenAssetUrl, isFlyingPose, isPronePose, tokenBaseY, FLY_BOB } from './tokens.js';
+import { nameplateView, parseDmRole } from './nameplates.js';
 import { AOE_COLOR, SELECT_COLOR } from './overlays.js';
 import { buildAttackArrow, buildFlowArrow, flatRingGeometry } from './flowArrow.js';
 import { FxRuntime } from '../fx/FxRuntime.js';
@@ -79,7 +80,11 @@ export class MapScene {
     this.cellSize = CELL_SIZE;
     this.state = null;
     this.tokenMeshes = new Map();
-    this.hpChips = new Map();
+    this.nameplates = new Map();
+    // nameplate HP gating identity (window.N20_3D from the /3d template)
+    const cfg3d = (typeof window !== 'undefined' && window.N20_3D) || {};
+    this.isDm = parseDmRole(cfg3d.role);
+    this.userEntityIds = (cfg3d.userEntityIds || []).map((id) => String(id));
     this.rangeChip = null;
     this.hudLayer = document.getElementById('token-hud-layer');
     this.hudHooks = [];
@@ -228,7 +233,7 @@ export class MapScene {
     this._buildFog(state);
     await this._buildTokens(state);
     await this._buildObjectMarkers(state);
-    this._syncHpChips();
+    this._syncNameplates();
     this.fx.onMapReady();
     this.fx.applyMapStateEffects(state.effects || []);
     // keep the selection ring + rotate knob glued to the (rebuilt) token
@@ -1116,28 +1121,59 @@ export class MapScene {
     return this.projectWorld(new THREE.Vector3(c.x, 0, c.z), lift);
   }
 
-  _syncHpChips() {
+  /**
+   * Floating nameplate per token: the entity name above a health bar.
+   * Exact HP numbers follow nameplates.js gating (DM sees all; players only
+   * on PCs/sidekicks/own entities, bare bar on enemy and neutral NPCs).
+   */
+  _syncNameplates() {
     if (!this.hudLayer) return;
     const keep = new Set();
+    const viewer = { isDm: this.isDm, ownUids: this.userEntityIds };
     for (const [uid, mesh] of this.tokenMeshes) {
       const entity = mesh.userData.entity || {};
       keep.add(uid);
-      let el = this.hpChips.get(uid);
+      let el = this.nameplates.get(uid);
       if (!el) {
         el = document.createElement('div');
-        el.className = 'token-hp-chip';
+        el.className = 'token-nameplate';
+        const name = document.createElement('div');
+        name.className = 'token-nameplate-name';
+        const health = document.createElement('div');
+        health.className = 'token-nameplate-health';
+        const track = document.createElement('div');
+        track.className = 'token-nameplate-track';
+        const fill = document.createElement('div');
+        fill.className = 'token-nameplate-fill';
+        track.appendChild(fill);
+        const hp = document.createElement('span');
+        hp.className = 'token-nameplate-hp';
+        health.appendChild(track);
+        health.appendChild(hp);
+        el.appendChild(name);
+        el.appendChild(health);
         this.hudLayer.appendChild(el);
-        this.hpChips.set(uid, el);
+        this.nameplates.set(uid, el);
+        el._parts = { name, health, fill, hp };
       }
-      const hp = entity.hp;
-      const max = entity.max_hp;
-      el.textContent = (hp == null || max == null) ? (entity.name || '') : `${hp}/${max}`;
-      el.classList.toggle('is-dead', Boolean(entity.dead));
+      const view = nameplateView(entity, viewer);
+      const parts = el._parts;
+      parts.name.textContent = view.name;
+      el.classList.toggle('is-dead', view.dead);
+      if (view.ratio == null) {
+        parts.health.style.display = 'none';
+      } else {
+        parts.health.style.display = 'flex';
+        parts.fill.style.width = `${Math.round(view.ratio * 100)}%`;
+        parts.fill.style.background = view.color;
+        parts.hp.textContent = view.hpText;
+        parts.hp.style.display = view.hpText ? 'inline' : 'none';
+      }
     }
-    for (const [uid, el] of this.hpChips) {
+    for (const [uid, el] of this.nameplates) {
       if (!keep.has(uid)) {
         el.remove();
-        this.hpChips.delete(uid);
+        this.nameplates.delete(uid);
       }
     }
   }
@@ -1148,10 +1184,15 @@ export class MapScene {
     const h = this.canvas.clientHeight || window.innerHeight;
     const v = new THREE.Vector3();
     for (const [uid, mesh] of this.tokenMeshes) {
-      const el = this.hpChips.get(uid);
+      const el = this.nameplates.get(uid);
       if (!el) continue;
       v.copy(mesh.position);
-      v.y += 1.05;
+      // sit the plate just above the figure: 3D token models report their
+      // fitted world height, billboard tokens use the fixed lift
+      const figureHeight = Number(mesh.userData.figure?.userData?.figureHeight);
+      v.y += Number.isFinite(figureHeight) && figureHeight > 0
+        ? figureHeight + 0.3
+        : 1.05;
       v.project(this.camera);
       const x = (v.x * 0.5 + 0.5) * w;
       const y = (-v.y * 0.5 + 0.5) * h;

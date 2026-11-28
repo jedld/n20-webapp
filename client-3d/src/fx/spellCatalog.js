@@ -87,6 +87,8 @@ export const SPELL_KEYS = [
   'fear',
   'zephyr_strike',
   'gust',
+  'maze',
+  'teleport',
 ];
 
 export const ALIASES = {
@@ -434,6 +436,24 @@ const RECIPES = {
   rope_trick: {
     kind: 'aura', color: 0xd2b482, duration: 0.7, at: 'source',
   },
+  teleport: {
+    // Arcane conjuration column: violet rings bloom on the caster, then a
+    // pale burst snaps as the group vanishes to the destination.
+    kind: 'combo',
+    steps: [
+      { kind: 'aura', at: 'source', color: 0xbe82ff, duration: 0.5 },
+      { kind: 'burst', at: 'source', color: 0xe8dcff, duration: 0.4, radius: 0.8 },
+    ],
+  },
+  maze: {
+    // Labyrinth gate: a rune aura spins up on the target, then a pale
+    // silver-indigo burst implodes as it is banished to the maze.
+    kind: 'combo',
+    steps: [
+      { kind: 'aura', at: 'target', color: 0xa8b8e8, duration: 0.55 },
+      { kind: 'burst', at: 'target', color: 0xd6def6, duration: 0.45, radius: 0.9 },
+    ],
+  },
   fear: {
     kind: 'area', color: 0x823ca0, duration: 0.8, sfx: 'bless_cast',
   },
@@ -448,6 +468,9 @@ const RECIPES = {
   },
   summon_fiend: {
     kind: 'area', color: 0xc8321e, duration: 1.0, sfx: 'burning_hands_cast',
+  },
+  create_bonfire: {
+    kind: 'burst', color: 0xff9632, duration: 0.6, radius: 0.6, useSquares: true, impactSfx: 'firebolt_impact',
   },
 };
 

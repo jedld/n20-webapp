@@ -1358,6 +1358,16 @@
     "rule": "/dm/notes/move"
   },
   {
+    "endpoint": "dm.teleport_destinations",
+    "methods": [
+      "GET",
+      "HEAD",
+      "OPTIONS",
+      "POST"
+    ],
+    "rule": "/dm/teleport_destinations"
+  },
+  {
     "endpoint": "dm.dm_token_models_list",
     "methods": [
       "GET",

@@ -57,6 +57,8 @@ describe('spellCatalog', () => {
     expect(recipeFor('silence').kind).toBe('area');
     expect(recipeFor('fear').kind).toBe('area');
     expect(recipeFor('ensnaring_strike').at).toBe('target');
+    expect(recipeFor('maze').kind).toBe('combo');
+    expect(recipeFor('teleport').kind).toBe('combo');
   });
 
   it('picks chromatic orb color from damage_type', () => {

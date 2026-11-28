@@ -26,6 +26,7 @@
     {% if 'dm' in role %}
     <link href="{{ asset_url('ai_config.css') }}" rel="stylesheet">
     <script src="{{ asset_url('ai_config.js') }}"></script>
+    <script src="{{ asset_url('teleport_destinations.js') }}"></script>
     <script src="{{ url_for('static', filename='edit_properties.js') }}?v={{ salt }}"></script>
     <script src="{{ url_for('static', filename='edit_mode.js') }}?v={{ salt }}"></script>
     <script src="{{ url_for('static', filename='map_annotations_edit.js') }}?v={{ salt }}"></script>
@@ -1764,6 +1765,11 @@
                   <i class="glyphicon glyphicon-cog"></i> AI Settings
                 </a>
               </li>
+              <li class="nav-item" role="presentation">
+                <a class="nav-link" id="teleport-dest-tab" data-toggle="tab" href="#teleport-dest-panel" role="tab" aria-controls="teleport-dest-panel" aria-selected="false">
+                  <i class="glyphicon glyphicon-globe"></i> Teleport
+                </a>
+              </li>
               {% endif %}
             </ul>
             
@@ -1840,6 +1846,9 @@
               {% if 'dm' in role %}
               <div class="tab-pane fade" id="ai-config-panel" role="tabpanel" aria-labelledby="ai-config-tab">
                 <div id="ai-config-root" class="ai-config"></div>
+              </div>
+              <div class="tab-pane fade" id="teleport-dest-panel" role="tabpanel" aria-labelledby="teleport-dest-tab">
+                <div id="teleport-dest-root"></div>
               </div>
               {% endif %}
             </div>

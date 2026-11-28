@@ -758,6 +758,73 @@ def register(registry: ToolRegistry) -> None:
 
     @tool(
         registry,
+        name='dm.teleport_destination',
+        description="Manage a caster's Teleport spell destination database "
+                    "(what Teleport can target; familiarity drives the d100 outcome). "
+                    "op=list|add|update|delete|set_familiarity. kind=coords needs map+x+y; "
+                    "kind=anchor needs entity_uid (arrival follows that person/object). "
+                    "familiarity: permanent_circle|linked_object|very_familiar|"
+                    "seen_casually|viewed_once|false. An empty database blocks Teleport.",
+        input_schema={
+            'type': 'object',
+            'required': ['entity_uid'],
+            'properties': {
+                'entity_uid': {'type': 'string', 'description': 'The caster whose list to manage'},
+                'op': {'type': 'string', 'enum': ['list', 'add', 'update', 'delete',
+                                                  'set_familiarity'],
+                       'description': 'default list'},
+                'dest_id': {'type': 'string', 'description': 'destination id for delete/set_familiarity/update'},
+                'name': {'type': 'string'},
+                'kind': {'type': 'string', 'enum': ['coords', 'anchor']},
+                'map': {'type': 'string', 'description': 'campaign map name (coords)'},
+                'x': {'type': 'integer', 'minimum': 0},
+                'y': {'type': 'integer', 'minimum': 0},
+                'anchor_entity_uid': {'type': 'string', 'description': 'anchor entity (anchor kind)'},
+                'familiarity': {'type': 'string',
+                                'enum': ['permanent_circle', 'linked_object', 'very_familiar',
+                                         'seen_casually', 'viewed_once', 'false']},
+                'off_target_map': {'type': 'string',
+                                   'description': 'map used by Off Target results'},
+                'similar_maps': {'type': 'array', 'items': {'type': 'string'},
+                                 'description': 'maps used by Similar Area results'},
+                'notes': {'type': 'string'},
+            },
+        },
+        category='dm',
+    )
+    def teleport_destination(context: MCPContext, entity_uid: str, op: str = 'list',
+                             dest_id: Optional[str] = None, name: Optional[str] = None,
+                             kind: Optional[str] = None, map: Optional[str] = None,
+                             x: Optional[int] = None, y: Optional[int] = None,
+                             anchor_entity_uid: Optional[str] = None,
+                             familiarity: Optional[str] = None,
+                             off_target_map: Optional[str] = None,
+                             similar_maps: Optional[List[str]] = None,
+                             notes: Optional[str] = None):
+        from webapp.blueprints.helpers.teleport_destinations import apply_op
+        payload = {'op': op, 'entity_uid': entity_uid}
+        if dest_id:
+            payload['dest_id'] = dest_id
+        for key, value in (('name', name), ('kind', kind), ('map', map), ('x', x), ('y', y),
+                           ('familiarity', familiarity), ('off_target_map', off_target_map),
+                           ('similar_maps', similar_maps), ('notes', notes),
+                           ('anchor_entity_uid', anchor_entity_uid)):
+            if value is not None:
+                payload[key] = value
+        try:
+            result = apply_op(context.game_session, payload)
+        except ValueError as exc:
+            raise tool_error(str(exc))
+        if op in ('add', 'update', 'delete', 'set_familiarity'):
+            verb = {'add': 'added', 'update': 'updated', 'delete': 'removed',
+                    'set_familiarity': 're-rated'}[op]
+            context.log_dm(
+                f"DM {verb} teleport destination "
+                f"{dest_id or name or ''} for {entity_uid}")
+        return result
+
+    @tool(
+        registry,
         name='dm.add_item',
         description='Add an item (weapon/equipment/object name) to an entity\'s inventory.',
         input_schema={

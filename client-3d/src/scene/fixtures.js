@@ -377,6 +377,54 @@ function seededRandom(seed) {
   };
 }
 
+// Lava: a shallow molten pool with a glowing crust and a couple of hot
+// blobs. Geometry and materials are shared; blob placement is seeded from
+// the cell so the pool is stable across refreshes and varied per square.
+const LAVA_CRUST_GEO = new THREE.CircleGeometry(0.49, 24);
+const LAVA_BLOB_GEO = new THREE.SphereGeometry(0.09, 10, 8);
+let lavaMats = null;
+
+function lavaMaterials() {
+  if (!lavaMats) {
+    lavaMats = {
+      crust: new THREE.MeshStandardMaterial({
+        color: 0x7a1d07,
+        emissive: 0xff5a14,
+        emissiveIntensity: 0.85,
+        roughness: 0.65,
+        metalness: 0.05,
+      }),
+      molten: new THREE.MeshStandardMaterial({
+        color: 0xff7a1e,
+        emissive: 0xffb347,
+        emissiveIntensity: 1.1,
+        roughness: 0.4,
+        transparent: true,
+        opacity: 0.85,
+      }),
+    };
+  }
+  return lavaMats;
+}
+
+export function addLava(group, obj = {}) {
+  const mats = lavaMaterials();
+  const crust = new THREE.Mesh(LAVA_CRUST_GEO, mats.crust);
+  crust.rotation.x = -Math.PI / 2;
+  crust.position.y = 0.012;
+  group.add(crust);
+  const rand = seededRandom((Number(obj.x) || 0) * 73856093 ^ ((Number(obj.y) || 0) * 19349663));
+  for (let i = 0; i < 3; i += 1) {
+    const angle = rand() * Math.PI * 2;
+    const dist = 0.08 + rand() * 0.26;
+    const scale = 0.6 + rand() * 0.8;
+    const blob = new THREE.Mesh(LAVA_BLOB_GEO, mats.molten);
+    blob.scale.set(scale, 0.45 * scale, scale);
+    blob.position.set(Math.cos(angle) * dist, 0.035, Math.sin(angle) * dist);
+    group.add(blob);
+  }
+}
+
 export function addThorns(group, obj = {}) {
   const mats = thornMaterials();
   const cover = new THREE.Mesh(THORN_COVER_GEO, mats.cover);
@@ -621,6 +669,9 @@ export function addFixture(root, obj, mats, cellSize, opts = {}) {
     addBriar(group);
   } else if (kind === 'thorns') {
     addThorns(group, obj);
+  } else if (kind === 'lava') {
+    addLava(group, obj);
+    lightY = 0.12;
   } else if (kind === 'cover') {
     const tall = obj.cover === 'three_quarter' || obj.cover === 'total';
     addCrate(group, mats, { height: tall ? 0.7 : 0.34, width: tall ? 0.42 : 0.48 });

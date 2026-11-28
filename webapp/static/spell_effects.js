@@ -4733,10 +4733,166 @@
     ['zephyr_strike', 'zephyr strike', { color: [200, 240, 255], ring: true, duration: 800, sfx: 'healing_word_cast' }],
     ['gust', null, { color: [220, 240, 250], duration: 700 }],
     ['summon_fiend', 'summon fiend', { color: [200, 50, 30], rays: true, ring: true, point: true, duration: 1300, sfx: 'burning_hands_cast' }],
+    ['create_bonfire', 'create bonfire', { color: [255, 150, 50], point: true, duration: 900, sfx: 'burning_hands_cast' }],
     ['sending', null, { color: [180, 200, 255], duration: 800, sfx: 'guidance_cast' }],
   ].forEach(([key, alias, opts]) => {
     register(key, function(payload){ return playRadiantCast(payload, opts); });
     if (alias) register(alias, function(payload){ return play(key, payload); });
+  });
+
+  // Maze: silver-indigo labyrinth gate. Two counter-rotating rune rings with
+  // maze-like right-angle spokes spin up around the target, then collapse
+  // into a single bright flash as the creature is banished to the labyrinth.
+  register('maze', function(payload){
+    return new Promise((resolve) => {
+      const centers = ensureArray(payload && payload.target).map(centerOfEntity).filter(Boolean);
+      if (!centers.length) {
+        const p = pointCenter(payload);
+        if (p) centers.push(p);
+      }
+      if (!centers.length && payload && payload.source) {
+        const s = centerOfEntity(payload.source);
+        if (s) centers.push(s);
+      }
+      if (!centers.length) return resolve();
+      const tile = tilePx();
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const start = performance.now();
+      const duration = 1150;
+      const col = [168, 184, 232];
+      const draw = (now) => {
+        const t = animProgress(now, start, duration);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        centers.forEach((c, idx) => {
+          const fade = 1 - Math.max(0, (t - 0.85) / 0.15) * 0.4;
+          // Rings grow in, then implode toward the center at the end.
+          const shrink = t < 0.72 ? 1 : 1 - ((t - 0.72) / 0.28) * 0.85;
+          const R = tile * 0.8 * (0.55 + 0.45 * Math.min(1, t * 2.2)) * shrink;
+          const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, R * 1.25);
+          g.addColorStop(0, rgba(235, 240, 255, 0.5 * (1 - t * 0.6)));
+          g.addColorStop(0.55, rgba(col[0], col[1], col[2], 0.32 * (1 - t * 0.55)));
+          g.addColorStop(1, rgba(col[0], col[1], col[2], 0));
+          ctx.fillStyle = g;
+          ctx.beginPath(); ctx.arc(c.x, c.y, R * 1.25, 0, Math.PI * 2); ctx.fill();
+          // Counter-rotating rune rings (gaps between the arcs read as gates).
+          const spin = now * 0.0022 + idx * 0.7;
+          const rings = [
+            { r: R, seg: 4, arc: Math.PI / 3.2, dir: 1, w: 3.2 },
+            { r: R * 0.66, seg: 4, arc: Math.PI / 4.2, dir: -1, w: 2.4 },
+          ];
+          ctx.strokeStyle = rgba(215, 225, 250, 0.85 * fade);
+          rings.forEach((ring, ri) => {
+            ctx.lineWidth = ring.w;
+            const rot = spin * ring.dir + ri * 0.5;
+            for (let i = 0; i < ring.seg; i++) {
+              const a0 = rot + (i / ring.seg) * Math.PI * 2;
+              ctx.beginPath();
+              ctx.arc(c.x, c.y, Math.max(1, ring.r), a0, a0 + ring.arc);
+              ctx.stroke();
+            }
+          });
+          // Crenellated spokes between the rings: radial ticks with a
+          // right-angle turn, like corridors on a labyrinth plan.
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = rgba(col[0], col[1], col[2], 0.8 * fade);
+          for (let i = 0; i < 8; i++) {
+            const a = -spin * 0.6 + (i / 8) * Math.PI * 2;
+            const r0 = R * 0.66;
+            const r1 = R * (i % 2 ? 0.84 : 1.0);
+            const x1 = c.x + Math.cos(a) * r1;
+            const y1 = c.y + Math.sin(a) * r1;
+            ctx.beginPath();
+            ctx.moveTo(c.x + Math.cos(a) * r0, c.y + Math.sin(a) * r0);
+            ctx.lineTo(x1, y1);
+            const ta = a + (i % 2 ? 0.22 : -0.22);
+            ctx.lineTo(x1 + Math.cos(ta) * R * 0.18, y1 + Math.sin(ta) * R * 0.18);
+            ctx.stroke();
+          }
+          // Implosion flash as the creature vanishes into the maze.
+          if (t > 0.72) {
+            const ft = (t - 0.72) / 0.28;
+            const fr = Math.max(1, tile * (0.45 * (1 - ft) + 0.06));
+            const fg = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, fr);
+            fg.addColorStop(0, rgba(255, 255, 255, 0.9 * (1 - ft)));
+            fg.addColorStop(1, rgba(col[0], col[1], col[2], 0));
+            ctx.fillStyle = fg;
+            ctx.beginPath(); ctx.arc(c.x, c.y, fr, 0, Math.PI * 2); ctx.fill();
+          }
+        });
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      requestAnimationFrame(draw);
+    });
+  });
+
+  // Teleport: arcane violet conjuration. Triple dashed rings spin over each
+  // teleporting creature, rising motes gather, then everything snaps into a
+  // bright column as the group vanishes to the destination.
+  register('teleport', function(payload){
+    return new Promise((resolve) => {
+      const centers = ensureArray(payload && payload.target).map(centerOfEntity).filter(Boolean);
+      if (!centers.length) {
+        const s = payload && payload.source ? centerOfEntity(payload.source) : null;
+        if (s) centers.push(s);
+      }
+      if (!centers.length) return resolve();
+      const tile = tilePx();
+      const { overlay, ctx, destroy } = createOverlay(1104);
+      const start = performance.now();
+      const duration = 950;
+      const col = [190, 130, 255];
+      const motes = [];
+      for (let i = 0; i < 18; i++) motes.push({ a: Math.random() * Math.PI * 2, r: 0.4 + Math.random() * 0.6, s: 0.5 + Math.random(), seed: Math.random() * 1000 });
+      const draw = (now) => {
+        const t = animProgress(now, start, duration);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        centers.forEach((c, idx) => {
+          const R = tile * (0.35 + 0.45 * Math.min(1, t * 2));
+          const fade = t > 0.85 ? 1 - (t - 0.85) / 0.15 : 1;
+          const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, R * 1.6);
+          g.addColorStop(0, rgba(240, 225, 255, 0.5 * (1 - t * 0.6)));
+          g.addColorStop(0.6, rgba(col[0], col[1], col[2], 0.32 * (1 - t * 0.5)));
+          g.addColorStop(1, rgba(col[0], col[1], col[2], 0));
+          ctx.fillStyle = g;
+          ctx.beginPath(); ctx.arc(c.x, c.y, R * 1.6, 0, Math.PI * 2); ctx.fill();
+          const spin = now * 0.003 + idx;
+          ctx.setLineDash([tile * 0.14, tile * 0.10]);
+          ctx.lineWidth = 2.6;
+          ctx.strokeStyle = rgba(col[0], col[1], col[2], 0.85 * fade);
+          [1, 0.72, 0.45].forEach((k, ri) => {
+            ctx.lineDashOffset = (ri % 2 ? -1 : 1) * now * 0.04;
+            ctx.beginPath(); ctx.arc(c.x, c.y, R * k, 0, Math.PI * 2); ctx.stroke();
+          });
+          ctx.setLineDash([]);
+          motes.forEach((m) => {
+            const a = m.a + spin * 0.6;
+            const rise = ((t * m.s + m.seed % 1) % 1);
+            ctx.fillStyle = rgba(225, 200, 255, (0.65 * (1 - rise)) * fade);
+            ctx.beginPath();
+            ctx.arc(c.x + Math.cos(a) * R * m.r, c.y + R * 0.4 - rise * R * 1.2, 2, 0, Math.PI * 2);
+            ctx.fill();
+          });
+          if (t > 0.75) {
+            const ft = (t - 0.75) / 0.25;
+            const w = tile * 0.5 * (1 - ft) + 3;
+            const h = tile * (1.6 - 0.9 * ft);
+            const lg = ctx.createLinearGradient(c.x, c.y - h, c.x, c.y + tile * 0.2);
+            lg.addColorStop(0, rgba(240, 230, 255, 0));
+            lg.addColorStop(1, rgba(col[0], col[1], col[2], 0.9 * (1 - ft)));
+            ctx.fillStyle = lg;
+            ctx.fillRect(c.x - w / 2, c.y - h, w, h * 1.2);
+          }
+        });
+        ctx.restore();
+        if (t < 1) requestAnimationFrame(draw); else { destroy(); resolve(); }
+      };
+      requestAnimationFrame(draw);
+    });
   });
 
   // ---- Pre-baked NPC special effects (YAML ``special_effect``) ---------------

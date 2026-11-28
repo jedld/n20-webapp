@@ -2748,6 +2748,12 @@ class GameManagement:
             tick_environment_zones(self.maps, event_manager=self.game_session.event_manager)
         except Exception:
             self.logger.exception('Exploration environment zone tick failed')
+        # Zone teardowns during the tick (e.g. an expired Rope Trick space
+        # closing its map) can move or strand viewers across maps.
+        try:
+            self.sync_pov_followers()
+        except Exception:
+            self.logger.exception('Exploration POV follower sync failed')
 
     def realtime_ui_suppressed(self) -> bool:
         try:
@@ -3066,6 +3072,7 @@ class GameManagement:
                     pass
             # Check if the action affects visibility (doors, lighting, etc.) and emit refresh_map
             request_map_refresh = False
+            maze_pairs = []
             if hasattr(action, 'result') and action.result:
                 for result_item in action.result:
                     if (result_item.get('type') == 'interact' and
@@ -3097,6 +3104,33 @@ class GameManagement:
                             emit_contextual_sound_payload(self.socketio, result_item, suppress_ui=suppress_ui)
                     elif result_item.get('type') == 'use_item':
                         request_map_refresh = True
+                    elif result_item.get('type') in ('rope_trick', 'pocket_dimension_closed',
+                                                     'pocket_travel', 'pocket_dimension_travel',
+                                                     'maze', 'maze_escape', 'teleport'):
+                        # Pocket-dimension entry/exit and Teleport move whole
+                        # groups across maps; follow every affected user's POV
+                        # and refresh the maps they leave behind.
+                        request_map_refresh = True
+                        try:
+                            self.sync_pov_followers(exclude_username=username)
+                        except Exception:
+                            self.logger.debug('pocket dimension POV sync skipped', exc_info=True)
+                        if result_item.get('type') == 'maze':
+                            # The labyrinth is walled off, so the minotaur and
+                            # its victim rarely see each other: engage them on
+                            # sight of the spell instead (loop_environment then
+                            # starts combat on the pocket map).
+                            try:
+                                _effect = result_item.get('effect')
+                                _warden = None
+                                _uid = getattr(_effect, 'warden_uid', None)
+                                if _uid:
+                                    _warden = self.game_session.entity_by_uid(_uid)
+                                _victim = result_item.get('target')
+                                if _warden is not None and _victim is not None:
+                                    maze_pairs.append((_warden, _victim))
+                            except Exception:
+                                self.logger.debug('maze battle pairing skipped', exc_info=True)
                     elif result_item.get('refresh_map'):
                         request_map_refresh = True
             if request_map_refresh and not suppress_ui:
@@ -3104,7 +3138,7 @@ class GameManagement:
             aggressive_pairs = [
                 (action.source, target)
                 for target in self._hostile_targets_for_action(action)
-            ]
+            ] + maze_pairs
             self.loop_environment(aggressive_pairs=aggressive_pairs)
             if (
                 not treat_as_battle
@@ -3241,6 +3275,51 @@ class GameManagement:
                     pass
         except Exception:
             pass
+
+    def sync_pov_followers(self, exclude_username=None):
+        """Follow POV entities that changed maps via cross-map events, and evict
+        viewers of maps that no longer exist.
+
+        The per-actor deferred ``switch_map`` emit in ``commit_and_update`` only
+        moves the acting user. Group moves (Rope Trick climbs everyone in at
+        once) and zone teardowns that happen outside any action (expiry during
+        the world-time tick, Dispel Magic) need every *other* logged-in user
+        whose POV entity moved to be switched too — plus users looking at an
+        ephemeral pocket-dimension map that was just unregistered need to be
+        bounced back to a live map.
+        """
+        try:
+            entries = list(getattr(self, 'current_map_for_user', {}).items())
+        except Exception:
+            return
+        for username, entry in entries:
+            if username == exclude_username:
+                continue
+            try:
+                map_name, current_map = entry if isinstance(entry, tuple) else (entry, None)
+                pov_entity = self.get_pov_entity_for_user(username)
+                new_map = self.get_map_for_entity(pov_entity) if pov_entity is not None else None
+                if (pov_entity is not None and current_map is not None
+                        and new_map is not None and new_map is not current_map):
+                    self.check_and_notify_map_change(current_map, pov_entity, username)
+                    continue
+                if map_name is None or map_name not in (self.maps or {}):
+                    # The map this user is viewing was removed (pocket dimension
+                    # closed). Send them to their POV entity's map, else default.
+                    fallback_map = new_map if new_map is not None else None
+                    fallback_name = getattr(fallback_map, 'name', None) if fallback_map is not None else None
+                    if fallback_name not in (self.maps or {}):
+                        fallback_name = self.game_session.default_map_key()
+                    if fallback_name and fallback_name in (self.maps or {}):
+                        self.switch_map_for_user(username, fallback_name)
+                        for sid in list(self.username_to_sid.get(username, [])):
+                            self.socketio.emit(
+                                'message',
+                                {'type': 'switch_map',
+                                 'message': {'map': fallback_name, 'entity_uid': None}},
+                                to=sid)
+            except Exception:
+                self.logger.debug('sync_pov_followers: skip user %r', username, exc_info=True)
 
     def check_and_notify_map_change(self, pov_map, pov_entity, username):
         # Use the lock to make the operation atomic

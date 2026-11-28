@@ -18,6 +18,7 @@
     "sheet.js": "sheet.min.js",
     "spell_effects.js": "spell_effects.min.js",
     "status_effects.js": "status_effects.min.js",
+    "teleport_destinations.js": "teleport_destinations.min.js",
     "utils.js": "utils.min.js",
     "utils_optimized.js": "utils_optimized.min.js",
     "js/character_builder.js": "js/character_builder.min.js",
@@ -48,8 +49,9 @@
     "perf.min.js": "7305880b63",
     "sfx.min.js": "34f772af3c",
     "sheet.min.js": "ee44a3ab8e",
-    "spell_effects.min.js": "b8afac6fcb",
+    "spell_effects.min.js": "6cba99e2dc",
     "status_effects.min.js": "91bc7c59c9",
+    "teleport_destinations.min.js": "1562fc043e",
     "utils.min.js": "ae8554f649",
     "utils_optimized.min.js": "d64c929e7e",
     "js/character_builder.min.js": "0a504ad681",
@@ -61,8 +63,8 @@
     "journal.min.css": "51ba4e37df",
     "notebook.min.css": "e5ebb9b378",
     "sheet.min.css": "e203710971",
-    "styles.min.css": "cdaf898d5a"
+    "styles.min.css": "c1ae8d4792"
   },
-  "generatedAt": "2026-11-28T01:32:56.521Z",
-  "buildVersion": "82a1bedf7fe9"
+  "generatedAt": "2026-11-28T06:00:54.419Z",
+  "buildVersion": "29cab2469e18"
 }
