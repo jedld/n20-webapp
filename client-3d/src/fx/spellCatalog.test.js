@@ -32,6 +32,7 @@ describe('spellCatalog', () => {
 
   it('maps cone and cube targeting kinds', () => {
     expect(recipeFor('burning_hands').kind).toBe('cone');
+    expect(recipeFor('investiture_flame_line').kind).toBe('line');
     expect(recipeFor('color_spray').kind).toBe('cone');
     expect(recipeFor('poison_spray').kind).toBe('cone');
     expect(recipeFor('thunderwave').kind).toBe('area');

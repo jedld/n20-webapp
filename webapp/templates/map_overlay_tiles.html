@@ -90,6 +90,9 @@
               {% if obj['flaming_sphere_marker'] %}
                 <div class="flaming-sphere-marker" aria-hidden="true"></div>
               {% endif %}
+              {% if obj['bonfire_marker'] %}
+                <div class="bonfire-marker" aria-hidden="true"></div>
+              {% endif %}
               {% if obj['tiny_hut_dome'] %}
                 <div class="tiny-hut-dome-marker" aria-hidden="true"
                      data-lighting="{{ obj['tiny_hut_lighting'] or 'default' }}"
@@ -197,6 +200,15 @@
               {% endif %}
               {% include '_grapple_token_badge.html' %}
               {% include '_death_save_overlay.html' %}
+              {% if tile.get('creature_auras') %}
+              <div class="creature-auras">
+                {% for aura in tile.get('creature_auras', []) %}
+                  <div class="creature-aura aura-{{ aura.name }}"
+                       style="width: {{ (aura.radius_tiles * 2 + 1) * tile_size_px }}px; height: {{ (aura.radius_tiles * 2 + 1) * tile_size_px }}px;"
+                       data-tooltip="{{ aura.name|replace('_', ' ') }} ({{ aura.radius_ft }} ft)"></div>
+                {% endfor %}
+              </div>
+              {% endif %}
               <div class="effect"{% if tile.get('mirror_images') %} data-mirror-images="{{ tile.mirror_images }}"{% endif %}>
                 {% for effect in tile.get('effects', []) %}
                   <img src="{{ url_for('static', filename='assets/effect/' ~ effect|lower ~ '.png') }}"

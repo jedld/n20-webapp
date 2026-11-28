@@ -5022,6 +5022,85 @@
     });
   });
 
+  // Line of Flame (Investiture of Flame): a 15x5 ft band of fire along the
+  // exact footprint squares the server sends (payload.target_squares).
+  register('investiture_flame_line', function(payload){
+    return new Promise((resolve) => {
+      const squares = Array.isArray(payload && payload.target_squares)
+        ? payload.target_squares.filter(s => Array.isArray(s) && s.length === 2)
+        : [];
+      if (!squares.length) return resolve();
+      const tileSize = ($('.tiles-container').data('tile-size') || 64);
+      const { overlay, ctx, destroy } = createOverlay(1103);
+      try { if (window.SFX && SFX.play) { SFX.play('burning_hands_cast'); } } catch(e){}
+
+      const centers = squares.map(s => tileCenterByCoords(s[0], s[1]));
+      const seeds = squares.map(() => Math.random() * 1000);
+      const embers = [];
+      for (let i = 0; i < squares.length * 8; i++) {
+        const s = squares[Math.floor(Math.random() * squares.length)];
+        const c = tileCenterByCoords(s[0], s[1]);
+        embers.push({
+          x: c.x + (Math.random() - 0.5) * tileSize * 0.8,
+          y: c.y + (Math.random() - 0.5) * tileSize * 0.5,
+          vy: 0.4 + Math.random() * 1.2,
+          r: 1 + Math.random() * 2.2,
+          life: Math.random(),
+        });
+      }
+
+      const dur = 900;
+      const t0 = performance.now();
+      function vnoise(u, t, seed){
+        return (Math.sin(u*2.1 + t*7.3 + seed) + Math.sin(u*5.7 + t*3.1 + seed*1.7)) / 2;
+      }
+      requestAnimationFrame(function flameLoop(now){
+        const tt = Math.min(1, (now - t0) / dur);
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const fade = 1 - tt * tt;
+        centers.forEach((c, i) => {
+          const seed = seeds[i];
+          // A jittering vertical flame column per square of the line.
+          for (let layer = 0; layer < 3; layer++) {
+            const jitter = vnoise(i, tt * 4, seed + layer) * tileSize * 0.12;
+            const h = tileSize * (0.55 + 0.5 * Math.abs(vnoise(layer, tt * 5, seed)));
+            const w = tileSize * (0.62 - layer * 0.16);
+            const g = ctx.createRadialGradient(c.x + jitter, c.y, 2, c.x + jitter, c.y - h * 0.3, h);
+            g.addColorStop(0, `rgba(255,230,150,${(0.55 * fade).toFixed(2)})`);
+            g.addColorStop(0.45, `rgba(255,140,30,${(0.42 * fade).toFixed(2)})`);
+            g.addColorStop(1, 'rgba(200,40,0,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.ellipse(c.x + jitter, c.y - h * 0.15, w / 2, h, 0, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          // Scorch glow on the floor of the square itself.
+          const fg = ctx.createRadialGradient(c.x, c.y, 2, c.x, c.y, tileSize * 0.62);
+          fg.addColorStop(0, `rgba(255,120,20,${(0.30 * fade).toFixed(2)})`);
+          fg.addColorStop(1, 'rgba(120,30,0,0)');
+          ctx.fillStyle = fg;
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, tileSize * 0.62, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        embers.forEach(em => {
+          em.y -= em.vy;
+          em.life += 0.02;
+          if (em.life > 1) { em.life = 0; }
+          const a = (1 - em.life) * 0.7 * fade;
+          ctx.fillStyle = `rgba(255,190,90,${a.toFixed(2)})`;
+          ctx.beginPath();
+          ctx.arc(em.x, em.y, em.r, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.restore();
+        if (tt < 1) requestAnimationFrame(flameLoop); else { destroy(); resolve(); }
+      });
+    });
+  });
+
   // Expose API
   global.SpellEffects = { register, play, has };
 })(window);

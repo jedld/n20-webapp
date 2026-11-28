@@ -235,6 +235,48 @@ export class FxRuntime {
     }
   }
 
+  flameWall({ cells, color = 0xff7a1e, duration = 0.85, height = 0.9 }) {
+    if (!Array.isArray(cells) || !cells.length) return;
+    const group = new THREE.Group();
+    const flames = [];
+    for (const cell of cells) {
+      const x = Array.isArray(cell) ? cell[0] : cell.x;
+      const y = Array.isArray(cell) ? cell[1] : cell.y;
+      const c = cellCenter(x, y, this.map.cellSize);
+      const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+      });
+      const flame = new THREE.Mesh(
+        new THREE.BoxGeometry(this.map.cellSize * 0.92, height, this.map.cellSize * 0.92),
+        mat,
+      );
+      flame.position.set(c.x, height / 2, c.z);
+      flame.userData.phase = (Number(x) + Number(y) * 0.7) * 1.9;
+      group.add(flame);
+      flames.push({ flame, mat });
+      this.particles({
+        at: new THREE.Vector3(c.x, 0.45, c.z),
+        color: 0xffb347,
+        duration: duration * 0.8,
+        count: 5,
+        mode: 'up',
+      });
+    }
+    this.spawn(group, {
+      ttl: duration,
+      update: (_obj, k) => {
+        for (const { flame, mat } of flames) {
+          const flicker = 0.6 + 0.4 * Math.sin(k * 16 + (flame.userData.phase || 0));
+          mat.opacity = 0.42 * (1 - k * 0.75) * flicker;
+          flame.scale.y = 0.75 + 0.45 * flicker;
+        }
+      },
+    });
+  }
+
   particles({ at, color = 0x7cff9a, duration = 0.55, count = 18, mode = 'up' }) {
     if (!at) return;
     const positions = new Float32Array(count * 3);

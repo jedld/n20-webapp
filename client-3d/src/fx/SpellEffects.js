@@ -104,6 +104,13 @@ function playKind(fx, recipe, payload) {
       if (Array.isArray(squares) && squares.length) fx.cellGlow(squares, color, duration);
       else if (firstTarget) fx.burst({ at: firstTarget, color, duration, radius: recipe.radius ?? 1.1 });
       break;
+    case 'line': {
+      // Line-shaped footprints (Investiture of Flame): the server sends the
+      // exact squares; glow the floor and raise a flickering flame wall.
+      const cells = Array.isArray(squares) && squares.length ? squares : targetList;
+      fx.flameWall({ cells, color, duration, height: recipe.height ?? 0.9 });
+      break;
+    }
     case 'heal': {
       const spots = recipe.allTargets
         ? targetList.map((t) => fx.resolveWorld(t, recipe.height ?? 0.7)).filter(Boolean)

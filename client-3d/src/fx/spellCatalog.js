@@ -78,6 +78,7 @@ export const SPELL_KEYS = [
   'ensnaring_strike',
   'hail_of_thorns',
   'spike_growth',
+  'investiture_flame_line',
   'silence',
   'magic_weapon',
   'pass_without_trace',
@@ -237,6 +238,9 @@ const RECIPES = {
   },
   burning_hands: {
     kind: 'cone', color: 0xff5a1f, duration: 0.55, radius: 1.5, sfx: 'burning_hands_cast',
+  },
+  investiture_flame_line: {
+    kind: 'line', color: 0xff7a1e, duration: 0.85, sfx: 'burning_hands_cast',
   },
   chill_touch: {
     kind: 'projectile', color: 0x66ff99, duration: 0.4, arc: 0.15,

@@ -747,6 +747,30 @@ def _blind_attack_preview(entity, action, battle, square):
     )
 
 
+def _feature_action_preview(entity, action_info, battle_map, x, y):
+    """Hover preview for registered feature actions (e.g. Investiture of
+    Flame's Line of Flame). Action classes may expose
+    ``preview_target_squares(battle_map, x, y)`` returning the footprint the
+    action would cover if the actor clicked (x, y) right now. Returns None
+    when the action type is unknown or declares no preview."""
+    try:
+        action_class = action_type_to_class(action_info)
+    except ValueError:
+        return None
+    if action_class is None or not callable(
+            getattr(action_class, 'preview_target_squares', None)):
+        return None
+    from .helpers.runtime_state import get_game_session
+    try:
+        action = action_class(get_game_session(), entity, action_info)
+        squares = action.preview_target_squares(battle_map, x, y)
+    except Exception:
+        return None
+    if squares is None:
+        return None
+    return {'valid_target': True, 'target_squares': squares}
+
+
 @battle_bp.route('/target', methods=['GET'])
 def get_target():
    
@@ -899,6 +923,9 @@ def get_target():
         action = UseItemAction(get_game_session(), entity, 'use_item')
         valid_target = True
         return jsonify(valid_target=valid_target, adv_info=[[],[]], attack_mod=0)
+    elif entity and (target_entity or target_position) and (
+            _feature_preview := _feature_action_preview(entity, action_info, battle_map, x, y)):
+        return jsonify(**_feature_preview)
     elif entity and target_entity:
         preview = _entity_target_preview(entity, target_entity, action_info, opts, battle_map, battle)
         if preview is not None:

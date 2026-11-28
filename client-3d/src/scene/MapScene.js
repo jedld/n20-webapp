@@ -30,7 +30,7 @@ import { tokenAssetUrl, isFlyingPose, isPronePose, tokenBaseY, FLY_BOB } from '.
 import { AOE_COLOR, SELECT_COLOR } from './overlays.js';
 import { buildAttackArrow, buildFlowArrow, flatRingGeometry } from './flowArrow.js';
 import { FxRuntime } from '../fx/FxRuntime.js';
-import { aurasForEffects } from '../fx/statusAuras.js';
+import { aurasForEffects, creatureAuraRings } from '../fx/statusAuras.js';
 import { doorPanelMaterials, disposeVttMaterials, loadVttMaterials, texturedBoxGeometry, wallSpecFromState } from './materials.js';
 import { addCaveWalls } from './caveWalls.js';
 import { addFixture, addTokenLight } from './fixtures.js';
@@ -577,6 +577,7 @@ export class MapScene {
     const wasProne = this._proneState.get(entity.uid);
     this._proneState.set(entity.uid, prone);
     this._attachStatusAuras(group, portrait, entity, size);
+    this._attachCreatureAuras(group, entity);
     addTokenLight(group, entity, mats, this.cellSize, {
       feetPerGrid: this.state?.map?.feet_per_grid,
       onLight: (light) => this._onDecorLight(light),
@@ -729,6 +730,48 @@ export class MapScene {
         portrait.material.transparent = true;
         portrait.material.opacity = aura.fadeSprite;
       }
+    });
+  }
+
+  /**
+   * Ground footprint rings for creature-centered emanations delivered as
+   * ``entity.creature_auras`` (Investiture of Flame, Spirit Guardians,
+   * paladin auras). Sized to the aura's real radius, not the token size.
+   */
+  _attachCreatureAuras(group, entity) {
+    const rings = creatureAuraRings(entity, {
+      feetPerGrid: this.state?.map?.feet_per_grid,
+    });
+    rings.forEach((aura, index) => {
+      const outer = Math.max(0.3, aura.radiusCells * this.cellSize + 0.08);
+      const inner = Math.max(0.2, outer - 0.16);
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(inner, outer, 40),
+        new THREE.MeshBasicMaterial({
+          color: aura.color,
+          transparent: true,
+          opacity: aura.opacity,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.05 + index * 0.015;
+      ring.userData.creatureAura = aura.name;
+      group.add(ring);
+      const disc = new THREE.Mesh(
+        new THREE.CircleGeometry(inner, 40),
+        new THREE.MeshBasicMaterial({
+          color: aura.color,
+          transparent: true,
+          opacity: aura.opacity * 0.22,
+          depthWrite: false,
+        }),
+      );
+      disc.rotation.x = -Math.PI / 2;
+      disc.position.y = 0.045 + index * 0.015;
+      disc.userData.creatureAura = aura.name;
+      group.add(disc);
     });
   }
 

@@ -39,6 +39,7 @@ export const AURA_STYLES = {
   zephyr_strike: { color: 0xc8f0ff, opacity: 0.4, ring: true },
   disguise_self: { color: 0xe6beff, opacity: 0.35, ring: true },
   hunters_mark: { color: 0xc83c3c, opacity: 0.45, ring: true },
+  investiture_of_flame: { color: 0xff7a1e, opacity: 0.55, ring: true },
 };
 
 const SYNONYMS = {
@@ -84,4 +85,32 @@ export function aurasForEffects(effects) {
     auras.push({ key, ...style });
   }
   return auras;
+}
+
+/**
+ * Ground rings for creature-centered emanations (Investiture of Flame's
+ * 5-ft flames, Spirit Guardians, paladin auras). Unlike the small status
+ * rings above these are sized to the aura's real radius from the server
+ * payload (``entity.creature_auras`` from /map_state, see
+ * natural20/utils/creature_auras.py).
+ */
+export const CREATURE_AURA_STYLES = {
+  investiture_of_flame: { color: 0xff7a1e, opacity: 0.5 },
+  spirit_guardians: { color: 0x9ee6b4, opacity: 0.4 },
+  aura_of_protection: { color: 0xffd24a, opacity: 0.3 },
+  aura_of_courage: { color: 0xffe9a8, opacity: 0.3 },
+  aura_of_devotion: { color: 0xd8e8ff, opacity: 0.3 },
+};
+
+export function creatureAuraRings(entity, { feetPerGrid = 5 } = {}) {
+  const rings = [];
+  const fpg = Number(feetPerGrid) > 0 ? Number(feetPerGrid) : 5;
+  for (const aura of entity?.creature_auras || []) {
+    const radiusCells = Number(aura?.radius_ft) / fpg;
+    if (!(radiusCells > 0)) continue;
+    const style = CREATURE_AURA_STYLES[normalizeEffectKey(aura?.name)]
+      || { color: 0xc8cde6, opacity: 0.28 };
+    rings.push({ name: String(aura.name), radiusCells, ...style });
+  }
+  return rings;
 }

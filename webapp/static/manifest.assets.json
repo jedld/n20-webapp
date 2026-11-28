@@ -48,7 +48,7 @@
     "perf.min.js": "7305880b63",
     "sfx.min.js": "34f772af3c",
     "sheet.min.js": "ee44a3ab8e",
-    "spell_effects.min.js": "e730cdc169",
+    "spell_effects.min.js": "b8afac6fcb",
     "status_effects.min.js": "91bc7c59c9",
     "utils.min.js": "ae8554f649",
     "utils_optimized.min.js": "d64c929e7e",
@@ -61,8 +61,8 @@
     "journal.min.css": "51ba4e37df",
     "notebook.min.css": "e5ebb9b378",
     "sheet.min.css": "e203710971",
-    "styles.min.css": "310173d8a5"
+    "styles.min.css": "cdaf898d5a"
   },
-  "generatedAt": "2026-11-27T23:59:41.229Z",
-  "buildVersion": "0f536e9516f3"
+  "generatedAt": "2026-11-28T01:32:56.521Z",
+  "buildVersion": "82a1bedf7fe9"
 }
