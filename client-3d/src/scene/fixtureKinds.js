@@ -54,6 +54,7 @@ export function fixtureKind(obj = {}) {
   if (typeName === 'tree') return 'tree';
   if (typeName === 'briar') return 'briar';
   if (typeName === 'spike_growth_tile' || typeName === 'thorns') return 'thorns';
+  if (typeName === 'wall_of_thorns_tile') return 'thorns';
   if (COVER_LEVELS.has(obj.cover)) return 'cover';
   if (
     hasLight

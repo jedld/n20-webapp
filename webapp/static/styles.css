@@ -3177,6 +3177,32 @@ body.highlight-doors .tile.tile-door-highlight {
   opacity: 0.85;
 }
 
+/* Wall of Thorns: a dense, tall bramble wall (blocks line of sight). */
+.wall-of-thorns-marker {
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+  z-index: 1000;
+  background:
+    radial-gradient(70% 80% at 25% 30%, rgba(46, 78, 30, 0.55), transparent 70%),
+    radial-gradient(80% 70% at 70% 75%, rgba(38, 62, 26, 0.55), transparent 70%),
+    linear-gradient(160deg, rgba(52, 78, 34, 0.72), rgba(30, 46, 20, 0.82));
+  box-shadow: inset 0 0 0 2px rgba(96, 132, 58, 0.65), 0 0 6px rgba(0, 0, 0, 0.45);
+  border-radius: 3px;
+}
+
+.wall-of-thorns-marker::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    conic-gradient(from 140deg at 18% 34%, transparent 0 16deg, rgba(222, 235, 180, 0.85) 16deg 24deg, transparent 24deg),
+    conic-gradient(from 300deg at 42% 66%, transparent 0 16deg, rgba(222, 235, 180, 0.8) 16deg 24deg, transparent 24deg),
+    conic-gradient(from 150deg at 66% 28%, transparent 0 16deg, rgba(222, 235, 180, 0.8) 16deg 24deg, transparent 24deg),
+    conic-gradient(from 310deg at 84% 70%, transparent 0 16deg, rgba(222, 235, 180, 0.8) 16deg 24deg, transparent 24deg);
+  opacity: 0.9;
+}
+
 /* Silence: muted sphere. */
 .silence-marker {
   position: absolute;

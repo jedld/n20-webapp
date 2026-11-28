@@ -840,13 +840,20 @@ def get_target():
                     (x, y), radius_ft, require_los=require_los)
                 build_map = build_map['next']([x, y])
             elif build_map['param'][0]['type'] == 'select_square':
-                # Square AoE centered on the targeted square.
-                size_ft = int(build_map['param'][0].get('size', 10))
-                side = max(1, size_ft // battle_map.feet_per_grid)
+                # Square/rectangular AoE. By default it extends from the
+                # clicked square to the south-east; params with
+                # ``centered: true`` (wall spells) are centered on it, and
+                # ``width``/``height`` give non-square footprints.
+                param_details = build_map['param'][0]
+                size_ft = int(param_details.get('size', 10))
+                side_w = max(1, int(param_details.get('width', size_ft)) // battle_map.feet_per_grid)
+                side_h = max(1, int(param_details.get('height', size_ft)) // battle_map.feet_per_grid)
+                ox = -(side_w // 2) if param_details.get('centered') else 0
+                oy = -(side_h // 2) if param_details.get('centered') else 0
                 target_squares = []
-                for dx in range(side):
-                    for dy in range(side):
-                        tx, ty = x + dx, y + dy
+                for dx in range(side_w):
+                    for dy in range(side_h):
+                        tx, ty = x + ox + dx, y + oy + dy
                         if 0 <= tx < battle_map.size[0] and 0 <= ty < battle_map.size[1]:
                             target_squares.append([tx, ty])
                 build_map = build_map['next']([x, y])

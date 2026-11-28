@@ -22,6 +22,7 @@ describe('fixtureKind lights', () => {
 
   it('classifies spike growth zone squares as thorns terrain', () => {
     expect(fixtureKind({ type: 'spike_growth_tile', name: 'Spike Growth' })).toBe('thorns');
+    expect(fixtureKind({ type: 'wall_of_thorns_tile', name: 'Wall of Thorns' })).toBe('thorns');
     expect(fixtureKind({ kind: 'thorns' })).toBe('thorns');
   });
 
